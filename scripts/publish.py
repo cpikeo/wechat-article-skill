@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
-"""微信公众号官方 API：草稿 → 可选发布 → 永久链接。只用标准库。
+"""微信公众号官方 API：草稿 → 可选发布 → 永久链接；永久素材对账/复用/清理。只用标准库。
 
 排版流水线完成后再调用。`--submit` 仅企业认证账号；个人账号止步于草稿。
 `--check-draft-switch` 只查询灰度开关（开启不可逆，必须显式 `--enable-draft-switch`）。
+素材管理：封面永久素材按内容 sha256 复用（`--no-reuse-cover` 可关），
+`--material-count` / `--list-materials` / `--delete-material` 做对账与清理。
 48001 不要预设单因：开关、token、权限都要查。边界与排查见 `references/publish.md`。
 """
 
 import argparse
+import hashlib
 import json
 import mimetypes
 import os
@@ -16,6 +19,9 @@ import time
 import uuid
 import urllib.request
 import urllib.error
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from render import api_title  # noqa: E402  标题断行标记的转换规则单一来源在 render.py
 
 API_BASE = "https://api.weixin.qq.com/cgi-bin"
 
@@ -34,6 +40,15 @@ def _post_json(url, payload):
     data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json; charset=utf-8"})
     with urllib.request.urlopen(req, timeout=30) as resp:
+        body = json.loads(resp.read().decode("utf-8"))
+    if isinstance(body, dict) and body.get("errcode", 0) != 0:
+        raise WeChatAPIError(body.get("errcode"), body.get("errmsg"), body)
+    return body
+
+
+def _get_json(url):
+    """官方文档里 get_materialcount 标注为 GET 请求，按文档实现。"""
+    with urllib.request.urlopen(urllib.request.Request(url), timeout=30) as resp:
         body = json.loads(resp.read().decode("utf-8"))
     if isinstance(body, dict) and body.get("errcode", 0) != 0:
         raise WeChatAPIError(body.get("errcode"), body.get("errmsg"), body)
@@ -156,19 +171,118 @@ def rewrite_local_images(html, access_token, base_dir="."):
     return IMG_SRC_RE.sub(_replace, html)
 
 
+# ---------- 3.5 素材管理（永久素材：复用 / 对账 / 清理） ----------
+# 草稿封面必须是永久 MediaID（draft/add 文档要求）。旧实现每次建草稿都 add_material
+# 传一张新永久素材：发十次就堆十张同款封面。这里按文件内容 sha256 复用，
+# 并提供 get_materialcount / batchget_material / del_material 做对账与清理。
+# 临时素材（media/upload，3 天过期）不能用于草稿封面，本流水线不接入。
+
+MATERIAL_CACHE_DEFAULT = ".wechat_material_cache.json"
+
+
+def _file_sha256(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(65536), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def get_material(access_token, media_id):
+    """按 media_id 取永久素材详情；素材被删时返回 errcode=40007。"""
+    url = f"{API_BASE}/material/get_material?access_token={access_token}"
+    return _post_json(url, {"media_id": media_id})
+
+
+def get_material_count(access_token):
+    """永久素材总数（image+news 上限 100000，其它 1000）。官方标注 GET。"""
+    url = f"{API_BASE}/material/get_materialcount?access_token={access_token}"
+    return _get_json(url)
+
+
+def batchget_material(access_token, material_type="image", offset=0, count=20):
+    """分页取永久素材列表；count 官方限定 1–20。"""
+    url = f"{API_BASE}/material/batchget_material?access_token={access_token}"
+    return _post_json(url, {"type": material_type, "offset": offset,
+                            "count": max(1, min(20, count))})
+
+
+def list_materials(access_token, material_type="image"):
+    """翻完全部页，返回 (total_count, item 列表)。"""
+    items, offset = [], 0
+    total = None
+    while True:
+        body = batchget_material(access_token, material_type, offset, 20)
+        total = body.get("total_count", total)
+        batch = body.get("item", [])
+        items.extend(batch)
+        offset += len(batch)
+        if not batch or offset >= (total or 0):
+            return total, items
+
+
+def delete_material(access_token, media_id):
+    """删除永久素材（不可恢复；后台官网素材管理里的也能删）。"""
+    url = f"{API_BASE}/material/del_material?access_token={access_token}"
+    return _post_json(url, {"media_id": media_id})
+
+
+def upload_thumb_material_cached(access_token, cover_path, cache_path=MATERIAL_CACHE_DEFAULT):
+    """同一张封面复用同一个永久素材，不重复占用账号素材额度。
+
+    本地缓存 sha256 -> media_id；复用前用 get_material 验活——素材可能在
+    后台被手动删掉（40007），缓存命中但已死就重传并更新缓存。
+    """
+    digest = _file_sha256(cover_path)
+    cache = {}
+    if cache_path and os.path.exists(cache_path):
+        try:
+            with open(cache_path, encoding="utf-8") as f:
+                cache = json.load(f)
+        except (ValueError, OSError):
+            cache = {}
+    media_id = cache.get(digest)
+    if media_id:
+        try:
+            get_material(access_token, media_id)
+            print(f"  复用已有封面永久素材 {media_id}")
+            return media_id
+        except WeChatAPIError as e:
+            print(f"  缓存的素材 {media_id} 已不可用（errcode={e.errcode}），重新上传")
+    media_id = upload_thumb_material(access_token, cover_path)
+    if cache_path:
+        cache[digest] = media_id
+        with open(cache_path, "w", encoding="utf-8") as f:
+            json.dump(cache, f, ensure_ascii=False, indent=2)
+    return media_id
+
+
 # ---------- 4. 草稿 ----------
 
-def create_draft(access_token, title, content_html, thumb_media_id, author=None, digest=None):
+def create_draft(access_token, title, content_html, thumb_media_id, author=None, digest=None,
+                 source_url=None, need_open_comment=1, only_fans_can_comment=0):
+    """字段上限以官方文档（2026-07-14 版）为准：title≤32 / author≤16 / digest≤120。
+
+    正文 HTML 由 render.py 产出时已不再印标题与作者名——它们只走这里原生字段，
+    否则草稿里标题、作者各出现两次。
+
+    need_open_comment 默认 1：与公众平台编辑器新建文章默认「留言自动精选公开」对齐；
+    API 自身默认是 0（不开启留言），不显式传会把草稿底部变成「不开启留言」。
+    """
     article = {
         "article_type": "news",
-        "title": title[:32],
+        "title": api_title(title)[:32],
         "content": content_html,
         "thumb_media_id": thumb_media_id,
+        "need_open_comment": 1 if need_open_comment else 0,
+        "only_fans_can_comment": 1 if only_fans_can_comment else 0,
     }
     if author:
         article["author"] = author[:16]
     if digest:
-        article["digest"] = digest[:128]
+        article["digest"] = digest[:120]
+    if source_url:
+        article["content_source_url"] = source_url
     url = f"{API_BASE}/draft/add?access_token={access_token}"
     body = _post_json(url, {"articles": [article]})
     return body["media_id"]
@@ -218,7 +332,10 @@ def poll_publish_status(access_token, publish_id, interval=10, timeout=600):
 
 # ---------- 一键流程 ----------
 
-def publish_html_article(appid, secret, html_path, cover_path, title, author=None, digest=None, do_submit=True, poll_timeout=600, auto_enable_switch=False):
+def publish_html_article(appid, secret, html_path, cover_path, title, author=None, digest=None,
+                         source_url=None, open_comment=True, fans_only=False,
+                         material_cache=MATERIAL_CACHE_DEFAULT,
+                         do_submit=True, poll_timeout=600, auto_enable_switch=False):
     print("[1/6] 获取 access_token …")
     token = get_stable_access_token(appid, secret)
 
@@ -239,8 +356,11 @@ def publish_html_article(appid, secret, html_path, cover_path, title, author=Non
                 "  继续尝试建草稿……"
             )
 
-    print("[3/6] 上传封面为永久素材 …")
-    thumb_media_id = upload_thumb_material(token, cover_path)
+    print("[3/6] 上传封面为永久素材（同图复用，不重复占额度）…")
+    if material_cache:
+        thumb_media_id = upload_thumb_material_cached(token, cover_path, material_cache)
+    else:
+        thumb_media_id = upload_thumb_material(token, cover_path)
     print(f"  thumb_media_id = {thumb_media_id}")
 
     with open(html_path, encoding="utf-8") as f:
@@ -252,7 +372,9 @@ def publish_html_article(appid, secret, html_path, cover_path, title, author=Non
 
     print("[5/6] 新增草稿 …")
     try:
-        media_id = create_draft(token, title, html, thumb_media_id, author=author, digest=digest)
+        media_id = create_draft(token, title, html, thumb_media_id, author=author, digest=digest,
+                                source_url=source_url, need_open_comment=1 if open_comment else 0,
+                                only_fans_can_comment=1 if fans_only else 0)
     except WeChatAPIError as e:
         if e.errcode == 48001:
             print(
@@ -302,9 +424,15 @@ def main():
     ap.add_argument("--secret", required=True, help="公众号 AppSecret（不要写进脚本里提交到 Git，建议用环境变量传入）")
     ap.add_argument("--html", help="正文 HTML 文件路径（排版引擎生成的 HTML 或任意合规 HTML）")
     ap.add_argument("--cover", help="封面图片本地路径")
-    ap.add_argument("--title", help="文章标题，超过32字会被截断")
-    ap.add_argument("--author", default=None, help="作者，超过16字会被截断")
-    ap.add_argument("--digest", default=None, help="摘要，超过128字会被截断")
+    ap.add_argument("--title", help="文章标题：| 断行标记自动转｜，超过32字会被截断")
+    ap.add_argument("--author", default=None, help="作者（原生作者栏），超过16字会被截断")
+    ap.add_argument("--digest", default=None, help="摘要（转发卡片/会话摘要），超过120字会被截断（官方上限120）")
+    ap.add_argument("--meta", default=None,
+                    help="render.py 产出的 *.meta.json：title/author/digest/cover/原文链接的默认值，命令行参数优先")
+    ap.add_argument("--source-url", default=None, help="原文链接（草稿底部「阅读原文」跳转的 URL）")
+    ap.add_argument("--no-open-comment", action="store_true",
+                    help="关闭留言。默认开启，与编辑器新建文章「留言自动精选公开」对齐")
+    ap.add_argument("--fans-only-comment", action="store_true", help="仅粉丝可评论（默认所有人）")
     ap.add_argument("--submit", action="store_true", help="建草稿后是否继续提交发布（需要企业认证账号）；不加则只建草稿")
     ap.add_argument("--poll-timeout", type=int, default=600, help="发布状态轮询超时秒数，默认 600")
     ap.add_argument("--check-publish-id", default=None, help="只查询某个 publish_id 的发布状态，不做其它任何操作")
@@ -314,6 +442,15 @@ def main():
         action="store_true",
         help="如果开关未开启，自动开启它。注意：此操作不可逆（会把公众号后台图文素材库永久升级成草稿箱），请自行确认后再加这个参数",
     )
+    ap.add_argument("--material-count", action="store_true", help="只查询永久素材总数（image/video/voice/news）")
+    ap.add_argument("--list-materials", action="store_true", help="只列出永久素材（对账/清理用，翻页取全）")
+    ap.add_argument("--material-type", default="image", choices=("image", "video", "voice", "news"),
+                    help="--list-materials 的素材类型，默认 image")
+    ap.add_argument("--delete-material", default=None, metavar="MEDIA_ID",
+                    help="只删除指定永久素材（不可恢复；先用 --list-materials 核对 media_id）")
+    ap.add_argument("--no-reuse-cover", action="store_true", help="不复用缓存的永久素材，封面强制重传")
+    ap.add_argument("--material-cache", default=MATERIAL_CACHE_DEFAULT,
+                    help=f"封面复用映射文件（sha256→media_id），默认 {MATERIAL_CACHE_DEFAULT}")
     args = ap.parse_args()
 
     if args.check_publish_id:
@@ -335,19 +472,49 @@ def main():
             )
         return
 
-    missing = [n for n, v in [("--html", args.html), ("--cover", args.cover), ("--title", args.title)] if not v]
+    if args.material_count or args.list_materials or args.delete_material:
+        token = get_stable_access_token(args.appid, args.secret)
+        if args.delete_material:
+            print(json.dumps(delete_material(token, args.delete_material), ensure_ascii=False))
+            return
+        if args.material_count:
+            print(json.dumps(get_material_count(token), ensure_ascii=False, indent=2))
+        if args.list_materials:
+            total, items = list_materials(token, args.material_type)
+            print(f"total_count = {total}（type={args.material_type}）")
+            for it in items:
+                name = it.get("name") or "、".join(
+                    n.get("title", "") for n in it.get("content", {}).get("news_item", []))
+                print(f"  {it.get('media_id')}\t{name}\t{it.get('url', '')}")
+        return
+
+    side = {}
+    if args.meta:
+        with open(args.meta, encoding="utf-8") as f:
+            side = json.load(f)
+    title = args.title or side.get("api_title") or side.get("title")
+    cover = args.cover or side.get("cover") or None
+    author = args.author if args.author is not None else (side.get("author") or None)
+    digest = args.digest if args.digest is not None else (side.get("digest") or None)
+    source = args.source_url or side.get("source_url") or None
+
+    missing = [n for n, v in [("--html", args.html), ("--cover", cover), ("--title", title)] if not v]
     if missing:
-        ap.error(f"缺少必填参数：{', '.join(missing)}")
+        ap.error(f"缺少必填参数：{', '.join(missing)}（--cover/--title 可由 --meta 提供）")
 
     try:
         publish_html_article(
             args.appid,
             args.secret,
             args.html,
-            args.cover,
-            args.title,
-            author=args.author,
-            digest=args.digest,
+            cover,
+            title,
+            author=author,
+            digest=digest,
+            source_url=source,
+            open_comment=not args.no_open_comment,
+            fans_only=args.fans_only_comment,
+            material_cache=None if args.no_reuse_cover else args.material_cache,
             do_submit=args.submit,
             poll_timeout=args.poll_timeout,
             auto_enable_switch=args.enable_draft_switch,

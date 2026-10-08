@@ -19,8 +19,9 @@ Python 3，只用标准库，无需 `pip install`。（可选：发布需要公�
 
 ```bash
 python3 scripts/render.py 文章.md
-# 产出 文章_{theme}.html          ← 粘贴进公众号
-#      文章_{theme}_预览.html    ← 390px 对照 + 封面两种裁切 + 一键复制
+# 产出 文章_{theme}.html          ← 粘贴进公众号（不含标题/作者，它们走原生字段）
+#      文章_{theme}_预览.html    ← 390px 对照（模拟原生标题/作者栏）+ 封面两种裁切 + 一键复制
+#      文章_{theme}.meta.json    ← 发布字段：title(转｜)/author/digest/cover/原文链接
 # 终端打印 Gate 3 证据 + Gate 1/2 结论
 ```
 
@@ -40,11 +41,11 @@ python3 scripts/render.py 文章.md
 
 ```yaml
 ---
-title: 主标题|断行后半
+title: 主标题|断行后半   # | 是断行标记：原生标题栏自动转｜，正文不重印标题
 theme: frost          # paper / letter / ink / frost / bone / folio
 density: standard     # dense / standard / airy
 cover: images/cover.jpg   # 2.35:1；写 todo = 待补
-author: 甲木
+author: 甲木          # 平台原生作者栏，正文不重印
 ---
 ```
 
@@ -106,11 +107,11 @@ references/direction.md  视觉知识：Thesis、Grammar、Role、SELECT、Promp
 references/platform.md   技术约束：微信 HTML 硬约束（按需）
 references/publish.md    技术约束：官方 API 草稿 / 发布（按需）
 assets/themes.json       六种 Editorial Mode（唯一来源；对照板由 --specimen 生成）
-scripts/render.py        一次调用：正文 HTML + 预览 + Gate 1/2 + Gate 3 证据
+scripts/render.py        一次调用：正文 HTML + 预览（模拟原生栏）+ 发布字段 meta.json + Gate 1/2 + Gate 3 证据
 scripts/check.py         Gate 1
 scripts/selftest.py      回归：用例 + 六种人格 + 护栏 + 渲染断言
 scripts/extract_docx.py  Word → Markdown
-scripts/publish.py       草稿 → 可选发布
+scripts/publish.py       草稿 → 可选发布；永久素材复用/对账/清理
 eval/                    8 篇用例（契约与覆盖表见 eval/README.md）
 .github/workflows/       CI：每次提交跑回归与截图证据
 AUDIT.md                 本次架构与复杂度审计
@@ -128,6 +129,9 @@ python3 scripts/selftest.py            # ① 八个用例 Gate 1/2 全过 ② �
                                        # ⑥ 语料节奏跨度（高潮不能全在结尾）
                                        # ⑦ 用例独家覆盖（零覆盖 = 可被别人替代 → FAIL）
                                        # ⑧ Word 抽取（标题/加粗/列表/图片/表格 + 非 docx 必须失败）
+                                       # ⑨ 平台原生字段（正文不重印标题/作者 · 预览模拟原生栏 · meta 上限）
+                                       # ⑩ draft/add payload（上限截断 · 留言默认与编辑器对齐 · 原文链接）
+                                       # ⑪ 永久素材管理（封面复用 · 验活 · 删除重传 · 总数 · 翻页 · 删除）
 python3 scripts/selftest.py --shots    # 真截 390px PNG 到 shots/，作为 Gate 3 的通读输入
 ```
 
@@ -138,8 +142,20 @@ python3 scripts/selftest.py --shots    # 真截 390px PNG 到 shots/，作为 Ga
 排版完成后再调用。`--submit` 仅企业认证账号；个人账号止步于草稿。凭证、白名单、48001 排查见 [references/publish.md](references/publish.md)。
 
 ```bash
+# 推荐：直接消费 render 产出的发布字段（title 转｜ / author / digest / cover / 原文链接），所见即所得
+python3 scripts/publish.py --appid "$APPID" --secret "$SECRET" \
+  --html 文章_frost.html --meta 文章_frost.meta.json
+# 或手工给字段；留言默认开启（与编辑器一致），--no-open-comment 可关
 python3 scripts/publish.py --appid "$APPID" --secret "$SECRET" \
   --html 文章_frost.html --cover images/cover.jpg --title "标题" --author "作者" --digest "摘要"
+
+# 永久素材管理：封面同图复用（sha256 缓存，验活后复用，不再每次建草稿堆一张）
+python3 scripts/publish.py --appid "$APPID" --secret "$SECRET" --material-count
+python3 scripts/publish.py --appid "$APPID" --secret "$SECRET" --list-materials
+python3 scripts/publish.py --appid "$APPID" --secret "$SECRET" --delete-material MEDIA_ID  # 不可恢复，先核对
 ```
+
+正文 HTML 不再印标题与作者名——它们只走草稿的原生字段，避免草稿里出现两次；
+摘要不传时由 render 的 meta.json 提供（lead > deck > 首段，≤120 字），不让微信从正文开头乱抓。
 
 不要把 AppSecret 写进仓库。

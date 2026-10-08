@@ -25,7 +25,7 @@ UNDERSTAND → JUDGE → EDIT → DIRECT → VISUALIZE → SELECT → COMPOSE �
 | 5 VISUALIZE | 取资产：现有素材 → CSS 图示 → 生成 → 无图 |
 | 6 SELECT | 逐张过：留下 / 重做 / 删除，并写明「为什么是这张」 |
 | 7 COMPOSE | 输出 Composed Markdown（全流程唯一的可交付源） |
-| 8 RENDER | `python3 scripts/render.py 文章.md` → HTML + 390px 预览 + Gate 1/2 + Gate 3 证据 |
+| 8 RENDER | `python3 scripts/render.py 文章.md` → HTML + 390px 预览（模拟原生标题/作者栏）+ 发布字段 `*.meta.json` + Gate 1/2 + Gate 3 证据 |
 | 9 VERIFY | 对照证据通读 390px 预览，Gate 3 五层，只写 KEEP / REVISE / DELETE |
 | 10 REFINE | 只改 Markdown；只有出现「必须改」或 Gate 3 判 REVISE 才允许第二次渲染 |
 
@@ -113,7 +113,7 @@ Text ≈ Image → 删。**CSS / 表格 / `::: bars` 说得更准 → 不用图�
 | Section Claim | `## / ###` | 章节主张；标题后必须接正文 |
 | Evidence | `![说明](路径 "职责")` · `::: data` · `::: bars` · `表格` · `代码` | 证据、数量、关系；数字交给图示，正文不重复写 |
 | Explanation | 正文 · `- 列表` · `> 引文` | 解释与展开；`> 开头` = 首屏钩子，没有就不写 |
-| Metadata | `kicker` · `date` · `::: note 标签` · `toc` · 署名 · `cta` | 元信息；不抢正文 |
+| Metadata | `kicker` · `date` · `::: note 标签` · `toc` · `bio` · `cta` | 元信息；不抢正文。title/author 走平台原生字段（标题栏/作者栏），正文不重印 |
 | Decoration | —— | **空。说不出职责的元素不允许存在** |
 
 行内与节奏：`==关键判断==`（全篇 ≤3）· `**弱强调**`（少用）· `---` 转场（少于 H2 数）。
@@ -122,17 +122,18 @@ frontmatter 是 Decision 的落点，不是调参面板；没写＝用默认。
 
 ```yaml
 ---
-title: 主标题|断行后半
+title: 主标题|断行后半    # | 是断行标记：原生标题栏自动转｜；正文不重印标题
 kicker: LETTER
 theme: letter            # paper / letter / ink / frost / bone / folio
 density: airy            # dense / standard / airy
 deck: 一句副题           # 可选；与 lead 不要叠两个钩子
 date: 2026年10月8日
 toc: true                # ≥3 个 H2 才生效，且长文才用
-author: 甲木
-bio: 一句话简介
+author: 甲木             # 平台原生作者栏；正文不重印（草稿里出现两次是事故）
+bio: 一句话简介          # 文末收束区只保留 bio + cta
 cta: 结尾一句话
 cover: images/cover.jpg  # 独立 art direction；写 todo = 待补
+source: https://…        # 可选；原文链接 → 草稿底部「阅读原文」
 ---
 ```
 

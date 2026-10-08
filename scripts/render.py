@@ -63,6 +63,8 @@ def parse(md):
         for ln in m.group(1).splitlines():
             if ":" in ln:
                 k, v = ln.split(":", 1)
+                # 行内注释（# 前须有空白，不伤 URL fragment）；文档样张带注释，照抄不能炸
+                v = re.sub(r"\s+#.*$", "", v)
                 meta[k.strip()] = v.strip()
         md = md[m.end():]
     lines, i, para = md.splitlines(), 0, []
@@ -251,6 +253,8 @@ class R:
                 f'font-weight:600;color:{color or self.t["text"]};box-sizing:border-box;">{self.leaf(glyph)}</span>')
 
     def masthead(self, meta, minutes):
+        """正文开头只放 kicker / deck / 日期行。title 是平台原生字段（草稿标题栏），
+        正文里再印一遍 = 读者看到两个标题；断行标记 | 只服务原生标题的排版意图。"""
         t, out = self.t, []
         kicker = meta.get("kicker", t["kicker"])
         if t["seal"]:
@@ -258,9 +262,6 @@ class R:
                        f'{self.seal(meta.get("seal", t["seal"]))}{self.micro(kicker)}</section>')
         else:
             out.append(self.micro(kicker))
-        title = "<br/>".join(self.leaf(typo(x.strip())) for x in meta.get("title", "").split("|"))
-        out.append(self.p(title, TITLE, t["text"], f"font-weight:700;line-height:1.45;letter-spacing:1px;"
-                                                   f"font-family:{self.font};margin-top:16px;"))
         if meta.get("deck"):
             out.append(self.p(self.inline(meta["deck"]), BODY, t["sub"], "margin-top:12px;"))
         info = " · ".join(x for x in (meta.get("date"), f"约 {minutes} 分钟阅读") if x)
@@ -431,15 +432,17 @@ class R:
         return f'<section style="margin:{self.g(44)}px 0;text-align:center;">{inner}</section>'
 
     def signature(self, meta):
+        """收束只留 cta + bio。author 与 title 一样是平台原生字段（标题下作者栏），
+        文末再印一遍作者名 = 草稿里上下各出现一次（线上事故实测）。bio 不是原生字段，可以留。"""
         t, out = self.t, []
         if meta.get("cta"):
             out.append(self.p(self.inline(meta["cta"]), SMALL, t["sub"], "margin-bottom:28px;"))
-        if not meta.get("author"):
-            return "".join(out) and f'<section style="margin-top:{self.g(52)}px;text-align:center;">{"".join(out)}</section>'
-        out.append(f'<section style="text-align:center;">{self.seal(meta.get("seal", t["seal"]))}</section>'
-                   if t["seal"] else self.rule(24))
-        who = " · ".join(x for x in (meta["author"], meta.get("bio")) if x)
-        out.append(self.p(self.leaf(typo(who)), MICRO, t["muted"], "margin-top:16px;letter-spacing:1px;"))
+        if meta.get("bio"):
+            out.append(f'<section style="text-align:center;">{self.seal(meta.get("seal", t["seal"]))}</section>'
+                       if t["seal"] else self.rule(24))
+            out.append(self.p(self.leaf(typo(meta["bio"])), MICRO, t["muted"], "margin-top:16px;letter-spacing:1px;"))
+        if not out:
+            return ""
         return f'<section style="margin-top:{self.g(56)}px;text-align:center;">{"".join(out)}</section>'
 
     def toc(self, heads):
@@ -457,6 +460,29 @@ def align(s):
 
 def visible_len(s):
     return len(re.sub(r"</?u>|https?://\S+|[`*=~\[\]()]", "", s))
+
+
+def api_title(t):
+    """平台原生标题栏用的标题：frontmatter 的 | 是正文断行标记，
+    原生标题栏里必须转成全角｜，否则半角管道会原样挤进标题（草稿标题与正文各印一遍标题的根因之一）。"""
+    return t.replace("|", "｜").strip()
+
+
+def plain(s):
+    """剥掉行内语法，得到读者可见的纯文本（供摘要等原生字段复用）。"""
+    s = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", s)          # 链接留文字
+    s = re.sub(r"`([^`]*)`|==([^=]*)==|\*\*([^*]*)\*\*|<u>([^<]*)</u>|~~([^~]*)~~",
+               lambda m: next(g for g in m.groups() if g is not None), s)
+    return s.strip()
+
+
+def auto_digest(meta, blocks, limit=120):
+    """摘要兜底：lead > deck > 首段。官方上限 120 字（2026-07-14 对齐 mp 端）。
+    不能让微信自己抓正文前 54 字——正文开头是 kicker / 日期行，抓出来不是摘要。"""
+    src = next((b[0] for k, b in blocks if k == "lead"), "") \
+        or meta.get("deck", "") \
+        or next((b for k, b in blocks if k == "p"), "")
+    return plain(src)[:limit]
 
 
 def doc_len(blocks):
@@ -722,6 +748,9 @@ PREVIEW = """<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8">
 background:#fff;border-bottom:1px solid #e5e5e5;font-size:12px;color:#888;z-index:9}}
 button{{border:0;background:#1F1F1F;color:#fff;padding:8px 16px;border-radius:6px;font-size:13px;cursor:pointer}}
 .phone{{position:relative;max-width:390px;margin:24px auto 64px;background:#fff;padding:24px 16px 48px;box-sizing:border-box}}
+.nt{{padding:2px 2px 16px;margin-bottom:22px;border-bottom:1px solid #EDEDEB}}
+.nt h1{{margin:0 0 8px;font-size:22px;line-height:1.4;font-weight:700;color:#191919}}
+.nt .au{{margin:0;font-size:13px;color:#888}}
 .fold{{position:absolute;left:0;right:0;top:780px;border-top:1px dashed #C6C1B8}}
 .fold b{{position:absolute;right:6px;top:-17px;font-size:10px;font-weight:500;letter-spacing:1px;color:#A8A29A;
 background:#fff;padding:0 5px}}
@@ -730,7 +759,7 @@ background:#fff;padding:0 5px}}
 .cv img{{display:block;width:100%;background:#F0EEE9}}
 .hint{{margin:16px 0 0;font-size:11px;line-height:1.7;color:#A8A29A}}</style></head>
 <body><div class="bar"><span>{theme} · 390px</span><button onclick="cp(this)">复制到公众号</button></div>
-{cover}<div class="phone"><div id="c">{body}</div><div class="fold"><b>首屏 ≈780px</b></div></div>
+{cover}<div class="phone">{native}<div id="c">{body}</div><div class="fold"><b>首屏 ≈780px</b></div></div>
 <script>function cp(b){{var r=document.createRange();r.selectNodeContents(document.getElementById('c'));
 var s=getSelection();s.removeAllRanges();s.addRange(r);var ok=document.execCommand('copy');s.removeAllRanges();
 b.textContent=ok?'已复制，去编辑器粘贴':'请手动全选复制';setTimeout(function(){{b.textContent='复制到公众号'}},2200)}}</script>
@@ -889,9 +918,29 @@ def main():
     out = a.out or f"{os.path.splitext(a.md)[0]}_{key}.html"
     open(out, "w", encoding="utf-8").write(body)
     prev = os.path.splitext(out)[0] + "_预览.html"
+    # 预览模拟平台原生标题栏 / 作者行：title、author 只进原生字段，正文不再重印。
+    # 复制按钮只复制 #c，模拟标题栏不会被带进编辑器。
+    nt = H.escape(api_title(meta.get("title", "")))
+    au = H.escape(meta.get("author", ""))
+    native = (f'<div class="nt"><h1>{nt}</h1>' + (f'<p class="au">{au}</p>' if au else "") + "</div>") if nt else ""
     open(prev, "w", encoding="utf-8").write(
         PREVIEW.format(title=H.escape(meta.get("title", "")), theme=THEMES[key]["name"],
-                       cover=cover_block(meta, base), body=body))
+                       cover=cover_block(meta, base), native=native, body=body))
+    # 发布字段 sidecar：publish.py --meta 直接消费，保证草稿原生字段与预览所见一致。
+    cover = (meta.get("cover") or "").strip()
+    side = {
+        "title": meta.get("title", ""),
+        "api_title": api_title(meta.get("title", ""))[:32],
+        "author": (meta.get("author") or "")[:16],
+        "digest": auto_digest(meta, blocks),
+        "cover": "" if (not cover or TODO.match(cover)) else cover,
+        "source_url": meta.get("source", ""),
+        "theme": key,
+    }
+    meta_path = os.path.splitext(out)[0] + ".meta.json"
+    with open(meta_path, "w", encoding="utf-8") as f:
+        json.dump(side, f, ensure_ascii=False, indent=2)
+    print(f"{THEMES[key]['name']} → {out}\n预览 → {prev}\n发布字段 → {meta_path}（publish.py --meta 直接消费）\n")
     m1, s1 = check(body)
     m2, s2 = compose_gate(meta, blocks, base)
     print(f"{THEMES[key]['name']} → {out}\n预览 → {prev}\n")
@@ -908,7 +957,7 @@ def main():
           "CONTENT / EDITORIAL / VISUAL / MOBILE / FINAL JUDGMENT —— 只写 KEEP / REVISE / DELETE，"
           "回答 **Which element should disappear?**，并给每张留下的资产一句「为什么是这张」。")
     if not meta.get("author"):
-        print("未提供 author：已省略署名区")
+        print("未提供 author：草稿作者栏将留空（作者名只走原生字段，正文不印）")
     sys.exit(1 if m1 or m2 else 0)
 
 

@@ -7,6 +7,7 @@
 三条铁律：用例必须过；护栏必须仍会在该失败的地方失败；判断一旦确定下来就冻结成测试。
 """
 import argparse
+import json
 import os
 import re
 import shutil
@@ -78,11 +79,18 @@ def guard_ok(label, fm, body, kw, level):
     return hit, log
 
 
-# 原语渲染断言：(标签, markdown, 必须出现, 必须不出现)
+# 原语渲染断言：(标签, frontmatter 附加行, markdown, 必须出现, 必须不出现)
 # 覆盖的是「渲染出来是不是我以为的样子」——只跑 Gate 是看不见这类错的。
 RENDER_CHECKS = (
-    ("data 的全角/半角分隔符都要拆开",
+    ("data 的全角/半角分隔符都要拆开", "",
      "::: data\n3｜甲标签\n11|乙标签\n:::\n", ("甲标签", "乙标签"), ("3｜甲标签",)),
+    # 线上事故回归：title/author 走平台原生字段（草稿标题栏/作者栏），
+    # 正文若再印一遍，草稿里标题、作者各出现两次。正文只允许留 cta/bio。
+    ("正文不重印原生标题与作者",
+     "author: 甲木\nbio: 观察内容与商业的人\ncta: 欢迎留言聊聊。\n",
+     "> 钩子。\n\n正文一段。\n",
+     ("欢迎留言聊聊。", "观察内容与商业的人"),
+     ("回归用例", "固定标题", "甲木")),
 )
 
 
@@ -218,15 +226,153 @@ def composition_differs(case, left, right):
     return True, "构成变化：" + "、".join(changed)
 
 
-def render_check_ok(md, must_have, must_not):
+def render_check_ok(fm, md, must_have, must_not):
     with tempfile.TemporaryDirectory() as d:
         path = os.path.join(d, "r.md")
-        open(path, "w", encoding="utf-8").write(HEAD + "---\n\n" + md)
+        open(path, "w", encoding="utf-8").write(HEAD + fm + "---\n\n" + md)
         code, log = run([os.path.join(HERE, "render.py"), path, "-o", os.path.join(d, "o.html")], d)
         html = open(os.path.join(d, "o.html"), encoding="utf-8").read()
     missing = [x for x in must_have if x not in html]
     leaked = [x for x in must_not if x in html]
     return not missing and not leaked, log, missing, leaked
+
+
+def platform_fields_ok():
+    """所见即所得：正文不印 title/author；预览模拟原生标题栏/作者行；
+    meta sidecar 字段符合官方上限（title≤32 / author≤16 / digest≤120），摘要取自 lead。"""
+    with tempfile.TemporaryDirectory() as d:
+        md = os.path.join(d, "a.md")
+        open(md, "w", encoding="utf-8").write(
+            HEAD + "author: 幻海低语者   # 行内注释不能混进值里\nbio: 一句话\n---\n\n"
+                  "> 所有人都在问 AI 会不会让自己失业。\n\n正文一段。\n")
+        code, log = run([os.path.join(HERE, "render.py"), md, "-o", os.path.join(d, "o.html")], d)
+        if code != 0:
+            return False, log
+        body = open(os.path.join(d, "o.html"), encoding="utf-8").read()
+        prev = open(os.path.join(d, "o_预览.html"), encoding="utf-8").read()
+        meta = json.load(open(os.path.join(d, "o.meta.json"), encoding="utf-8"))
+    problems = []
+    for bad in ("回归用例", "固定标题", "幻海低语者"):
+        if bad in body:
+            problems.append(f"正文泄漏原生字段：{bad}")
+    if "回归用例｜固定标题" not in prev or "幻海低语者" not in prev:
+        problems.append("预览没有模拟原生标题栏/作者行")
+    if meta["api_title"] != "回归用例｜固定标题":
+        problems.append(f"api_title 未转换断行标记：{meta['api_title']}")
+    if meta["author"] != "幻海低语者":
+        problems.append(f"frontmatter 行内注释混进值：author={meta['author']!r}")
+    if meta["digest"] != "所有人都在问 AI 会不会让自己失业。":
+        problems.append(f"digest 未取 lead：{meta['digest']!r}")
+    if len(meta["api_title"]) > 32 or len(meta["author"]) > 16 or len(meta["digest"]) > 120:
+        problems.append("meta 字段超官方上限")
+    return not problems, ("；".join(problems) if problems else "正文无重印 · 预览模拟原生栏 · meta 上限合规")
+
+
+def draft_payload_ok():
+    """publish.py 实际发给 draft/add 的 payload：上限截断、断行标记转换、
+    留言默认与编辑器对齐（1）、原文链接落到底部字段。"""
+    sys.path.insert(0, HERE)
+    import publish as _p
+    calls = []
+
+    def fake_post(url, payload):
+        calls.append(payload)
+        return {"media_id": "MID"}
+
+    old = _p._post_json
+    _p._post_json = fake_post
+    try:
+        _p.create_draft("tok", "回归用例|固定标题", "<section>x</section>", "THUMB",
+                        author="很长作者名" * 10, digest="摘" * 200, source_url="https://example.com/a")
+        _p.create_draft("tok", "t", "<section>x</section>", "THUMB", need_open_comment=0)
+    finally:
+        _p._post_json = old
+    a = calls[0]["articles"][0]
+    b = calls[1]["articles"][0]
+    problems = []
+    if a["title"] != "回归用例｜固定标题":
+        problems.append(f"title 断行标记未转换：{a['title']}")
+    if len(a["title"]) > 32 or len(a["author"]) > 16 or len(a["digest"]) > 120:
+        problems.append(f"字段超上限：{len(a['title'])}/{len(a['author'])}/{len(a['digest'])}")
+    if a["need_open_comment"] != 1:
+        problems.append("留言默认不是 1（会与编辑器默认不一致）")
+    if a["only_fans_can_comment"] != 0:
+        problems.append("only_fans_can_comment 默认不是 0")
+    if a.get("content_source_url") != "https://example.com/a":
+        problems.append("原文链接没进 content_source_url")
+    if b["need_open_comment"] != 0:
+        problems.append("显式关闭留言未生效")
+    return not problems, ("；".join(problems) if problems else "title｜·上限·留言默认·原文链接 全对")
+
+
+def material_ok():
+    """封面永久素材：首传写缓存、同图复用不重传、后台已删（40007）重传；
+    get_materialcount 走 GET；batchget 翻页取全且 count≤20；del_material payload 正确。"""
+    sys.path.insert(0, HERE)
+    import publish as _p
+    with tempfile.TemporaryDirectory() as d:
+        cover = os.path.join(d, "cover.jpg")
+        with open(cover, "wb") as f:
+            f.write(b"fake-jpeg-bytes" * 8)
+        cache = os.path.join(d, "cache.json")
+        calls = {"upload": [], "del": [], "batch_counts": []}
+        state = {"alive": True}
+
+        def fake_post(url, payload):
+            if "/material/batchget_material?" in url:
+                calls["batch_counts"].append(payload["count"])
+                items = [{"media_id": f"I{i}"} for i in range(25)]
+                off = payload["offset"]
+                batch = items[off:off + payload["count"]]
+                return {"total_count": 25, "item_count": len(batch), "item": batch}
+            if "/material/get_material?" in url:
+                if not state["alive"]:
+                    raise _p.WeChatAPIError(40007, "invalid media_id")
+                return {"url": "http://mmbiz.qpic.cn/cached"}
+            if "/material/del_material?" in url:
+                calls["del"].append(payload)
+                return {"errcode": 0, "errmsg": "ok"}
+            return {}
+
+        def fake_get(url):
+            return {"voice_count": 0, "video_count": 0, "image_count": 2, "news_count": 0}
+
+        def fake_upload(url, path, field_name="media", extra_fields=None):
+            calls["upload"].append(os.path.basename(path))
+            return {"media_id": f"M{len(calls['upload'])}", "url": "http://mmbiz.qpic.cn/new"}
+
+        old = (_p._post_json, _p._get_json, _p._post_multipart_file)
+        _p._post_json, _p._get_json, _p._post_multipart_file = fake_post, fake_get, fake_upload
+        try:
+            m1 = _p.upload_thumb_material_cached("tok", cover, cache)
+            up1 = len(calls["upload"])
+            m2 = _p.upload_thumb_material_cached("tok", cover, cache)
+            up2 = len(calls["upload"])
+            state["alive"] = False
+            m3 = _p.upload_thumb_material_cached("tok", cover, cache)
+            up3 = len(calls["upload"])
+            cnt = _p.get_material_count("tok")
+            total, items = _p.list_materials("tok")
+            _p.delete_material("tok", "M1")
+        finally:
+            _p._post_json, _p._get_json, _p._post_multipart_file = old
+
+    problems = []
+    if not (m1 == "M1" and up1 == 1):
+        problems.append(f"首传应上传并写缓存：{m1}/{up1}")
+    if not (m2 == "M1" and up2 == 1):
+        problems.append(f"同封面复用不应重传：{m2}/{up2}")
+    if not (m3 == "M2" and up3 == 2):
+        problems.append(f"素材被删后应重传：{m3}/{up3}")
+    if cnt.get("image_count") != 2:
+        problems.append("get_materialcount（GET）异常")
+    if not (total == 25 and len(items) == 25):
+        problems.append(f"batchget 翻页未取全：{total}/{len(items)}")
+    if any(c > 20 for c in calls["batch_counts"]):
+        problems.append(f"batchget count 超 20：{calls['batch_counts']}")
+    if calls["del"] != [{"media_id": "M1"}]:
+        problems.append(f"del_material payload 异常：{calls['del']}")
+    return not problems, ("；".join(problems) if problems else "复用·验活·删除重传·总数·翻页·删除 全对")
 
 
 # ---- P3：Word 抽取回归 ----
@@ -377,8 +523,8 @@ def main():
             print("   " + log.strip().replace("\n", "\n   "))
 
     print("④ 原语渲染（渲染出来是不是我以为的样子）")
-    for label, md, must_have, must_not in RENDER_CHECKS:
-        ok, log, missing, leaked = render_check_ok(md, must_have, must_not)
+    for label, fm, md, must_have, must_not in RENDER_CHECKS:
+        ok, log, missing, leaked = render_check_ok(fm, md, must_have, must_not)
         print(f"   {'PASS' if ok else 'FAIL'} · {label}")
         if not ok:
             fails.append(label)
@@ -421,6 +567,24 @@ def main():
     if not ok:
         fails.append("docx 抽取")
         print(f"   {why}")
+
+    print("⑨ 平台原生字段（正文不重印标题/作者 · 预览模拟原生栏 · meta 上限）")
+    ok, why = platform_fields_ok()
+    print(f"   {'PASS' if ok else 'FAIL'} · {why}")
+    if not ok:
+        fails.append("平台原生字段")
+
+    print("⑩ draft/add payload（上限截断 · 留言默认 · 原文链接）")
+    ok, why = draft_payload_ok()
+    print(f"   {'PASS' if ok else 'FAIL'} · {why}")
+    if not ok:
+        fails.append("draft payload")
+
+    print("⑪ 永久素材管理（封面复用 · 验活 · 删除重传 · 总数 · 翻页 · 删除）")
+    ok, why = material_ok()
+    print(f"   {'PASS' if ok else 'FAIL'} · {why}")
+    if not ok:
+        fails.append("素材管理")
 
     if a.shots:
         shot_ok = shots()
