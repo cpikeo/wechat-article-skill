@@ -2,7 +2,7 @@
 """Composed Markdown → 公众号 HTML + 390px 预览 + Gate 1/2（一次调用）。
 
     render.py article.md [--theme paper|letter|ink|frost|bone|folio] [-o out.html]
-    render.py --specimen [-o assets/themes.html]      六格气候对照板（不进公众号）
+    render.py --specimen [-o shots/themes.html]       六格气候对照板（生成物，不进公众号）
 
 产出 {stem}_{theme}.html 与 {stem}_{theme}_预览.html（预览另含封面两种裁切与首屏线）。
 语法见 SKILL.md。退出码 1 = 存在「必须改」。
@@ -704,6 +704,13 @@ def evidence(meta, blocks, base="."):
     weak = sum(len(re.findall(r"\*\*.+?\*\*", p)) for p in paras)
     out.append(f"结构 · H2 {len(heads)} · 转场 {kinds.count('hr')} · Peak {kinds.count('peak')}"
                f" · 强调 =={strong} / **{weak}")
+    if "peak" in kinds:
+        i = kinds.index("peak")
+        after = kinds[i + 1] if i + 1 < len(kinds) else "（结尾）"
+        out.append(f"节奏线 · 首屏 → 高潮在第 {i + 1}/{len(kinds)} 块（{round(100 * (i + 1) / len(kinds))}%）"
+                   f" · 高潮后是 {after} · 收束：{kinds[-1]}{' + cta' if meta.get('cta') else '（无 cta）'}")
+    else:
+        out.append("节奏线 · 没有 peak：确认全文真的不存在值得记住的一句")
     out.append(f"封面 · {COVER_RATIO}:1 与 1:1 中央裁切见预览顶部（主语在正方形里还站得住吗）")
     return out
 
@@ -853,7 +860,8 @@ h1{{font-size:28px;font-weight:600;letter-spacing:.4px;margin:10px 0 8px;line-he
 
 
 def specimen(path):
-    """六格对照板由真实渲染器生成，避免与人手维护的样本漂移。"""
+    """六格对照板由真实渲染器生成，避免与人手维护的样本漂移。写到 shots/（生成物目录）。"""
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     cols = []
     for key, t in THEMES.items():
         _, _, _, body = render(SPECIMEN_MD, key)
@@ -872,7 +880,7 @@ def main():
     ap.add_argument("--specimen", action="store_true", help="生成六格气候对照板")
     a = ap.parse_args()
     if a.specimen:
-        specimen(a.out or os.path.join(HERE, "..", "assets", "themes.html"))
+        specimen(a.out or os.path.join(HERE, "..", "shots", "themes.html"))
         return
     if not a.md:
         ap.error("需要一个 markdown 文件，或使用 --specimen")
@@ -898,7 +906,7 @@ def main():
             print("  建议改 ·", x)
     print("\nGate 3 Art Direction：对照上面证据通读 390px 预览。"
           "CONTENT / EDITORIAL / VISUAL / MOBILE / FINAL JUDGMENT —— 只写 KEEP / REVISE / DELETE，"
-          "回答「哪个元素应该消失」，并给每张留下的资产一句「为什么是这张」。")
+          "回答 **Which element should disappear?**，并给每张留下的资产一句「为什么是这张」。")
     if not meta.get("author"):
         print("未提供 author：已省略署名区")
     sys.exit(1 if m1 or m2 else 0)

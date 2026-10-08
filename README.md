@@ -29,7 +29,7 @@ python3 scripts/render.py 文章.md
 | Markdown | `python3 scripts/render.py 文章.md` |
 | 指定主题 | `python3 scripts/render.py 文章.md --theme frost` |
 | Word | `python3 scripts/extract_docx.py 文件.docx -o 文章.md`，再渲染（图必须补职责） |
-| 气候对照板 | `python3 scripts/render.py --specimen -o 对照板.html`（生成物，不入库） |
+| 气候对照板 | `python3 scripts/render.py --specimen` → `shots/themes.html`（生成物，不入库） |
 | 发布草稿 | `python3 scripts/publish.py --help`（先排完再发） |
 | 回归 | `python3 scripts/selftest.py`（CI 每次提交都会跑） |
 | Gate 3 截图 | `python3 scripts/selftest.py --shots` → `shots/*.png` |
@@ -79,7 +79,8 @@ author: 甲木
 | `folio` 特稿 | 油墨 · 干朱 | 文化特稿 | 数字章节 · 深色高潮 |
 
 先判断语气，再选主题。气质对不上，不要硬套。
-**新增主题的唯一门槛：它是否改变了「编辑人格」与「视觉构成」**——只换背景色 / accent / 字体颜色，不允许新增。
+**新增主题的唯一门槛**：必须改变至少两个「编辑语言轴」（章节标记 / 高潮处理 / 转场 / 引文 / 图片气质 / 字体气质）。
+只换背景色、accent、字体颜色不算新人格——`selftest` 会把这种主题直接判 FAIL。
 
 ## 怎么用这套 Skill
 
@@ -92,7 +93,7 @@ author: 甲木
 | Gate 1 Platform | `scripts/check.py`（随渲染） | FAIL 不交付 |
 | Gate 2 Composition | 渲染器：结构 · 原语密度 · 首屏 · 图片职责/预算/分辨率/裁切 · 图示与正文是否重复 | 「必须改」修完；「建议改」逐条给理由 |
 | Gate 3 证据 | 渲染器打印：资产 / 首屏 / 节奏 / 结构 的可核对数字 | 拿它去通读，不要凭印象 |
-| Gate 3 Art Direction | 通读预览：CONTENT / EDITORIAL / VISUAL / MOBILE / FINAL JUDGMENT | 结论只写 KEEP / REVISE / DELETE，回答「哪个元素应该消失」与「为什么是这张」 |
+| Gate 3 Art Direction | 对照证据通读 390px 预览：CONTENT / EDITORIAL / VISUAL / MOBILE / FINAL JUDGMENT | 结论只写 KEEP / REVISE / DELETE，强制回答 **Which element should disappear?** 与「为什么是这张」 |
 
 Gate 3 不打分。数字只服务回归，不替代艺术判断。
 
@@ -110,7 +111,7 @@ scripts/check.py         Gate 1
 scripts/selftest.py      回归：用例 + 六种人格 + 护栏 + 渲染断言
 scripts/extract_docx.py  Word → Markdown
 scripts/publish.py       草稿 → 可选发布
-eval/                    用例：分析 / 叙事 / 评论 / 视觉 / 材质 / 数据 / 人物 / 长文
+eval/                    8 篇用例（契约与覆盖表见 eval/README.md）
 .github/workflows/       CI：每次提交跑回归与截图证据
 AUDIT.md                 本次架构与复杂度审计
 ```
@@ -122,7 +123,11 @@ AUDIT.md                 本次架构与复杂度审计
 ```bash
 python3 scripts/selftest.py            # ① 八个用例 Gate 1/2 全过 ② 六种人格都能渲染
                                        # ③ 十三条护栏仍拦住负例 ④ 原语渲染断言
-                                       # ⑤ Word 抽取（标题/加粗/列表/图片/表格 + 非 docx 必须失败）
+                                       # ⑤ 人格不重复（两两至少差 2 个编辑语言轴）+ 键完整性
+                                       # ⑥ 同文不同 Decision → 不同 Composition（抹掉颜色后仍须不同）
+                                       # ⑥ 语料节奏跨度（高潮不能全在结尾）
+                                       # ⑦ 用例独家覆盖（零覆盖 = 可被别人替代 → FAIL）
+                                       # ⑧ Word 抽取（标题/加粗/列表/图片/表格 + 非 docx 必须失败）
 python3 scripts/selftest.py --shots    # 真截 390px PNG 到 shots/，作为 Gate 3 的通读输入
 ```
 

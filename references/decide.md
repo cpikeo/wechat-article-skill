@@ -9,15 +9,17 @@ JUDGE / EDIT 两步读这份。渲染器只执行确定性部分；**这里讲�
 | 行 | 决定什么 | 常见错误 |
 |---|---|---|
 | Audience | 语气、密度、距离 | 「大众」= 没有判断。写「通勤时滑手机的人」才有用 |
-| Intent | 读完应该理解 / 相信 / 做什么 | 「传播品牌」——读者无所得 |
+| Purpose | 读完应该理解 / 相信 / 做什么；决定 Cut 的尺度和收束方式 | 「传播品牌」——读者无所得 |
 | Core Claim | 全文最值得记住的一句，落入 Peak | 写成段落；或者金句不是主张 |
 | Hierarchy | 主 / 次 / 可删 | 每节一样响；不敢降级 |
-| Cut | 准备删掉或降级的（至少一项） | 只加不减 |
-| Mode | 六种人格之一（= 主题气候） | 按心情换色；气质不对硬套 |
+| Elements To Remove | 准备删掉或降级的（至少一项） | 只加不减 |
+| Tone → theme | 语气落到唯一一个人格上 | 按心情换色；气质不对硬套；只改 `theme:` 字段 |
 | Density | dense / standard / airy | 短文挤死；教程冲散 |
-| Rhythm | 390px 上的滑动节奏：钩子 → 停顿 → 高潮 → 恢复 → 收束 | 首屏堆 kicker + deck + lead + 目录 + 图 |
-| Anchor | Peak 之外 0–2 处停留 | quote、data、大图一起上 |
-| Thesis / Grammar / Weight / Budget / Slots / Cover | 见 `direction.md` | 用「要不要图」代替「这里需要什么职能」 |
+| Rhythm | 390px 上的滑动节奏：钩子 → 进入 → 高潮 → 恢复 → 收束 | 首屏堆 kicker + deck + lead + 目录 + 图；高潮全放在结尾 |
+| Composition | 视觉重量分布：谁最重、哪里必须最安静 | 每节一样重；把高潮当成收尾的固定位置 |
+| Mobile | 390px 上的裁切、缩略、折行 | 桌面宽度想问题；主体压在会被裁的位置 |
+| Typography | 标题断行、强调预算、衬线位置（字号 6 级锁定，不新增） | 靠字号表达层级；每段都强调 |
+| Thesis / Grammar / Visual Anchor / Image Role / Budget / Cover | 见 `direction.md` | 用「要不要图」代替「这里需要什么职能」 |
 | REVIEW | 保留 / 弱化 / 删除 / 最大视觉风险 / 最终验证重点 | 渲染前不写，通读时就只剩印象 |
 
 REVIEW 是**先承诺**：写不出「最大的视觉风险」，说明还没看懂这篇最脆弱的地方。
@@ -25,10 +27,18 @@ REVIEW 是**先承诺**：写不出「最大的视觉风险」，说明还没看
 
 视觉权重服从信息权重。允许全文只强调一处。
 
-## 六种 Editorial Mode
+## 六种 Editorial Mode = 编辑语言，不是配色
 
-不是六套换色，是六种气候与标记语言。字号 6 级由渲染器锁定，主题只决定气候、标记、衬线的位置。
-`theme:` 的取值就是这里的六个人格名。
+一个人格由**六个编辑语言轴** + 一套气候色决定。轴改变构成，色只改变温度：
+
+| 轴 | 决定什么 |
+|---|---|
+| `heading` | 章节怎么被标记：number 数字 / dot 圆点 / seal 圆章 / blank 不编号 |
+| `peak` | 高潮怎么被处理：rule 细线 / field 色块 / dark 深色块 |
+| `divider` | 转场长什么样 |
+| `quote` | 他者声音是否走衬线 |
+| `image` | 图片气质：flush 平切 / soft 柔角 / line 线框 |
+| `display` | 标题与引文的字体气质（sans / serif） |
 
 - **paper 静纸**：沉静克制。观点、分析、教程、复盘、默认。暖石 + 干苔。数字章节、细线高潮、圆点转场、平切图片。
 - **letter 暖信笺**：温暖叙事。人物、故事、随笔。信笺 + 火漆。圆点章节、暖底高潮、细线转场、柔角图片。
@@ -55,14 +65,14 @@ REVIEW 是**先承诺**：写不出「最大的视觉风险」，说明还没看
 - Decision 里写了 Cut，Compose 一项都没删
 - 同一主张只换了 `theme:`，构成完全没变
 - REVIEW 里写了最大风险，通读时没有回去对
+- 每篇都把高潮放在最后一段——只有一种节奏，读者会提前合上
 
 ## 新主题
 
-只在六种人格都不成立时增加——加的是 Editorial Mode，不是色板。
+**门槛：只换背景色、accent 或字体颜色，不允许新增。** 新人格必须让上表至少两个轴发生变化，
+否则它是旧人格的第二种配色，不是新人格。（`selftest` 会拦住：两两少于 2 个轴差异直接 FAIL。）
 
-**先过这一关：它是否改变了「编辑人格」与「视觉构成」？** 如果只是换背景色、换 accent、换字体颜色，不允许新增。
-
-1. `assets/themes.json` 按现有键加一节（含 `image`: flush / soft / line），不发明新键、不加字号。
-2. `python3 scripts/render.py --specimen` 生成对照板，看它是不是真的区别于已有六种。
+1. `assets/themes.json` 按现有键加一节（六个轴 + 色值 + `image` + `leading` / `radius`），不发明新键、不加字号。
+2. `python3 scripts/render.py --specimen` 生成对照板（`shots/themes.html`），看它是不是真的区别于已有六种。
 3. 用 `eval/` 任一用例渲染并通读 390px：`python3 scripts/render.py eval/skills.md --theme 新主题`。
 4. 三关过后，把气候与用途补进本文档的六人表（变七人表）。
