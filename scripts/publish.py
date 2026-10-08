@@ -1,51 +1,9 @@
 #!/usr/bin/env python3
-"""微信公众号官方 API 直发工具：草稿 → 提交发布 → 轮询状态 → 拿到文章永久链接。
+"""微信公众号官方 API：草稿 → 可选发布 → 永久链接。只用标准库。
 
-本脚本直接调 WeChat 官方接口把内容建成草稿甚至发布出去。
-
-**content 字段可以是任意合规 HTML**——也就是说，用本 Skill 排版引擎
-生成的自定义主题 `<section>` HTML，可以原样通过这条链路真正发布出去。
-
-真正做到"发布"（而不只是"建草稿"）需要调用 freepublish_submit，
-**这个接口只对企业主体已认证的账号开放**（服务号，或已完成企业认证的订阅号；
-个人认证/未认证账号调不了，调用会报 48001 api unauthorized）。
-账号不满足条件时，本脚本仍能帮你把 draft/add 做完（草稿建好），
-但 submit 这步会明确报错，不会假装成功。
-
-**重要更正（2026-07 复核，修正了此前文档字符串里的推断）**：官方"新增草稿"接口的文档表格显示
-"公众号/服务号均可调用"，不需要企业认证；此前这里记录"微信社区有大量真实反馈是
-未认证个人账号调用 `draft/add` 同样会收到 `48001`，原因是灰度开关没开"，把这个
-因果关系当作已查明的事实写了下来。但 2026-07 复核官方 `draft/switch` 文档页时，
-发现文档紧接着灰度开关的说明之后，还有一句**"内测期间，无论开关开启与否，旧版的
-图文素材 API，以及新版的草稿箱、发布等 API 均可以正常使用"**——这句话和"开关没开
-会导致 `draft/add` 报 48001"直接矛盾。本脚本没有条件拿真实账号去实测哪种说法准确，
-所以把"开关没开→48001"这条从"已查明的原因"降级为"需要排查的可能性之一"：
-调用任何草稿/发布接口之前，仍然建议先用 `draft/switch?checkonly=1` 查一下这个开关
-状态（作为参考信息），但报 `48001` 时不要预设就是开关的问题，也要检查
-access_token 有效性、参数长度等其它可能原因。该开关一旦开启不可逆（会把公众号后台的
-"图文素材库"升级成"草稿箱"），本脚本默认只查询、不自动开启，需要显式确认；
-既然它是否真能解决 48001 都还不确定，更不建议在没有其它排查线索时就先开它。
-
-真正决定"能不能真正发布"的门槛，官方另有明确说明：2025 年 7 月起，
-**个人主体账号、企业主体未认证账号及不支持认证的账号，"发布能力"这一组接口
-（`freepublish/submit`、`freepublish/get` 等）的调用权限被回收**——这条限制
-明确只针对"发布能力"分组，不包含"草稿管理"分组（`draft/add` 等），
-但仍需要先过 `draft/switch` 这一关，见上段。
-
-参考的官方文档（本脚本严格按这几篇实现，若接口有变更以官方文档为准）：
-- 获取稳定版接口调用凭据: https://developers.weixin.qq.com/doc/subscription/api/base/api_getstableaccesstoken.html
-- 草稿箱开关设置（**先查这个**）: https://developers.weixin.qq.com/doc/service/api/draftbox/draftmanage/api_draft_switch.html
-- 上传永久素材（封面用）: https://developers.weixin.qq.com/doc/subscription/api/material/permanent/api_addmaterial.html
-- 上传图文消息内的图片: https://developers.weixin.qq.com/doc/subscription/api/material/permanent/api_uploadimage.html
-- 新增草稿: https://developers.weixin.qq.com/doc/subscription/api/draftbox/draftmanage/api_draft_add.html
-- 发布能力分组（含权限回收说明）: https://developers.weixin.qq.com/doc/service/guide/product/publish.html
-- 发布草稿: https://developers.weixin.qq.com/doc/subscription/api/public/api_freepublish_submit.html
-- 发布状态查询: https://developers.weixin.qq.com/doc/subscription/api/public/api_freepublish_get.html
-
-用法示例见文件末尾 `if __name__ == "__main__"` 部分，或跑：
-    python3 wechat_official_publish.py --help
-
-只用标准库（urllib/json/mimetypes），不需要额外 pip install，减少环境依赖。
+排版流水线完成后再调用。`--submit` 仅企业认证账号；个人账号止步于草稿。
+`--check-draft-switch` 只查询灰度开关（开启不可逆，必须显式 `--enable-draft-switch`）。
+48001 不要预设单因：开关、token、权限都要查。边界与排查见 `references/publish.md`。
 """
 
 import argparse
