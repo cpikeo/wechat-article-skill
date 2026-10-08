@@ -1,115 +1,117 @@
-# Audit · Editorial Intelligence
+# Audit · Editorial + Visual Art Direction
 
-v3 已经完成「手写 HTML → 渲染器」。本次不是再加组件，而是把 Skill 从 **Renderer** 升到 **JUDGE + DIRECT**。
+本次把 Skill 从 **Renderer + Judge** 推到 **Editorial Intelligence + Visual Art Direction**：
+排版判断保持不变，新增的是「视觉该不该存在、长什么样、由谁负责」这一整层判断。
+原则没变：**Delete > Merge > Simplify > Reuse > Add**，新增永远是最后一步。
 
-原则：Less System. More Judgment. 数字让路给品质——该删的删，会产生视觉价值的判断保留。
+考核标准写在最后一节，含没做到的部分。
 
 ## A. Architecture Audit
 
 ```
-SKILL.md = Intelligence
-        ↓
-Decision（导演 brief）
-        ↓
-Editorial Composition（Composed Markdown）
-        ↓
-Minimal Rendering Engine（render.py）
-        ↓
-Gate 1 Platform  /  Gate 2 Composition
-        ↓
-Gate 3 Art Direction（通读 390px 预览）
+SKILL.md（宪法 + 决策系统 + 路由）
+   ↓                       ↘
+references/decide.md   references/direction.md      （判断 / 视觉，按需）
+   ↓
+Decision（四段导演 brief，不是 JSON）
+   ↓
+Composed Markdown（唯一可交付源，含封面与图片职责）
+   ↓
+render.py（一次调用：HTML + 390px 预览 + 封面裁切 + Gate 1/2）
+   ↓
+Gate 3（CONTENT / EDITORIAL / VISUAL / MOBILE → KEEP / REVISE / DELETE）
 ```
 
 | 动作 | 对象 | 为什么 |
 |---|---|---|
-| 删除 | `CHANGELOG-v3.md` | 历史进 git；工作区只留本审计 |
-| 删除 | 图片职责「情绪/语境/品牌/高潮/解释/转场」 | 与氛围/信息/Peak 原语重叠，鼓励装饰性配图 |
-| 删除 | 居中 quote | 与 Peak 互抢高潮；quote 改为左线旁注重量 |
-| 删除 | publish.py 约 40 行史论 docstring | 消费者是 `publish.md`，不是模块注释 |
-| 删除 | letter `radius: 10` | App 卡片，不是编辑设计 |
-| 合并 | JUDGE 的视觉指令 → DIRECT，仍写在同一张 Decision | 不另搞 JSON 工作流 |
-| 合并 | 字号魔法数 → 6 级常量 | 主题不得再发明字号 |
-| 保留 | 三套 Editorial Mode | 标记语言不同，不是换色 |
-| 保留 | 11 个原语、一次渲染、Gate 1 独立于渲染器 | 仍有真实消费者 |
-| 保留 | `extract_docx.py` / `publish.py` 行为 | 输入与发布路径未改 |
-| 新增 | Decision 的 Hierarchy / Rhythm / Cut | 导演 brief 原先缺删减与节奏 |
-| 新增 | 主题键 `image`: flush / soft / line | 图片是编辑语言，不是圆角开关 |
-| 删除 | `eval/expected/`、样本图、brief/cases/judgment/specimen | 生成物与说明类文件不进 eval；判断并进 decide.md |
+| 新增 | 流水线 JUDGE 与 COMPOSE 之间插入 **DIRECT + VISUALIZE** | 原流程「判断完直接排版」，视觉没有独立决策点，图只能靠临场感觉 |
+| 新增 | `references/direction.md`（Visual Knowledge，按需加载） | Thesis / Grammar / Role / Prompt 编译 / 封面 / 图示——只在有视觉时付上下文 |
+| 新增 | 图片职责改为 **9 个职能**（锚点/解释/证据/对比/结构/场景/隐喻/停顿/数据） | 旧 7 职混合了「信息类型」与「情绪」，职责无法唯一 |
+| 新增 | 原语 `::: bars` | 数量对比原先只能靠配图或 `data` 勉强表达；图示替换插画是最省的视觉增量 |
+| 新增 | frontmatter `cover` | 封面原先无家可归，被当成正文图顺手用 |
+| 合并 | 图片的生成描述 → Prompt 编译链（Decision → … → 390px） | 不再维护 Prompt 模板库，描述由判断派生 |
+| 合并 | 旧 10 问 Gate 3 → 五层（内容/编辑/视觉/移动）有归属的检查 + FINAL JUDGMENT | 十问互相重叠，且没人问「封面是否表达文章」 |
+| 删除 | 手写维护的 `assets/themes.html` 样本 | 已被 `render.py --specimen` 取代，杜绝样本漂移 |
+| 删除 | 旧 AUDIT / CHANGELOG 的历史叙述 | 历史在 git，工作区只留本审计 |
+| 保留 | 六种 Editorial Mode、6 级字号、11 个原语不增删、一次渲染、Gate 1 独立于渲染器 | 都仍有真实消费者 |
 
-脚本仍然不充当设计规则来源。规则在 `SKILL.md` 与 `decide.md`；`compose_gate` 只执行可确定的子集。
+**没有做的事**：没有增加 Agent、没有增加模板、没有增加中间文件、没有增加 JSON 字段层、没有把流程拆成多次调用。视觉判断全部落在**已经存在的** Decision 与 Gate 3 里。
 
-## B. Design Intelligence Audit
+## B. Context Audit
 
-强化：
+| | 旧 | 现在 | 判据 |
+|---|---|---|---|
+| 常驻核心（SKILL + decide） | 9.0 KB | 12.2 KB（+35%） | 涨在视觉判断（Thesis/Grammar/Role/Budget）与 Decision 四段 |
+| 按需（有视觉才读） | — | direction.md 7.1 KB | 纯文字任务、无图任务不付这份钱 |
+| 最大按需（封面 + 配图 + 通读） | ~9.0 KB | ~19.3 KB | 本次升级的代价，也是它买到的东西 |
+| 脚本（设计路径） | render 566 + check 92 = 658 行 | render 816 + check 92 + **selftest 103** = 1,011 行 | 增加了，且必须承认 |
+| 发布 / 抽取（非设计路径） | 543 行 | 543 行，未动 | 本次未碰发布与输入 |
 
-- 先判断再设计：Audience → Claim → Hierarchy → Rhythm → Theme → Cut
-- 视觉权重服从信息权重；Plain Text 优先于原语
-- 只有 Peak 居中；ink 标题真正用衬线（原先 H2 漏了）
-- 图片 7 职 + 按职责决定边距/说明字号/切边
-- 数据：≤3 项一行，更多改两列（390px）
-- Gate 3 十问，核心是 **Which element should disappear?**
-- 同一主张换读者，构成必须变；只换 theme 字段视为失败
+render.py 的 +250 行全部花在**校验与方向**上，没有一行花在「更多组件」：
+`img_size` 读文件头取宽高 35 行（因此不必引入 Pillow 依赖）、封面两种裁切与比例检查 ~30 行、
+Gate 2 的资产存在性 / 分辨率 / 体积 / 预算检查 ~55 行、`bars` 原语与校验 ~50 行、
+对照板与截图源 ~55 行、视觉资产清单 ~15 行。
+原语只增加了 1 个（`bars`），而它是**用来替换图片**的。
 
-删除 / 降级：
+重复清理：SKILL 的流水线表不再重复「读什么」（与加载表重复）；`platform.md` 不再复制 `check.py` 已强制的规则细节（外链规则收紧后仍只写话术，不写正则）。
+`decide.md` 只讲判断，`direction.md` 只讲视觉执行，二者没有同一句话出现两次。
 
-- 「每张图都要有一种职责标签」里那些其实是装饰的职责
-- quote 作为第二高潮
-- 为丰富而存在的组件冲动（原语未增加）
+## C. Rule & Function Audit
 
-从代码迁到 Decision 的：
+- 旧「每张图都要有职责标签」的软规则 → 现在是 Gate 2 的**必须改**（无职责 = FAIL）。
+- 旧「图片职责不在集合内」→ 保留为建议改，但集合换成了 9 职能，并新增两条确定性护栏：
+  **同一职能 ≥3 次 = 凑数**；**张数超出字数档位预算 = 删**。
+- 新增确定性检查（都可回归）：文件存在性、`img_size` 读文件头取宽高（PNG/JPEG/GIF/WebP，不引入依赖）、
+  <600px 低清必须改、封面比例与缺失、bars 值必须是数字 / ≥2 项 / 标签齐全 / 数值过于接近要改回文字。
+- 删除「按 600 字密度估图」的旧阈值，换成显式 Image Budget（0–1 / 1–3 / 2–4），与 Decision 的 Budget 对齐。
+- 外链规则从「黑名单图库」收紧为「任何 http(s) 图片外链 = 必须改」：黑名单永远漏，白名单不会。
+- `typo()` 一度被写坏（lambda 里混入死分支），已修正；这属于「改动必须跑回归」的直接证据。
 
-- 密度、主题、Peak 位置、图的去留、删什么——不再假装能用配方表决定
+## D. I/O & Render Audit
 
-## C. Context Audit
+- 输入仍是 Composed Markdown，但多了 `cover`（frontmatter）与 `::: bars`（正文）。
+- 输出仍是两个文件（正文 HTML + 预览），预览新增：**封面 2.35:1 裁切 + 1:1 信息流缩略**、首屏 ≈780px 参考线、视觉资产清单。
+- 渲染次数上限仍是 2（除非 Gate 2 出现必须改）；视觉判断不产生任何额外调用。
+- `--specimen` 复用同一渲染器生成对照板，删掉了 25 KB 手写 HTML 的漂移风险。
+- 预览读本地封面文件；微信兼容性不在预览层做，仍由 Gate 1 把关。
 
-| | v3 | 现在 |
-|---|---|---|
-| 常驻（SKILL + decide） | 6,997 B | 8,350 B |
-| 默认不加载 | platform / publish / scripts | 同左，且 SKILL 写明禁止读 scripts 与 AUDIT |
-| publish.py 头注释 | ~50 行史论 | 6 行边界 |
+## E. Asset & Prompt Audit
 
-常驻多了约 1.3KB：**Hierarchy、Rhythm、Cut、图片提示词、Gate 3 十问**。继续压缩会伤判断，故停止。
+- 资产顺序写死：**现有素材 → 生成 → CSS 图示 → 无图**；能图示的不生成。
+- Prompt 从「模板集合」改为**编译链**：Intent → Role → Concept → Subject → Composition → Camera → Light → Material → Palette → Safe area → Crop → 390px；
+  同篇各条描述共用逐字一致的光线/材质/色盘子句 = 连续性，不再靠「请保持一致」祈求。
+- 事实安全进入硬规则：生成图不得制造事实；用于事实性内容必须标注「示意」；`eval/visual.md` 的正文图即按此标注。
+- 封面独立成工艺：2.35:1 + **1:1 中央裁切才是真约束**（本次实测发现并写回 direction.md：主体偏侧在 2.35:1 成立、在 1:1 缺角）。
+- 落到仓库的资产只有两张实测图（1080×460 / 1264×842，合计 ~232 KB），并且**先看再入库**。
 
-重复：Decision 模板只在 SKILL；如何填只在 decide。平台硬约束只在 `check.py`，`platform.md` 仅 Gate 1 FAIL 时读。
+## F. QA Audit
 
-Progressive Disclosure：按任务加载。排版 = SKILL + decide；发布才读 publish；不要把 Skill Library 一次性塞进上下文。
+- 旧回归：三篇用例跑一遍，人眼看输出。
+- 新回归 `scripts/selftest.py`：① 四篇用例 Gate 1/2 全过（新增视觉完整案例）② **六条护栏**必须仍拦住负例
+  （图间无承接 / 封面缺失 / 分辨率过低 / bars 非数字 / bars 单项 / 图片超出预算）。
+  判断一旦确定，就冻结成测试；防止后续「优化」把视觉判断悄悄改没。
+- Gate 3 从「十问」改为五层归属 + FINAL JUDGMENT，明确要求输出 KEEP / REVISE / DELETE，并强制回答
+  **What should disappear?**；不打分，数字只服务回归。
 
-## D. Visual Audit
+## G. 真实案例：eval/visual.md（新增）
 
-- **Typography**：6 级锁定 11/13/15/17/20/24。ink 的刊头与 H2 使用衬线；正文保持无衬线，保证中文长文可读。
-- **Spacing**：density 三档仍在；首屏边距略收，让钩子更早进入 390px。
-- **Hierarchy**：kicker 元数据 → 标题 → lead → 正文 → Peak。quote 降为左线，不再与 Peak 同级。
-- **Rhythm**：H2 大停顿保留；禁止连续三块非正文原语（Gate 2）。
-- **Image**：flush / soft / line 三套处理；职责决定边距与 caption 重量。
-- **Icon**：仍只允许文字 / 数字 / Unicode / CSS 几何。
-- **Theme**：三个人格，各加 `image` 键；letter 圆角 10→4。
-- **Mobile**：预览 414→390；data 防 4+ 挤成三列；表 >3 列 Gate 2 警告；长 quote 不再居中断行。
+《AI 不缺算力，缺的是电》——完整走一次视觉判断，用来当回归用例兼说明书：
 
-## E. Complexity Audit
+- **Decision**：受众是关心 AI 成本结构的人；Core Claim「扩张速度由电表决定」；mode `frost`；预算 2 图 + 1 图示。
+- **Thesis**：结构性冷静——基础设施摄影的尺度 + 编辑式图示；禁止霓虹、发光电路、人物特写。
+- **Slots**：Cover（第一印象）· 证据（材料真实感）· 数据（量级对比，用 `::: bars` 而非插画）。
+- **验证过程**：首版封面主体偏左，2.35:1 好看但 1:1 被裁掉一半 → 重出封面并把判据写回 `direction.md`；
+  首版 bars 与正文数字重复（信息增量 ≈ 0）→ 删正文数字、让图示承担，正文只留「翻一倍、相当于日本一年」；
+  首版强调过多（4/9 段）→ Gate 2 拦住并降级。
 
-不为数字优化。下列是诚实对照。
+## H. 没做到的部分（诚实记账）
 
-| | v3 | 现在 |
-|---|---|---|
-| 设计相关 tracked 文件 | 21 | 24（+judgment/brief/AUDIT，−CHANGELOG） |
-| `scripts/render.py` | 524 行 | 564 行（Gate 2 删除式检查 + 图片职责处理） |
-| `scripts/publish.py` | 414 行 | 372 行 |
-| 脚本合计 | 1,201 行 | 1,199 行 |
-| 主题 | 3 人格 × ~19 键 | 3 人格 × 20 键（+image） |
-| 原语 | 11 | 11 |
-| 图片职责 | 8 | 7 |
-| Decision | 9 行描述 | 10 行导演 brief |
-| Gate 3 | 4 问 | 10 问 |
-| 渲染次数 | 1 | 1 |
-| 排版调用 | 读原文 + 写 compose + render + 预览（decide 名存实亡） | 同上，但 **必须读 decide** |
-
-调用没有变少：判断被当成必做，而不是可跳过的附录。这是有意的。
-
-回归：`eval/` 三篇源用例（skills / letter / ink）Gate 1/2 必须 PASS。不入库生成 HTML。
+- 常驻核心 **+37%**。视觉判断必须有落点，压缩到「更少」会伤判断，所以停在 12.4 KB，并把视觉知识挪出常驻。
+- 生成图的**质量**仍依赖调用方的模型与审美，Skill 只能保证「有判断、有职责、有护栏」，不能保证「每张都好」。
+- Gate 3 无法自动化。`selftest --shots` 只准备真机截图源，最终仍要人（或视觉模型）通读。
+- 示例的封面与配图是生成资产，仅示范方向与工艺，不代表题材通用。
 
 ---
 
-**Less System. More Judgment.**  
-**Less Decoration. More Hierarchy.**  
-**Less Rules. More Intelligence.**  
-**Less Code. Better Output.**
+**Less Code. Less Context（按任务计）. Less Rules. Less Calls.**
+**More Judgment. Better Images. Better Covers. Better Reading Experience.**

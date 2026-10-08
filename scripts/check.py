@@ -19,7 +19,7 @@ MUST = [  # 粘贴后会被清洗或导致样式丢失
     (r"var\s*\(\s*--", "CSS 变量不被支持"),
     (r"white-space\s*:\s*pre", "white-space:pre 会把源码换行渲染成空行"),
     (r"(radial|conic)-gradient", "只允许 linear-gradient"),
-    (r"src\s*=\s*['\"]https?://[^'\"]*(unsplash|pexels|pixabay|unpkg|jsdelivr)", "图库/CDN 外链图片"),
+    (r"<img[^>]+src\s*=\s*['\"]https?://", "图片外链：必须先本地化（用户上传或 API 上传）"),
     (r"\{\{[^}]*\}\}", "占位符残留"),
 ]
 CJK = re.compile(r"[\u4e00-\u9fff\u3400-\u4dbf]")

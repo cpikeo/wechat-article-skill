@@ -2,10 +2,11 @@
 """Composed Markdown → 公众号 HTML + 390px 预览 + Gate 1/2（一次调用）。
 
     render.py article.md [--theme paper|letter|ink|frost|bone|folio] [-o out.html]
+    render.py --specimen [-o assets/themes.html]      六格气候对照板（不进公众号）
 
-产出 {stem}_{theme}.html 与 {stem}_{theme}_预览.html。
+产出 {stem}_{theme}.html 与 {stem}_{theme}_预览.html（预览另含封面两种裁切与首屏线）。
 语法见 SKILL.md。退出码 1 = 存在「必须改」。
-设计规则在 SKILL.md / references/decide.md；本文件只执行可确定的子集。
+设计规则在 SKILL.md / references/*；本文件只执行可确定的子集。
 """
 import argparse
 import html as H
@@ -13,6 +14,7 @@ import json
 import math
 import os
 import re
+import struct
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -26,12 +28,16 @@ MONO = "'SF Mono',Menlo,Consolas,monospace"
 CJK = "\u4e00-\u9fff\u3400-\u4dbf"
 # 6 级字号，主题不得再发明
 MICRO, SMALL, BODY, LEAD, DISPLAY, TITLE = 11, 13, 15, 17, 20, 24
-ROLES = {
-    "信息", "证据", "氛围", "隐喻", "停顿", "锚点", "数据",
-    "information", "evidence", "atmosphere", "metaphor", "pause", "anchor", "data",
-}
-ATMO = {"氛围", "atmosphere", "隐喻", "metaphor", "停顿", "pause", "锚点", "anchor"}
-INFO = {"证据", "evidence", "信息", "information", "数据", "data"}
+
+# 正文视觉职责（封面单独由 frontmatter 承担）。说不出职责 → 删。
+ROLES = {"锚点", "解释", "证据", "对比", "结构", "场景", "隐喻", "停顿", "数据",
+         "anchor", "explain", "evidence", "compare", "structure", "context", "metaphor", "rhythm", "data"}
+QUIET = {"停顿", "隐喻", "rhythm", "metaphor"}                       # 图片前后留白更大
+FACT = {"解释", "证据", "对比", "结构", "数据",
+        "explain", "evidence", "compare", "structure", "data"}       # 说明用正文色、字号大一级
+TODO = re.compile(r"(?i)^(todo|待补)")
+COVER_RATIO = 2.35
+
 BR = '<span leaf=""><br></span>'
 INLINE = re.compile(r"`([^`]+)`|==(.+?)==|\*\*(.+?)\*\*|<u>(.+?)</u>|~~(.+?)~~|\[([^\]]+)\]\(([^)\s]+)\)")
 EMOJI = re.compile(r"[\U0001F300-\U0001FAFF\u2600-\u27BF]")
@@ -42,7 +48,7 @@ def typo(s):
     if not re.search(f"[{CJK}]", s):
         return s
     s = re.sub(f"(?<=[{CJK}])([,;:!?])|(?<=[A-Za-z0-9])([,;!?])\\s*(?=[{CJK}])",
-               lambda m: "，；：！？"[",;:!?".index(m.group(1) or m.group(2))], s)
+               lambda m: "，；：！？"[";,;:!?".index(m.group(1) or m.group(2))], s)
     s = s.replace("...", "……")
     q = iter(["“", "”"] * 200)
     return re.sub(r'"', lambda m: next(q), s)
@@ -136,6 +142,46 @@ def parse(md):
         i += 1
     flush()
     return meta, blocks
+
+
+def img_size(path):
+    """读文件头取 (宽, 高)：PNG / JPEG / GIF / WebP。取不到返回 None（不误报）。"""
+    try:
+        with open(path, "rb") as f:
+            head = f.read(32)
+            if head[:8] == b"\x89PNG\r\n\x1a\n":
+                return struct.unpack(">II", head[16:24])
+            if head[:6] in (b"GIF87a", b"GIF89a"):
+                return struct.unpack("<HH", head[6:10])
+            if head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+                tag, chunk = head[12:16], head[20:32]
+                if tag == b"VP8X":
+                    w = 1 + int.from_bytes(chunk[4:7], "little")
+                    return w, 1 + int.from_bytes(chunk[7:10], "little")
+                if tag == b"VP8L":
+                    bits = int.from_bytes(chunk[1:5], "little")
+                    return (bits & 0x3FFF) + 1, ((bits >> 14) & 0x3FFF) + 1
+                if tag == b"VP8 ":
+                    return (int.from_bytes(chunk[6:8], "little") & 0x3FFF,
+                            int.from_bytes(chunk[8:10], "little") & 0x3FFF)
+            if head[:2] == b"\xff\xd8":                       # JPEG：扫 SOF 段
+                data = head + f.read()
+                i = 2
+                while i + 9 < len(data):
+                    if data[i] != 0xFF:
+                        i += 1
+                        continue
+                    mk = data[i + 1]
+                    if mk in (0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF):
+                        h, w = struct.unpack(">HH", data[i + 5:i + 9])
+                        return w, h
+                    if mk in (0xD8, 0x01) or 0xD0 <= mk <= 0xD7:
+                        i += 2
+                        continue
+                    i += 2 + struct.unpack(">H", data[i + 2:i + 4])[0]
+    except (OSError, struct.error, IndexError):
+        return None
+    return None
 
 
 class R:
@@ -298,6 +344,27 @@ class R:
             rows.append(f'<section style="display:flex;gap:16px;margin-top:{16 if i else 0}px;">{cells}</section>')
         return f'<section style="margin:{self.g(36)}px 0;">{"".join(rows)}</section>'
 
+    def bars(self, lines):
+        """数量对比图：值｜标签。数值同时以文字给出——即使长度表达失效，信息也不丢。"""
+        t, rows, items = self.t, [], []
+        for ln in lines:
+            val, _, lab = ln.replace("|", "｜").partition("｜")
+            items.append((val.strip(), lab.strip()))
+        try:
+            mx = max(float(v) for v, _ in items)
+        except ValueError:
+            mx = 0
+        for val, lab in items:
+            w = max(2, round(float(val) / mx * 100)) if mx else 0
+            rows.append(
+                f'<section style="display:flex;align-items:flex-end;gap:10px;margin-top:{self.g(16)}px;">'
+                + self.p(self.inline(lab), SMALL, t["sub"], "flex:1;")
+                + self.p(self.leaf(val), BODY, t["text"], f"font-weight:600;font-family:{self.font};")
+                + "</section>"
+                + f'<section style="height:5px;background:{t["line"]};margin-top:6px;">'
+                + f'<section style="width:{w}%;height:5px;background:{t["accent"]};">{BR}</section></section>')
+        return f'<section style="margin:{self.g(32)}px 0;">{"".join(rows)}</section>'
+
     def table(self, rows):
         t, out = self.t, []
         for r, cells in enumerate(rows):
@@ -332,9 +399,8 @@ class R:
     def img(self, alt, src, role):
         t = self.t
         role0 = (role or "").split()[0]
-        air = role0 in ATMO
-        mt = self.g(44 if air else 32)
-        if not src or re.match(r"(?i)todo|待补", src):
+        mt = self.g(44 if role0 in QUIET else 32)
+        if not src or TODO.match(src):
             return (f'<section style="margin:{mt}px 0;padding:36px 16px;border:1px dashed {t["muted"]};'
                     f'text-align:center;">{self.micro("待补素材")}'
                     + self.p(self.leaf(alt or "此处插入图片"), SMALL, t["sub"], "margin-top:8px;")
@@ -347,8 +413,8 @@ class R:
         elif treat == "line":
             extra = f"border:1px solid {t['line']};"
         cap = ("GIF · " if src.lower().endswith(".gif") else "") + (alt or "")
-        cap_size = SMALL if role0 in INFO else MICRO
-        cap_color = t["sub"] if role0 in INFO else t["muted"]
+        cap_size = SMALL if role0 in FACT else MICRO
+        cap_color = t["sub"] if role0 in FACT else t["muted"]
         return (f'<section style="margin:{mt}px 0;">'
                 f'<img src="{H.escape(src)}" style="max-width:100%;height:auto;display:block;margin:0 auto;{extra}" />'
                 + (self.p(self.leaf(typo(cap)), cap_size, cap_color, "margin-top:10px;letter-spacing:1px;") if cap else "")
@@ -393,8 +459,12 @@ def peak_text(b):
     return " ".join(b[1]) or b[0]
 
 
-def compose_gate(meta, blocks):
-    """Gate 2：结构可确定的部分。审美判断留给 Gate 3。"""
+def resolve(src, base):
+    return src if os.path.isabs(src) else os.path.join(base, src)
+
+
+def compose_gate(meta, blocks, base="."):
+    """Gate 2：可确定的结构与资产检查。审美判断留给 Gate 3。"""
     must, should = [], []
     kinds = [b[0] for b in blocks]
     peaks = kinds.count("peak")
@@ -417,21 +487,77 @@ def compose_gate(meta, blocks):
         if not role:
             must.append(f"图片「{alt or src}」没有声明职责：说不出为什么存在就删除")
         elif role.split()[0] not in ROLES:
-            should.append(f"图片职责「{role}」不在标准集合：信息/证据/氛围/隐喻/停顿/锚点/数据")
+            should.append(f"图片职责「{role}」不在标准集合：锚点/解释/证据/对比/结构/场景/隐喻/停顿/数据")
+    roles = [b[1][2].split()[0] for b in blocks if b[0] == "img" and b[1][2]]
+    for r in sorted(set(roles)):
+        if roles.count(r) >= 3:
+            should.append(f"「{r}」职责出现 {roles.count(r)} 次：同一职责最多两次，否则是在凑数")
     chars = sum(visible_len(p) for p in paras)
-    real = [x for x in imgs if x[1][1] and not re.match(r"(?i)todo|待补", x[1][1])]
-    if len(real) > max(2, chars // 600):
-        should.append(f"{len(real)} 张图 / {chars} 字：图片密度偏高，只保留改变阅读体验的那几张")
-    for (a, _), (b, _) in zip(imgs, imgs[1:]):
-        if sum(visible_len(blocks[k][1]) for k in range(a + 1, b) if blocks[k][0] == "p") < 40:
-            should.append("两张图片之间缺少文字承接：合并、删减或补一段过渡")
+    real = [x for x in imgs if x[1][1] and not TODO.match(x[1][1])]
+    cap = 1 if chars <= 800 else 3 if chars <= 2000 else 4
+    if len(real) > cap:
+        should.append(f"{len(real)} 张正文图 > 本文字数档位的预算 {cap}：删到只剩改变阅读体验的那几张")
+    for _, (alt, src, role) in imgs:
+        if not src or TODO.match(src):
+            continue
+        p = resolve(src, base)
+        if not os.path.exists(p):
+            must.append(f"图片不存在：{src}（本地化后再交付，或写成 todo）")
+            continue
+        wh, kb = img_size(p), os.path.getsize(p) // 1024
+        if wh:
+            w, h = wh
+            short = min(w, h)
+            if short < 600:
+                must.append(f"{os.path.basename(src)} 仅 {w}×{h}：分辨率过低，手机上一定糊")
+            elif short < 800:
+                should.append(f"{os.path.basename(src)} {w}×{h}：短边 <800px，压缩或重出")
+            elif w >= h and w < 1200:
+                should.append(f"{os.path.basename(src)} {w}×{h}：正文图宽建议 ≥1200px")
+        if kb > 1024:
+            should.append(f"{os.path.basename(src)} 体积 {kb}KB：压到 1MB 以内再发布")
+    cover = (meta.get("cover") or "").strip()
+    if not cover:
+        should.append("没有封面：公众号需要一张 2.35:1 封面（方向见 references/direction.md §6）")
+    elif not TODO.match(cover):
+        p = resolve(cover, base)
+        if not os.path.exists(p):
+            must.append(f"封面文件不存在：{cover}")
+        else:
+            wh = img_size(p)
+            if wh:
+                w, h = wh
+                ratio = w / h
+                if w < 900:
+                    should.append(f"封面 {w}×{h}：首图会糊，宽度至少 900px")
+                if not 1.6 <= ratio <= 3.0:
+                    should.append(f"封面 {w}×{h}（{ratio:.2f}:1）：微信会裁成 2.35:1，确认主体在中央安全区，"
+                                  f"不要靠烧字补意思")
+    for k, b in blocks:
+        if k != "bars":
+            continue
+        items = [(v.strip(), lab.strip()) for v, _, lab in (x.replace("|", "｜").partition("｜") for x in b[1])]
+        nums = []
+        for v, lab in items:
+            if not re.fullmatch(r"\d+(\.\d+)?", v):
+                must.append(f"bars 的值必须是数字：{v or '（空）'}")
+            else:
+                nums.append(float(v))
+            if not lab:
+                should.append(f"bars 的 {v} 缺少标签：数值没有口径等于没有信息")
+        if len(items) < 2:
+            must.append("bars 至少 2 项：单项对比不成立，直接用文字")
+        elif len(items) > 6:
+            should.append(f"bars {len(items)} 项：手机上超过 6 行就失去对比意义")
+        elif nums and max(nums) / (min(nums) or 1) < 1.3:
+            should.append("bars 各项数值接近：长度表达不出差异，改回文字或表格")
     if kinds.count("note") > 2:
         should.append(f"{kinds.count('note')} 个 note：旁注过多，优先删除而不是换样式")
     if kinds.count("hr") > 2:
         should.append("转场过多：章节标题已经是停顿，--- 能少则少")
     if kinds.count("quote") > 3:
         should.append(f"{kinds.count('quote')} 处引文：他者声音过多会变成第二个节奏")
-    heavy = {"quote", "peak", "note", "data", "table", "code", "img"}
+    heavy = {"quote", "peak", "note", "data", "bars", "table", "code", "img"}
     run = 0
     for i, k in enumerate(kinds):
         run = run + 1 if k in heavy else 0
@@ -445,6 +571,9 @@ def compose_gate(meta, blocks):
             should.append("标题含 emoji：结构图标只用文字/数字/几何")
         if k == "table" and blocks[i][1] and len(blocks[i][1][0]) > 3:
             should.append("表格超过 3 列：手机上会碎，拆表或改成 data")
+    for (a, _), (b, _) in zip(imgs, imgs[1:]):
+        if sum(visible_len(blocks[k][1]) for k in range(a + 1, b) if blocks[k][0] == "p") < 40:
+            should.append("两张图片之间缺少文字承接：合并、删减或补一段过渡")
     heavies = sum(1 for k in kinds if k in heavy)
     if heavies > 6:
         should.append("非正文原语偏多：先问哪一个可以消失，再考虑增加")
@@ -475,13 +604,37 @@ PREVIEW = """<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8">
 .bar{{position:sticky;top:0;display:flex;justify-content:space-between;align-items:center;padding:10px 16px;
 background:#fff;border-bottom:1px solid #e5e5e5;font-size:12px;color:#888;z-index:9}}
 button{{border:0;background:#1F1F1F;color:#fff;padding:8px 16px;border-radius:6px;font-size:13px;cursor:pointer}}
-.phone{{max-width:390px;margin:24px auto 64px;background:#fff;padding:24px 16px 48px;box-sizing:border-box}}</style></head>
+.phone{{position:relative;max-width:390px;margin:24px auto 64px;background:#fff;padding:24px 16px 48px;box-sizing:border-box}}
+.fold{{position:absolute;left:0;right:0;top:780px;border-top:1px dashed #C6C1B8}}
+.fold b{{position:absolute;right:6px;top:-17px;font-size:10px;font-weight:500;letter-spacing:1px;color:#A8A29A;
+background:#fff;padding:0 5px}}
+.cv{{max-width:390px;margin:24px auto 0;background:#fff;padding:16px;box-sizing:border-box}}
+.cv h4{{margin:0 0 8px;font-size:11px;letter-spacing:1.6px;color:#8A847A;font-weight:600}}
+.cv img{{display:block;width:100%;background:#F0EEE9}}
+.hint{{margin:16px 0 0;font-size:11px;line-height:1.7;color:#A8A29A}}</style></head>
 <body><div class="bar"><span>{theme} · 390px</span><button onclick="cp(this)">复制到公众号</button></div>
-<div class="phone"><div id="c">{body}</div></div>
+{cover}<div class="phone"><div id="c">{body}</div><div class="fold"><b>首屏 ≈780px</b></div></div>
 <script>function cp(b){{var r=document.createRange();r.selectNodeContents(document.getElementById('c'));
 var s=getSelection();s.removeAllRanges();s.addRange(r);var ok=document.execCommand('copy');s.removeAllRanges();
 b.textContent=ok?'已复制，去编辑器粘贴':'请手动全选复制';setTimeout(function(){{b.textContent='复制到公众号'}},2200)}}</script>
 </body></html>"""
+
+
+def cover_block(meta, base):
+    """预览里的封面检查：2.35:1 首图裁切 + 1:1 信息流缩略。封面不参与正文粘贴。"""
+    src = (meta.get("cover") or "").strip()
+    if not src or TODO.match(src):
+        return ('<div class="cv"><h4>封面</h4><p class="hint" style="margin:0">未设置封面。'
+                '公众号需要一张 2.35:1 的封面：方向见 references/direction.md §6。</p></div>')
+    p = resolve(src, base)
+    wh = img_size(p) if os.path.exists(p) else None
+    info = f"{wh[0]}×{wh[1]}（{wh[0] / wh[1]:.2f}:1）" if wh else "尺寸未知"
+    warn = "" if wh and 1.6 <= wh[0] / wh[1] <= 3.0 else " 主体必须落在中央安全区——微信会裁。"
+    return (f'<div class="cv"><h4>封面 · {info}</h4>'
+            f'<img src="{H.escape(src)}" style="aspect-ratio:2.35/1;object-fit:cover">'
+            f'<h4 style="margin:16px 0 8px">1:1 缩略（信息流 / 会话卡片）</h4>'
+            f'<img src="{H.escape(src)}" style="width:132px;height:132px;object-fit:cover">'
+            f'<p class="hint">默认不放文字。{warn}</p></div>')
 
 
 def render(md, theme=None):
@@ -513,6 +666,8 @@ def render(md, theme=None):
             out.append(r.note(*b))
         elif kind == "data":
             out.append(r.data(b[1]))
+        elif kind == "bars":
+            out.append(r.bars(b[1]))
         elif kind == "table":
             out.append(r.table(b))
         elif kind == "list":
@@ -524,7 +679,7 @@ def render(md, theme=None):
         elif kind == "hr":
             out.append(r.hr())
         else:
-            sys.exit(f"未知原语 ::: {kind}（可用：peak / note / data）")
+            sys.exit(f"未知原语 ::: {kind}（可用：peak / note / data / bars）")
     out.append(r.signature(meta))
     t = THEMES[key]
     body = (f'<section style="font-family:{SANS};font-size:{BODY}px;color:{t["text"]};line-height:{t["leading"]};'
@@ -532,29 +687,124 @@ def render(md, theme=None):
     return key, meta, blocks, body
 
 
+SPECIMEN_MD = """---
+title: 留下的东西|比发出去的更重要
+kicker: SPECIMEN
+author: 甲木
+bio: 气候对照用样张
+---
+
+> 一篇文章的气质，不在配色，而在什么被允许发出声音。
+
+## 判断在主题之前
+
+主题是人格，不是皮肤。同一段文字，换人格，节奏应跟着变；若只换了色，判断没有发生。
+
+> 能不用就不用，能弱化就弱化。
+
+## 视觉权重服从信息权重
+
+正文永远是最安静的一层，标记只留给真正需要停顿的地方。
+
+::: data
+01｜可删元素
+01｜可弱化层级
+01｜可取消装饰
+:::
+
+::: peak
+克制不是少，是每一处都有职责。
+:::
+"""
+
+SPECIMEN_HTML = """<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Six Editorial Modes</title>
+<style>*{{box-sizing:border-box}}
+body{{margin:0;background:#D8D3CA;color:#2B2824;font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB",sans-serif}}
+header{{padding:56px 40px 12px}}
+.k{{font-size:11px;letter-spacing:2.4px;font-weight:600;color:#8A847A}}
+h1{{font-size:28px;font-weight:600;letter-spacing:.4px;margin:10px 0 8px;line-height:1.3}}
+.lede{{font-size:14px;color:#6E6860;line-height:1.7;max-width:560px;margin:0}}
+.board{{display:flex;gap:32px;overflow-x:auto;padding:28px 40px 88px;align-items:flex-start}}
+.col{{flex:0 0 390px}}
+.name{{font-size:13px;font-weight:600;letter-spacing:.3px}}
+.swatches{{display:flex;gap:7px;margin:12px 0 16px}}
+.sw{{display:block;width:16px;height:16px;border-radius:50%;box-shadow:inset 0 0 0 1px rgba(40,30,20,.12)}}
+.phone{{background:#fff;padding:28px 18px 48px;box-shadow:0 24px 48px rgba(40,30,20,.14)}}</style>
+</head><body>
+<header><div class="k">EDITORIAL MODES · 生成物，勿手改（render.py --specimen）</div>
+<h1>六种编辑人格，不是六套配色</h1>
+<p class="lede">同一篇样张，六种气候。用途与判断见 references/decide.md；此板用来目视对照与主题回归。</p></header>
+<div class="board">
+{cols}
+</div></body></html>
+"""
+
+
+def specimen(path):
+    """六格对照板由真实渲染器生成，避免与人手维护的样本漂移。"""
+    cols = []
+    for key, t in THEMES.items():
+        _, _, _, body = render(SPECIMEN_MD, key)
+        sw = "".join(f'<i class="sw" style="background:{t[k]}"></i>' for k in ("text", "field", "accent", "line", "dark"))
+        cols.append(f'<div class="col"><div class="name">{t["name"]}</div>'
+                    f'<div class="swatches">{sw}</div><div class="phone">{body}</div></div>')
+    open(path, "w", encoding="utf-8").write(SPECIMEN_HTML.format(cols="".join(cols)))
+    print(f"气候对照板 → {path}（对照用，不进公众号）")
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("md")
+    ap.add_argument("md", nargs="?")
     ap.add_argument("--theme", choices=list(THEMES))
     ap.add_argument("-o", "--out")
+    ap.add_argument("--specimen", action="store_true", help="生成六格气候对照板")
     a = ap.parse_args()
+    if a.specimen:
+        specimen(a.out or os.path.join(HERE, "..", "assets", "themes.html"))
+        return
+    if not a.md:
+        ap.error("需要一个 markdown 文件，或使用 --specimen")
+    base = os.path.dirname(os.path.abspath(a.md))
     key, meta, blocks, body = render(open(a.md, encoding="utf-8").read(), a.theme)
     out = a.out or f"{os.path.splitext(a.md)[0]}_{key}.html"
     open(out, "w", encoding="utf-8").write(body)
     prev = os.path.splitext(out)[0] + "_预览.html"
     open(prev, "w", encoding="utf-8").write(
-        PREVIEW.format(title=H.escape(meta.get("title", "")), theme=THEMES[key]["name"], body=body))
+        PREVIEW.format(title=H.escape(meta.get("title", "")), theme=THEMES[key]["name"],
+                       cover=cover_block(meta, base), body=body))
     m1, s1 = check(body)
-    m2, s2 = compose_gate(meta, blocks)
-    holds = sum(1 for b in blocks if b[0] == "img" and (not b[1][1] or re.match(r"(?i)todo|待补", b[1][1])))
+    m2, s2 = compose_gate(meta, blocks, base)
+    inv, holds = [], 0
+    for b in blocks:
+        if b[0] != "img":
+            continue
+        alt, src, _ = b[1]
+        if not src or TODO.match(src):
+            holds += 1
+            continue
+        wh = img_size(resolve(src, base))
+        inv.append(f"{os.path.basename(src)} {wh[0]}×{wh[1]}" if wh else os.path.basename(src))
+    cover = (meta.get("cover") or "").strip()
+    labels = []
+    if cover:
+        if TODO.match(cover):
+            holds += 1
+        else:
+            wh = img_size(resolve(cover, base))
+            labels = ["封面：" + (f"{os.path.basename(cover)} {wh[0]}×{wh[1]}" if wh else os.path.basename(cover))]
     print(f"{THEMES[key]['name']} → {out}\n预览 → {prev}")
+    print("视觉资产：" + (" · ".join(labels + inv) if labels or inv else "无（正文 0 图，也无封面）"))
     for gate, must, should in (("Gate 1 Platform", m1, s1), ("Gate 2 Composition", m2, s2)):
         print(f"\n{gate}: {'FAIL' if must else 'PASS'}")
         for x in must:
             print("  必须改 ·", x)
         for x in should:
             print("  建议改 ·", x)
-    print("\nGate 3 Art Direction：通读 390px 预览。首屏为何往下读？高潮是不是 Core Claim？哪一个元素删掉更好？")
+    print("\nGate 3 Art Direction：通读 390px 预览（含封面两种裁切）。"
+          "CONTENT / EDITORIAL / VISUAL / MOBILE —— 结论只写 KEEP / REVISE / DELETE，"
+          "并回答：哪一个元素应该消失？")
     if holds:
         print(f"待补素材位 {holds} 处（交付时告知用户）")
     if not meta.get("author"):
