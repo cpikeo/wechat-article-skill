@@ -1,2 +1,5 @@
-# wechat-article-skill
-微信公众号文章排版 Skill
+# wechat-article-skill（v2）
+
+Director-Level WeChat Editorial Design Intelligence。
+
+详见 [SKILL.md](SKILL.md)。
