@@ -36,7 +36,9 @@ QUIET = {"停顿", "隐喻", "rhythm", "metaphor"}                       # 图�
 FACT = {"解释", "证据", "对比", "结构", "数据",
         "explain", "evidence", "compare", "structure", "data"}       # 说明用正文色、字号大一级
 TODO = re.compile(r"(?i)^(todo|待补)")
-COVER_RATIO = 2.35
+COVER_RATIO = 2.35                    # 封面目标比例（微信首图）
+COVER_BAND = (1.6, 3.0)               # 可接受区间；超出说明这不是一张封面
+COVER_MIN_W = 900                     # 下方会被裁，再窄就糊
 
 BR = '<span leaf=""><br></span>'
 INLINE = re.compile(r"`([^`]+)`|==(.+?)==|\*\*(.+?)\*\*|<u>(.+?)</u>|~~(.+?)~~|\[([^\]]+)\]\(([^)\s]+)\)")
@@ -331,7 +333,9 @@ class R:
                 f'border-left:2px solid {t["line"]};">{head}{body}</section>')
 
     def data(self, lines):
-        t, rows, items = self.t, [], [x.split("|", 1) for x in lines]
+        # 全角「｜」与半角「|」都要能拆：中文输入法默认给的是全角，
+        # 只按半角拆会把「3｜标签」整条当成数值，标签消失、大字号里挤进一整句。
+        t, rows, items = self.t, [], [x.replace("|", "｜").split("｜", 1) for x in lines]
         per = len(items) if 0 < len(items) <= 3 else 2
         for i in range(0, len(items), per):
             cells = "".join(
@@ -455,12 +459,56 @@ def visible_len(s):
     return len(re.sub(r"</?u>|https?://\S+|[`*=~\[\]()]", "", s))
 
 
+def doc_len(blocks):
+    """全文可见字数（正文 + 标题 + 列表 + 表格 + 代码 + 旁注）。
+
+    只用段落字数会低估数据型 / 技术型文章：一篇 400 字正文 + 500 行代码的文章
+    并不是一篇 400 字的短文，图片预算与节奏判断都跟着错。
+    """
+    total = 0
+    for k, b in blocks:
+        if k == "p" or k in ("h2", "h3"):
+            total += visible_len(b)
+        elif k in ("lead", "quote"):
+            total += visible_len(b[0])
+        elif k == "peak":
+            total += visible_len(peak_text(b))
+        elif k == "note":
+            total += sum(visible_len(x) for x in b[1])
+        elif k == "list":
+            total += sum(visible_len(i) for i in b[1])
+        elif k == "table":
+            total += sum(visible_len(c) for r in b for c in r)
+        elif k == "code":
+            total += sum(len(x) for x in b[1])
+        elif k in ("data", "bars"):
+            total += sum(visible_len(x) for x in b[1])
+    return total
+
+
 def peak_text(b):
     return " ".join(b[1]) or b[0]
 
 
 def resolve(src, base):
     return src if os.path.isabs(src) else os.path.join(base, src)
+
+
+def asset_budget(chars):
+    """Image Budget：先定上限，再取素材。封面单列，不占这张预算。"""
+    return 1 if chars <= 800 else 3 if chars <= 2000 else 4
+
+
+def first_screen(meta, blocks):
+    """首屏实际压了几层：读者第一屏看到的是钩子，还是目录与素材。"""
+    kinds = [b[0] for b in blocks]
+    stop = next((i for i, k in enumerate(kinds) if k == "p"), len(kinds))
+    layers = [k for k in kinds[:stop] if k in {"lead", "img", "note", "data", "bars", "table", "quote"}]
+    if meta.get("deck"):
+        layers.insert(0, "deck")
+    if meta.get("toc", "").lower() in ("true", "yes", "1") and len([b for b in blocks if b[0] == "h2"]) >= 3:
+        layers.append("toc")
+    return layers
 
 
 def compose_gate(meta, blocks, base="."):
@@ -483,20 +531,25 @@ def compose_gate(meta, blocks, base="."):
     if paras and emph / len(paras) > 0.35:
         should.append(f"{emph}/{len(paras)} 段带强调：已接近机械装饰，多数段落应完全不强调")
     imgs = [(i, b[1]) for i, b in enumerate(blocks) if b[0] == "img"]
+    roles = []
     for _, (alt, src, role) in imgs:
         if not role:
             must.append(f"图片「{alt or src}」没有声明职责：说不出为什么存在就删除")
-        elif role.split()[0] not in ROLES:
+            continue
+        # 证据 / 解释 / 对比 / 结构 / 数据 这几类图没有说明，读者无法核对 → 等于装饰。
+        if role.split()[0] in FACT and not (alt or "").strip():
+            should.append(f"图片「{src or 'todo'}」职责是「{role}」却没有说明：证据类图必须写清出处 / 口径 / 时间")
+        if role.split()[0] not in ROLES:
             should.append(f"图片职责「{role}」不在标准集合：锚点/解释/证据/对比/结构/场景/隐喻/停顿/数据")
-    roles = [b[1][2].split()[0] for b in blocks if b[0] == "img" and b[1][2]]
+        roles.append(role.split()[0])
     for r in sorted(set(roles)):
         if roles.count(r) >= 3:
             should.append(f"「{r}」职责出现 {roles.count(r)} 次：同一职责最多两次，否则是在凑数")
-    chars = sum(visible_len(p) for p in paras)
-    real = [x for x in imgs if x[1][1] and not TODO.match(x[1][1])]
-    cap = 1 if chars <= 800 else 3 if chars <= 2000 else 4
-    if len(real) > cap:
-        should.append(f"{len(real)} 张正文图 > 本文字数档位的预算 {cap}：删到只剩改变阅读体验的那几张")
+    # 预算算的是「计划」而不是「已存在」：todo 也是要花预算的图位，不是免费位。
+    chars = doc_len(blocks)
+    cap = asset_budget(chars)
+    if len(imgs) > cap:
+        should.append(f"{len(imgs)} 张正文图 > 本文字数档位的预算 {cap}：删到只剩改变阅读体验的那几张")
     for _, (alt, src, role) in imgs:
         if not src or TODO.match(src):
             continue
@@ -507,18 +560,18 @@ def compose_gate(meta, blocks, base="."):
         wh, kb = img_size(p), os.path.getsize(p) // 1024
         if wh:
             w, h = wh
-            short = min(w, h)
-            if short < 600:
-                must.append(f"{os.path.basename(src)} 仅 {w}×{h}：分辨率过低，手机上一定糊")
-            elif short < 800:
-                should.append(f"{os.path.basename(src)} {w}×{h}：短边 <800px，压缩或重出")
-            elif w >= h and w < 1200:
-                should.append(f"{os.path.basename(src)} {w}×{h}：正文图宽建议 ≥1200px")
+            name = os.path.basename(src)
+            for bad, level, why in ((min(w, h) < 600, must, "分辨率过低，手机上一定糊"),
+                                    (min(w, h) < 800, should, "短边 <800px，压缩或重出"),
+                                    (w >= h and w < 1200, should, "正文图宽建议 ≥1200px")):
+                if bad:
+                    level.append(f"{name} {w}×{h}：{why}")
+                    break
         if kb > 1024:
             should.append(f"{os.path.basename(src)} 体积 {kb}KB：压到 1MB 以内再发布")
     cover = (meta.get("cover") or "").strip()
     if not cover:
-        should.append("没有封面：公众号需要一张 2.35:1 封面（方向见 references/direction.md §6）")
+        should.append(f"没有封面：公众号需要一张 {COVER_RATIO}:1 封面（方向见 references/direction.md「封面工艺」）")
     elif not TODO.match(cover):
         p = resolve(cover, base)
         if not os.path.exists(p):
@@ -528,10 +581,10 @@ def compose_gate(meta, blocks, base="."):
             if wh:
                 w, h = wh
                 ratio = w / h
-                if w < 900:
-                    should.append(f"封面 {w}×{h}：首图会糊，宽度至少 900px")
-                if not 1.6 <= ratio <= 3.0:
-                    should.append(f"封面 {w}×{h}（{ratio:.2f}:1）：微信会裁成 2.35:1，确认主体在中央安全区，"
+                if w < COVER_MIN_W:
+                    should.append(f"封面 {w}×{h}：首图会糊，宽度至少 {COVER_MIN_W}px")
+                if not COVER_BAND[0] <= ratio <= COVER_BAND[1]:
+                    should.append(f"封面 {w}×{h}（{ratio:.2f}:1）：微信会裁成 {COVER_RATIO}:1，确认主体在中央安全区，"
                                   f"不要靠烧字补意思")
     for k, b in blocks:
         if k != "bars":
@@ -551,12 +604,12 @@ def compose_gate(meta, blocks, base="."):
             should.append(f"bars {len(items)} 项：手机上超过 6 行就失去对比意义")
         elif nums and max(nums) / (min(nums) or 1) < 1.3:
             should.append("bars 各项数值接近：长度表达不出差异，改回文字或表格")
-    if kinds.count("note") > 2:
-        should.append(f"{kinds.count('note')} 个 note：旁注过多，优先删除而不是换样式")
-    if kinds.count("hr") > 2:
-        should.append("转场过多：章节标题已经是停顿，--- 能少则少")
-    if kinds.count("quote") > 3:
-        should.append(f"{kinds.count('quote')} 处引文：他者声音过多会变成第二个节奏")
+    # 同一件事的三条阈值集中成一张表：数一数就够，不必各写一段话。
+    for k, cap, why in (("note", 2, "旁注过多，优先删除而不是换样式"),
+                        ("hr", 2, "章节标题已经是停顿，--- 能少则少"),
+                        ("quote", 3, "他者声音过多会变成第二个节奏")):
+        if kinds.count(k) > cap:
+            should.append(f"{kinds.count(k)} 处 {k}：{why}")
     heavy = {"quote", "peak", "note", "data", "bars", "table", "code", "img"}
     run = 0
     for i, k in enumerate(kinds):
@@ -595,7 +648,64 @@ def compose_gate(meta, blocks, base="."):
         should.append("首屏没有 lead / deck：读者凭什么继续往下读？")
     if meta.get("deck") and "lead" in kinds:
         should.append("deck 与 lead 同时出现：首屏两个钩子，留一个")
+    if meta.get("density", "standard") not in ("dense", "standard", "airy"):
+        should.append(f"density「{meta['density']}」不存在：dense / standard / airy（写错会静默按 standard 执行）")
+
+    # 证据类图片没有说明 = 无法核对 = 装饰。
+    # 封面顺手用正文图：封面要讲主张，不是配图。
+    if cover and not TODO.match(cover) and any(
+            os.path.basename(b[1][1]) == os.path.basename(cover) for b in blocks if b[0] == "img" and b[1][1]):
+        should.append("封面与正文图是同一张：封面必须独立做 art direction")
+    # 图示把正文数字又画一遍 = 信息增量 ≈ 0。
+    for i, (k, b) in enumerate(blocks):
+        if k != "bars":
+            continue
+        near = " ".join(p for kk, p in blocks[max(0, i - 2):i + 3] if kk == "p")
+        dup = sorted(v for v, _, _ in (x.replace("|", "｜").partition("｜") for x in b[1])
+                     if v and re.search(rf"(?<!\d){re.escape(v.strip())}(?!\d)", near))
+        if dup:
+            should.append(f"图示数字与正文重复（{'、'.join(dup)}）：正文只留关系，数字交给图示")
+    # 首屏：短文开目录，第一屏就只剩目录。
+    heads = [b[1] for b in blocks if b[0] == "h2"]
+    if meta.get("toc", "").lower() in ("true", "yes", "1") and len(heads) >= 3:
+        if chars < 1600 or len(heads) < 4:
+            should.append(f"{chars} 字 / {len(heads)} 节的短文开了目录：首屏被目录占掉，正文被推到折线以下")
+    layers = first_screen(meta, blocks)
+    if len(layers) >= 3:
+        should.append(f"首屏压了 {len(layers)} 层（{'/'.join(layers)}）：第一屏只留钩子，其余下移")
     return must, should
+
+
+def evidence(meta, blocks, base="."):
+    """Gate 3 的证据：能核对的数字与条目。艺术判断交给通读的人 / 视觉模型。"""
+    kinds = [b[0] for b in blocks]
+    paras = [b[1] for b in blocks if b[0] == "p"]
+    imgs = [b[1] for b in blocks if b[0] == "img"]
+    chars = doc_len(blocks)
+    heads = [b[1] for b in blocks if b[0] == "h2"]
+    out = []
+    cover = (meta.get("cover") or "").strip()
+    wh = None if (not cover or TODO.match(cover)) else img_size(resolve(cover, base))
+    cover_txt = "无" if not cover else (f"{wh[0]}×{wh[1]}（{wh[0] / wh[1]:.2f}:1）" if wh else "待补")
+    roles = [b[1][2].split()[0] for b in blocks if b[0] == "img" and b[1][2]]
+    holds = sum(1 for b in imgs if not b[1] or TODO.match(b[1]))
+    out.append(f"资产 · 全文 {chars} 字 · 封面 {cover_txt} · 正文图 {len(imgs)}/{asset_budget(chars)}（预算）"
+               + (f"：{'、'.join(roles)}" if roles else "") + (f" · 待补位 {holds}" if holds else ""))
+    layers = first_screen(meta, blocks)
+    stop = next((i for i, k in enumerate(kinds) if k == "p"), len(kinds))
+    out.append(f"首屏 · 标题 + {'/'.join(layers) if layers else '无附加层'}；首段落在第 {stop + 1} 块")
+    idx = [i for i, k in enumerate(kinds) if k == "img"]
+    gaps = [sum(visible_len(blocks[j][1]) for j in range(a + 1, b) if blocks[j][0] == "p")
+            for a, b in zip(idx, idx[1:])]
+    longest = max((visible_len(p) for p in paras), default=0)
+    out.append(f"节奏 · 非正文块 {sum(1 for k in kinds if k != 'p')}/{len(kinds)}"
+               + (f" · 图间承接最少 {min(gaps)} 字" if gaps else "") + f" · 最长段落 {longest} 字")
+    strong = sum(len(re.findall(r"==.+?==|<u>.+?</u>", p)) for p in paras)
+    weak = sum(len(re.findall(r"\*\*.+?\*\*", p)) for p in paras)
+    out.append(f"结构 · H2 {len(heads)} · 转场 {kinds.count('hr')} · Peak {kinds.count('peak')}"
+               f" · 强调 =={strong} / **{weak}")
+    out.append(f"封面 · {COVER_RATIO}:1 与 1:1 中央裁切见预览顶部（主语在正方形里还站得住吗）")
+    return out
 
 
 PREVIEW = """<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8">
@@ -625,11 +735,11 @@ def cover_block(meta, base):
     src = (meta.get("cover") or "").strip()
     if not src or TODO.match(src):
         return ('<div class="cv"><h4>封面</h4><p class="hint" style="margin:0">未设置封面。'
-                '公众号需要一张 2.35:1 的封面：方向见 references/direction.md §6。</p></div>')
+                f'公众号需要一张 {COVER_RATIO}:1 的封面：方向见 references/direction.md「封面工艺」。</p></div>')
     p = resolve(src, base)
     wh = img_size(p) if os.path.exists(p) else None
     info = f"{wh[0]}×{wh[1]}（{wh[0] / wh[1]:.2f}:1）" if wh else "尺寸未知"
-    warn = "" if wh and 1.6 <= wh[0] / wh[1] <= 3.0 else " 主体必须落在中央安全区——微信会裁。"
+    warn = "" if wh and COVER_BAND[0] <= wh[0] / wh[1] <= COVER_BAND[1] else " 主体必须落在中央安全区——微信会裁。"
     return (f'<div class="cv"><h4>封面 · {info}</h4>'
             f'<img src="{H.escape(src)}" style="aspect-ratio:2.35/1;object-fit:cover">'
             f'<h4 style="margin:16px 0 8px">1:1 缩略（信息流 / 会话卡片）</h4>'
@@ -776,37 +886,19 @@ def main():
                        cover=cover_block(meta, base), body=body))
     m1, s1 = check(body)
     m2, s2 = compose_gate(meta, blocks, base)
-    inv, holds = [], 0
-    for b in blocks:
-        if b[0] != "img":
-            continue
-        alt, src, _ = b[1]
-        if not src or TODO.match(src):
-            holds += 1
-            continue
-        wh = img_size(resolve(src, base))
-        inv.append(f"{os.path.basename(src)} {wh[0]}×{wh[1]}" if wh else os.path.basename(src))
-    cover = (meta.get("cover") or "").strip()
-    labels = []
-    if cover:
-        if TODO.match(cover):
-            holds += 1
-        else:
-            wh = img_size(resolve(cover, base))
-            labels = ["封面：" + (f"{os.path.basename(cover)} {wh[0]}×{wh[1]}" if wh else os.path.basename(cover))]
-    print(f"{THEMES[key]['name']} → {out}\n预览 → {prev}")
-    print("视觉资产：" + (" · ".join(labels + inv) if labels or inv else "无（正文 0 图，也无封面）"))
+    print(f"{THEMES[key]['name']} → {out}\n预览 → {prev}\n")
+    print("Gate 3 证据（可核对的都摆在这里；结论与艺术判断由通读的人 / 视觉模型给）")
+    for line in evidence(meta, blocks, base):
+        print("  " + line)
     for gate, must, should in (("Gate 1 Platform", m1, s1), ("Gate 2 Composition", m2, s2)):
         print(f"\n{gate}: {'FAIL' if must else 'PASS'}")
         for x in must:
             print("  必须改 ·", x)
         for x in should:
             print("  建议改 ·", x)
-    print("\nGate 3 Art Direction：通读 390px 预览（含封面两种裁切）。"
-          "CONTENT / EDITORIAL / VISUAL / MOBILE —— 结论只写 KEEP / REVISE / DELETE，"
-          "并回答：哪一个元素应该消失？")
-    if holds:
-        print(f"待补素材位 {holds} 处（交付时告知用户）")
+    print("\nGate 3 Art Direction：对照上面证据通读 390px 预览。"
+          "CONTENT / EDITORIAL / VISUAL / MOBILE / FINAL JUDGMENT —— 只写 KEEP / REVISE / DELETE，"
+          "回答「哪个元素应该消失」，并给每张留下的资产一句「为什么是这张」。")
     if not meta.get("author"):
         print("未提供 author：已省略署名区")
     sys.exit(1 if m1 or m2 else 0)

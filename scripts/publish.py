@@ -40,14 +40,6 @@ def _post_json(url, payload):
     return body
 
 
-def _get_json(url):
-    with urllib.request.urlopen(url, timeout=30) as resp:
-        body = json.loads(resp.read().decode("utf-8"))
-    if isinstance(body, dict) and body.get("errcode", 0) not in (0, None):
-        raise WeChatAPIError(body.get("errcode"), body.get("errmsg"), body)
-    return body
-
-
 def _post_multipart_file(url, filepath, field_name="media", extra_fields=None):
     """手写 multipart/form-data，不依赖 requests 库。"""
     boundary = uuid.uuid4().hex

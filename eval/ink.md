@@ -4,7 +4,6 @@ kicker: REVIEW
 theme: ink
 seal: 评
 date: 2026年10月8日
-toc: true
 author: 甲木
 bio: 观察内容与商业的人
 cta: 如果你也在做一门慢生意，欢迎留言聊聊。点赞、在看、转发，我们下篇见。

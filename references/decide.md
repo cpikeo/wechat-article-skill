@@ -15,9 +15,13 @@ JUDGE / EDIT 两步读这份。渲染器只执行确定性部分；**这里讲�
 | Cut | 准备删掉或降级的（至少一项） | 只加不减 |
 | Mode | 六种人格之一（= 主题气候） | 按心情换色；气质不对硬套 |
 | Density | dense / standard / airy | 短文挤死；教程冲散 |
-| Rhythm | 380px 上的滑动节奏：钩子 → 停顿 → 高潮 → 恢复 → 收束 | 首屏堆 kicker + deck + lead + TOC + 图 |
+| Rhythm | 390px 上的滑动节奏：钩子 → 停顿 → 高潮 → 恢复 → 收束 | 首屏堆 kicker + deck + lead + 目录 + 图 |
 | Anchor | Peak 之外 0–2 处停留 | quote、data、大图一起上 |
-| Thesis / Grammar / Budget / Slots / Cover | 见 `direction.md` | 用「要不要图」代替「这里需要什么职能」 |
+| Thesis / Grammar / Weight / Budget / Slots / Cover | 见 `direction.md` | 用「要不要图」代替「这里需要什么职能」 |
+| REVIEW | 保留 / 弱化 / 删除 / 最大视觉风险 / 最终验证重点 | 渲染前不写，通读时就只剩印象 |
+
+REVIEW 是**先承诺**：写不出「最大的视觉风险」，说明还没看懂这篇最脆弱的地方。
+写完之后每一条都要有落点——保留的别动它，弱化的降一级，删除的在 EDIT 里真的删掉。
 
 视觉权重服从信息权重。允许全文只强调一处。
 
@@ -47,15 +51,18 @@ JUDGE / EDIT 两步读这份。渲染器只执行确定性部分；**这里讲�
 
 - 教程套 ink 深色 Peak，把步骤页做成悼词
 - 叙事每节配一张「氛围图」，读起来像相册
-- 短文加 TOC；无图原稿硬补三张配图
+- 短文加目录；无图原稿硬补三张配图
 - Decision 里写了 Cut，Compose 一项都没删
 - 同一主张只换了 `theme:`，构成完全没变
+- REVIEW 里写了最大风险，通读时没有回去对
 
 ## 新主题
 
 只在六种人格都不成立时增加——加的是 Editorial Mode，不是色板。
 
+**先过这一关：它是否改变了「编辑人格」与「视觉构成」？** 如果只是换背景色、换 accent、换字体颜色，不允许新增。
+
 1. `assets/themes.json` 按现有键加一节（含 `image`: flush / soft / line），不发明新键、不加字号。
-2. `python3 scripts/render.py --specimen` 生成六格对照板，看它是不是真的区别于已有六种。
+2. `python3 scripts/render.py --specimen` 生成对照板，看它是不是真的区别于已有六种。
 3. 用 `eval/` 任一用例渲染并通读 390px：`python3 scripts/render.py eval/skills.md --theme 新主题`。
 4. 三关过后，把气候与用途补进本文档的六人表（变七人表）。

@@ -8,6 +8,6 @@
 
 **可用**：有限 flex、linear-gradient、圆角、阴影、系统字体（含宋体衬线、等宽）。
 
-图片尺寸下限与落地命名见 `references/direction.md` §9；封面比例与安全区见 §6。
+图片尺寸下限与落地命名见 `references/direction.md`「素材落地」；封面比例与安全区见「封面工艺」。
 
 Gate 1 FAIL = 粘贴后一定坏，修到 PASS 才交付。半角标点、字号超 6 级是「建议改」，逐条确认。预览按 390px，不要按桌面宽度判断。
