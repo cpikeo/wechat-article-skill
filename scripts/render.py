@@ -253,20 +253,19 @@ class R:
                 f'font-weight:600;color:{color or self.t["text"]};box-sizing:border-box;">{self.leaf(glyph)}</span>')
 
     def masthead(self, meta, minutes):
-        """正文开头只放 kicker / deck / 日期行。title 是平台原生字段（草稿标题栏），
-        正文里再印一遍 = 读者看到两个标题；断行标记 | 只服务原生标题的排版意图。"""
+        """正文开头一行元信息，左右布局：左 kicker（含印章）、右阅读时长。
+        title/author/发布日期都是平台原生字段（标题栏 / 作者栏 / 元信息行自带发布时间），
+        正文再印 = 读者看到两遍（线上实测：日期与原生元信息行重复）。"""
         t, out = self.t, []
         kicker = meta.get("kicker", t["kicker"])
-        if t["seal"]:
-            out.append(f'<section style="display:flex;align-items:center;gap:10px;">'
-                       f'{self.seal(meta.get("seal", t["seal"]))}{self.micro(kicker)}</section>')
-        else:
-            out.append(self.micro(kicker))
+        left = (f'<section style="display:flex;align-items:center;gap:10px;">'
+                f'{self.seal(meta.get("seal", t["seal"]))}{self.micro(kicker)}</section>'
+                if t["seal"] else self.micro(kicker))
+        right = self.p(self.leaf(f"约 {minutes} 分钟阅读"), MICRO, t["muted"])
+        out.append(f'<section style="display:flex;align-items:center;justify-content:space-between;gap:10px;">'
+                   f'{left}{right}</section>')
         if meta.get("deck"):
             out.append(self.p(self.inline(meta["deck"]), BODY, t["sub"], "margin-top:12px;"))
-        info = " · ".join(x for x in (meta.get("date"), f"约 {minutes} 分钟阅读") if x)
-        out.append(f'<section style="display:flex;align-items:center;gap:10px;margin-top:18px;">'
-                   f'{self.rule(20, 1, t["muted"], False)}{self.p(self.leaf(info), MICRO, t["muted"])}</section>')
         return f'<section style="padding-top:4px;">{"".join(out)}</section>' + \
             f'<section style="height:1px;background:{t["line"]};margin-top:{self.g(24)}px;">{BR}</section>'
 
@@ -274,10 +273,7 @@ class R:
         t, ending = self.t, re.search(r"结语|尾声|写在最后|后记", text)
         title = self.p(self.inline(text), DISPLAY, t["text"],
                        f"font-weight:700;line-height:1.5;letter-spacing:1px;font-family:{self.font};")
-        if t["heading"] == "dot":
-            mark = (f'<section style="width:6px;height:6px;border-radius:50%;background:{t["muted"]};'
-                    f'margin-bottom:14px;">{BR}</section>')
-        elif ending:
+        if ending:
             mark = self.micro("—", extra="margin-bottom:10px;")
         elif t["heading"] == "seal":
             mark = f'<section style="margin-bottom:12px;">{self.seal(f"{n:02d}", 26)}</section>'
@@ -285,7 +281,7 @@ class R:
             mark = ""
         else:
             mark = self.micro(f"{n:02d}", extra="margin-bottom:10px;")
-        return f'<section style="margin:{self.g(56)}px 0 {self.g(20)}px;">{mark}{title}</section>'
+        return f'<section style="margin:{self.g(44)}px 0 {self.g(20)}px;">{mark}{title}</section>'
 
     def h3(self, text):
         return f'<section style="margin:{self.g(28)}px 0 {self.g(12)}px;">' + \
@@ -648,6 +644,8 @@ def compose_gate(meta, blocks, base="."):
             should.append("Peak 紧邻 quote/data：两个停顿叠在一起会稀释高潮")
         if k == "h2" and EMOJI.search(blocks[i][1]):
             should.append("标题含 emoji：结构图标只用文字/数字/几何")
+        if k == "h2" and re.match(r"[一二三四五六七八九十百]+、|\d+[.、]", blocks[i][1]):
+            should.append("H2 自带序数（一、/1、）：主题数字标记与目录已编号，序数叠三层，删标题里的")
         if k == "table" and blocks[i][1] and len(blocks[i][1][0]) > 3:
             should.append("表格超过 3 列：手机上会碎，拆表或改成 data")
     for (a, _), (b, _) in zip(imgs, imgs[1:]):
@@ -921,8 +919,10 @@ def main():
     # 预览模拟平台原生标题栏 / 作者行：title、author 只进原生字段，正文不再重印。
     # 复制按钮只复制 #c，模拟标题栏不会被带进编辑器。
     nt = H.escape(api_title(meta.get("title", "")))
-    au = H.escape(meta.get("author", ""))
-    native = (f'<div class="nt"><h1>{nt}</h1>' + (f'<p class="au">{au}</p>' if au else "") + "</div>") if nt else ""
+    # 平台原生元信息行自带发布日期；预览用「作者 + frontmatter 日期」模拟，
+    # 与正文对看：日期应只在这一行出现一次。
+    au_line = H.escape("  ".join(x for x in (meta.get("author", ""), meta.get("date", "")) if x))
+    native = (f'<div class="nt"><h1>{nt}</h1>' + (f'<p class="au">{au_line}</p>' if au_line else "") + "</div>") if nt else ""
     open(prev, "w", encoding="utf-8").write(
         PREVIEW.format(title=H.escape(meta.get("title", "")), theme=THEMES[key]["name"],
                        cover=cover_block(meta, base), native=native, body=body))

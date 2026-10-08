@@ -91,6 +91,13 @@ RENDER_CHECKS = (
      "> 钩子。\n\n正文一段。\n",
      ("欢迎留言聊聊。", "观察内容与商业的人"),
      ("回归用例", "固定标题", "甲木")),
+    # 线上事故回归：原生元信息行自带发布日期，正文 masthead 再印日期 = 两遍。
+    # masthead 只留左右布局一行：左 kicker、右阅读时长。
+    ("masthead 左右布局且不印发布日期",
+     "date: 2026年10月8日\n",
+     "正文一段。\n",
+     ("约 1 分钟阅读", "justify-content:space-between"),
+     ("2026年10月8日",)),
 )
 
 
@@ -243,7 +250,7 @@ def platform_fields_ok():
     with tempfile.TemporaryDirectory() as d:
         md = os.path.join(d, "a.md")
         open(md, "w", encoding="utf-8").write(
-            HEAD + "author: 幻海低语者   # 行内注释不能混进值里\nbio: 一句话\n---\n\n"
+            HEAD + "author: 幻海低语者   # 行内注释不能混进值里\nbio: 一句话\ndate: 2026年10月8日\n---\n\n"
                   "> 所有人都在问 AI 会不会让自己失业。\n\n正文一段。\n")
         code, log = run([os.path.join(HERE, "render.py"), md, "-o", os.path.join(d, "o.html")], d)
         if code != 0:
@@ -252,11 +259,13 @@ def platform_fields_ok():
         prev = open(os.path.join(d, "o_预览.html"), encoding="utf-8").read()
         meta = json.load(open(os.path.join(d, "o.meta.json"), encoding="utf-8"))
     problems = []
-    for bad in ("回归用例", "固定标题", "幻海低语者"):
+    for bad in ("回归用例", "固定标题", "幻海低语者", "2026年10月8日"):
         if bad in body:
             problems.append(f"正文泄漏原生字段：{bad}")
     if "回归用例｜固定标题" not in prev or "幻海低语者" not in prev:
         problems.append("预览没有模拟原生标题栏/作者行")
+    if "2026年10月8日" not in prev:
+        problems.append("预览原生元信息行没有日期（日期应只在这一行出现）")
     if meta["api_title"] != "回归用例｜固定标题":
         problems.append(f"api_title 未转换断行标记：{meta['api_title']}")
     if meta["author"] != "幻海低语者":
@@ -373,6 +382,16 @@ def material_ok():
     if calls["del"] != [{"media_id": "M1"}]:
         problems.append(f"del_material payload 异常：{calls['del']}")
     return not problems, ("；".join(problems) if problems else "复用·验活·删除重传·总数·翻页·删除 全对")
+
+
+def letter_heading_ok():
+    """暖信笺 H2 不再有孤立圆点（线上反馈：多余无用）。letter 无 seal，
+    样张里任何 border-radius:50% 都只能来自圆点标记。"""
+    sys.path.insert(0, HERE)
+    import render as _r
+    _, _, _, body = _r.render(_r.SPECIMEN_MD, "letter")
+    ok = "border-radius:50%" not in body
+    return ok, ("" if ok else "letter 仍渲染圆形标记")
 
 
 # ---- P3：Word 抽取回归 ----
@@ -585,6 +604,12 @@ def main():
     print(f"   {'PASS' if ok else 'FAIL'} · {why}")
     if not ok:
         fails.append("素材管理")
+
+    print("⑫ 暖信笺无孤立圆点（线上反馈回归）")
+    ok, why = letter_heading_ok()
+    print(f"   {'PASS' if ok else 'FAIL'} · {why or 'H2 不再挂圆点'}")
+    if not ok:
+        fails.append("letter 圆点")
 
     if a.shots:
         shot_ok = shots()
