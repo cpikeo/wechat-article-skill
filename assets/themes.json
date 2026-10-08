@@ -1,0 +1,26 @@
+{
+  "paper": {
+    "name": "静纸 Silent Paper",
+    "text": "#232323", "sub": "#6B6B6B", "muted": "#9A9995", "line": "#E9E7E2",
+    "field": "#F6F5F1", "accent": "#6A7567", "dark": "#232323", "on_dark": "#FFFFFF",
+    "display": "sans", "leading": 1.9, "radius": 2,
+    "kicker": "ESSAY", "toc_label": "CONTENTS",
+    "heading": "number", "peak": "rule", "divider": "dots", "quote": "plain", "seal": ""
+  },
+  "letter": {
+    "name": "暖信笺 Warm Letter",
+    "text": "#362A20", "sub": "#7A6250", "muted": "#A8927A", "line": "#EEE1CC",
+    "field": "#F7EFE3", "accent": "#B8583A", "dark": "#362A20", "on_dark": "#FFFFFF",
+    "display": "sans", "leading": 1.95, "radius": 10,
+    "kicker": "LETTER", "toc_label": "这篇想和你聊聊",
+    "heading": "dot", "peak": "field", "divider": "rule", "quote": "plain", "seal": ""
+  },
+  "ink": {
+    "name": "酌墨 Wine Ink",
+    "text": "#1C1A1A", "sub": "#6E6764", "muted": "#A39C98", "line": "#E8DFDB",
+    "field": "#F5EEEB", "accent": "#7A2E2E", "dark": "#1C1A1A", "on_dark": "#FBF8F6",
+    "display": "serif", "leading": 1.9, "radius": 0,
+    "kicker": "REVIEW", "toc_label": "IN THIS ISSUE",
+    "heading": "seal", "peak": "dark", "divider": "seal", "quote": "serif", "seal": "酌"
+  }
+}
