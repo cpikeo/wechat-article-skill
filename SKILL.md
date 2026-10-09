@@ -17,10 +17,10 @@ description: 把 Markdown/Word/纯文本做成可直接粘贴进公众号编辑�
 |---|---|
 | UNDERSTAND | 只读一次原文：谁在读、为什么读、读完记住哪一句 |
 | JUDGE | 写 Decision（见下） |
-| EDIT | 按 Decision 改文字（不改事实）：先删，再合并，最后顺句子 |
+| EDIT | 按 Decision 改文字（不改事实）：先删，再合并，最后顺句子。**原稿已经成立就不改** |
 | DIRECT / VISUALIZE / SELECT | 先定语法再取资产：现有素材 > CSS 图示 > 生成 > 无图；逐张 留下/重做/删除 |
 | COMPOSE | 输出 Composed Markdown（全流程唯一可交付源） |
-| RENDER | `python3 scripts/render.py 文章.md` → 正文 HTML + 390px 预览（模拟原生标题/作者栏）+ `*.meta.json` + Gate 1/2 + Gate 3 证据 |
+| RENDER | `python3 scripts/render.py 文章.md` → 正文 HTML + 390px 预览（模拟原生标题/作者栏 · 封面两种裁切 · 正文资产表）+ `*.meta.json` + Gate 1/2 + Gate 3 证据 |
 | VERIFY / REFINE | 对照证据通读预览，Gate 3 只写 KEEP/REVISE/DELETE；只改 Markdown；「必须改」或 REVISE 才允许二次渲染 |
 
 默认全自动。交付：Decision + 三关结论 + 用户待办（署名 / 补素材 / 粘贴）。
@@ -30,12 +30,14 @@ description: 把 Markdown/Word/纯文本做成可直接粘贴进公众号编辑�
 | 何时 | 读什么 |
 |---|---|
 | 每次 | 本文件 |
-| JUDGE–SELECT | `references/decide.md`（判断）与 `references/direction.md`（视觉） |
+| JUDGE / EDIT | `references/decide.md`（判断与人格） |
+| 要图景时（有图 / 要做封面 / 要写生成描述 / 要筛资产） | `references/direction.md`（视觉） |
 | Gate 1 FAIL、手改 HTML | `references/platform.md` |
 | 发布 / 草稿 / 凭证 / 素材 | `references/publish.md`（凭证与默认字段来自 `config.json`） |
 | 回归 | `python3 scripts/selftest.py` |
 | `eval/` 语料 | 只由回归脚本读取，**不加载进 Context** |
 
+全文无图、且封面已由用户给定（不是 `todo`）时**不读 `direction.md`**——它是本文件之外最大的一块 Context，只在真的要做视觉决定时才付。
 同一任务内 references 读一次即可，不重复加载。
 脚本不是设计规则来源；只执行**可确定**的那部分判断，并把 Gate 3 要用的证据摆出来。
 
@@ -66,7 +68,6 @@ REVIEW 是先承诺；通读后落 KEEP/REVISE/DELETE + **Which element should d
 - **Budget**：≤800 字 0–1 张；800–2000 1–3 张；2000+ 2–4 张；`todo` 占预算；封面单列且必须有；同一职责最多两次。
 - **SELECT**：留下/重做/删除；留下的写一句「为什么是这张」；优先删，而不是重生成。
 - **事实安全**：视觉不得制造事实；事实性生成图标注「示意」，宁可留 `todo`。
-- **连续性**：多条生成描述逐字照抄同一套光源/材质/色盘/镜头。
 - **封面**：独立 art direction，讲主张不讲话题；2.35:1，主体在中央安全区（1:1 裁切仍成立），默认不放文字。
 - **节奏**：按 Rhythm 分配，不按篇幅均摊；长段后停顿，高潮前留空。
 
@@ -92,7 +93,7 @@ theme: letter            # paper / letter / ink / frost / bone / folio
 density: airy            # dense / standard / airy
 deck: 一句副题           # 可选；与 lead 不要叠两个钩子
 date: 2026年10月8日      # 原生元信息行自带发布时间；正文不重印，仅预览模拟
-toc: true                # ≥3 个 H2 才生效，且长文才用
+toc: true                # ≥3 个 H2 才生效，长文才用；渲染时排在第一段之后（首屏先给钩子）
 author: 甲木             # 平台原生作者栏；正文不重印
 bio: 一句话简介          # 文末刊尾落款
 cta: 结尾一句话          # 文末刊尾细线框内
@@ -104,8 +105,12 @@ source: https://…        # 可选；原文链接 → 草稿底部「阅读原�
 ## QA
 
 - **Gate 1 Platform**（脚本）：微信 HTML 硬约束。FAIL 不交付。
-- **Gate 2 Composition**（脚本）：结构/密度/首屏/图片职责与预算/分辨率/封面裁切/图示与正文重复。「必须改」修完；「建议改」逐条给理由。
-- **Gate 3 Art Direction**：对照证据通读 390px 预览——CONTENT / EDITORIAL / VISUAL / MOBILE / FINAL JUDGMENT；只写 KEEP/REVISE/DELETE，强制回答 **Which element should disappear?** 与每张图的「为什么是这张」。不打分。
+- **Gate 2 Composition**（脚本）：只拦**缺陷**——坏了的、无法核对的、违反本文件已写明规则的（图不存在 / 无职责 / 分辨率 / 预算、bars 非法、封面缺失、字段超上限……）。「必须改」修完；「建议改」逐条给理由。
+- **Gate 3 Art Direction**：对照证据通读 390px 预览（含资产表）——CONTENT / EDITORIAL / VISUAL / MOBILE / FINAL JUDGMENT；只写 KEEP/REVISE/DELETE，强制回答 **Which element should disappear?** 与每张图的「为什么是这张」。不打分。
+- **发布前**：`python3 scripts/publish.py --html … --meta … --preflight`（不联网）把将要上行的字段 / 封面 / 待传图片摆出来对一遍，再真发。
+
+**机器只验可确定的缺陷。** 密度、节奏、强调多少、裁切好不好看是判断，一律交给 Gate 3 通读——不写成阈值。
+**「建议改」不是待办清单**：先问「改了读者多得到什么」，答不出 → 不改，并在交付里写明为什么不改。
 
 ## 硬规则
 

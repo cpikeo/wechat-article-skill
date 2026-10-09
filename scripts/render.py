@@ -10,6 +10,7 @@
 """
 import argparse
 import html as H
+import itertools
 import json
 import math
 import os
@@ -52,7 +53,7 @@ def typo(s):
     s = re.sub(f"(?<=[{CJK}])([,;:!?])|(?<=[A-Za-z0-9])([,;!?])\\s*(?=[{CJK}])",
                lambda m: "，；：！？"[";,;:!?".index(m.group(1) or m.group(2))], s)
     s = s.replace("...", "……")
-    q = iter(["“", "”"] * 200)
+    q = itertools.cycle("“”")          # 一篇文章里直引号可能超过任何固定配额
     return re.sub(r'"', lambda m: next(q), s)
 
 
@@ -382,7 +383,7 @@ class R:
 
     def img(self, alt, src, role):
         t = self.t
-        role0 = (role or "").split()[0]
+        role0 = next(iter((role or "").split()), "")   # 无职责的图不该崩：Gate 2 会判「必须改」
         mt = self.g(44 if role0 in QUIET else 32)
         if not src or TODO.match(src):
             return (f'<section style="margin:{mt}px 0;padding:36px 16px;border:1px dashed {t["muted"]};'
@@ -421,7 +422,7 @@ class R:
                 + self.p(self.inline(meta["cta"]), SMALL, t["sub"], "line-height:2;letter-spacing:1px;")
                 + "</section>")
         if meta.get("bio"):
-            seal = (f'<section style="margin-bottom:10px;">{self.seal(meta.get("seal", t["seal"]))}</section>'
+            seal = (f'<section style="margin-bottom:10px;">{self.seal(t["seal"])}</section>'
                     if t["seal"] else "")
             out.append(f'<section style="margin-top:{self.g(28)}px;text-align:center;">{seal}'
                        + self.p(self.leaf(typo(meta["bio"])), MICRO, t["muted"], "letter-spacing:1px;")
@@ -512,8 +513,6 @@ def first_screen(meta, blocks):
     layers = [k for k in kinds[:stop] if k in {"lead", "img", "note", "data", "bars", "table", "quote"}]
     if meta.get("deck"):
         layers.insert(0, "deck")
-    if meta.get("toc", "").lower() in ("true", "yes", "1") and len([b for b in blocks if b[0] == "h2"]) >= 3:
-        layers.append("toc")
     return layers
 
 
@@ -521,6 +520,7 @@ def compose_gate(meta, blocks, base="."):
     """Gate 2：可确定的结构与资产检查。审美判断留给 Gate 3。"""
     must, should = [], []
     kinds = [b[0] for b in blocks]
+    heads = [b[1] for b in blocks if b[0] == "h2"]
     peaks = kinds.count("peak")
     if peaks > 1:
         must.append(f"Visual Peak 出现 {peaks} 次：高潮只能有一个")
@@ -531,11 +531,8 @@ def compose_gate(meta, blocks, base="."):
             should.append("Peak 超过一句：高潮应是 Claim，不是段落")
     paras = [b[1] for b in blocks if b[0] == "p"]
     marks = sum(len(re.findall(r"==.+?==|<u>.+?</u>", p)) for p in paras)
-    emph = sum(1 for p in paras if re.search(r"==|\*\*|<u>", p))
     if marks > 3:
         should.append(f"==标记== {marks} 处（>3）：强调稀缺才有价值，降级为字重或删除")
-    if paras and emph / len(paras) > 0.35:
-        should.append(f"{emph}/{len(paras)} 段带强调：已接近机械装饰，多数段落应完全不强调")
     imgs = [(i, b[1]) for i, b in enumerate(blocks) if b[0] == "img"]
     roles = []
     for _, (alt, src, role) in imgs:
@@ -610,12 +607,11 @@ def compose_gate(meta, blocks, base="."):
             should.append(f"bars {len(items)} 项：手机上超过 6 行就失去对比意义")
         elif nums and max(nums) / (min(nums) or 1) < 1.3:
             should.append("bars 各项数值接近：长度表达不出差异，改回文字或表格")
-    # 同一件事的三条阈值集中成一张表：数一数就够，不必各写一段话。
-    for k, cap, why in (("note", 2, "旁注过多，优先删除而不是换样式"),
-                        ("hr", 2, "章节标题已经是停顿，--- 能少则少"),
-                        ("quote", 3, "他者声音过多会变成第二个节奏")):
-        if kinds.count(k) > cap:
-            should.append(f"{kinds.count(k)} 处 {k}：{why}")
+    # 只有 SKILL.md 写死的那一条进 Gate 2：--- 少于 H2 数。
+    # 旁注 / 引文 / 原语总量是密度判断——设阈值就等于逼着稿子为清单让路，交给 Gate 3 对着证据判断。
+    if kinds.count("hr") >= len(heads) and kinds.count("hr"):
+        should.append(f"转场 {kinds.count('hr')} 处 ≥ 章节 {len(heads)} 节："
+                      f"--- 应少于章节数，章节标题本身就是停顿")
     heavy = {"quote", "peak", "note", "data", "bars", "table", "code", "img"}
     run = 0
     for i, k in enumerate(kinds):
@@ -624,8 +620,6 @@ def compose_gate(meta, blocks, base="."):
             should.append(f"第 {i - 1}-{i + 1} 块连续三个非正文原语：至少让一段文字回来呼吸")
         if k in ("h2", "h3") and i + 1 < len(kinds) and kinds[i + 1] in ("h2", "h3"):
             should.append("标题后紧跟标题：中间缺少正文")
-        if k == "peak" and {kinds[j] for j in (i - 1, i + 1) if 0 <= j < len(kinds)} & {"quote", "data"}:
-            should.append("Peak 紧邻 quote/data：两个停顿叠在一起会稀释高潮")
         if k == "h2" and EMOJI.search(blocks[i][1]):
             should.append("标题含 emoji：结构图标只用文字/数字/几何")
         if k == "h2" and re.match(r"[一二三四五六七八九十百]+、|\d+[.、]", blocks[i][1]):
@@ -635,15 +629,6 @@ def compose_gate(meta, blocks, base="."):
     for (a, _), (b, _) in zip(imgs, imgs[1:]):
         if sum(visible_len(blocks[k][1]) for k in range(a + 1, b) if blocks[k][0] == "p") < 40:
             should.append("两张图片之间缺少文字承接：合并、删减或补一段过渡")
-    heavies = sum(1 for k in kinds if k in heavy)
-    if heavies > 6:
-        should.append("非正文原语偏多：先问哪一个可以消失，再考虑增加")
-    run = 0
-    for k, b in blocks:
-        run = run + visible_len(b) if k == "p" else 0
-        if run > 1400:
-            should.append("连续 1400+ 字纯正文：确认是刻意的沉浸段，否则考虑一次停顿")
-            run = -10 ** 9
     for p in paras:
         if visible_len(p) > 180:
             should.append(f"段落 {visible_len(p)} 字：「{p[:14]}…」手机上超过 8 行，在语义断点拆开")
@@ -652,8 +637,6 @@ def compose_gate(meta, blocks, base="."):
         must.append("缺少标题")
     elif len(title) > 15 and "|" not in title:
         should.append("标题 >15 字且未指定断行：用 | 在语义处断开，避免由屏宽决定断点")
-    if "lead" not in kinds and not meta.get("deck"):
-        should.append("首屏没有 lead / deck：读者凭什么继续往下读？")
     if meta.get("deck") and "lead" in kinds:
         should.append("deck 与 lead 同时出现：首屏两个钩子，留一个")
     if meta.get("density", "standard") not in ("dense", "standard", "airy"):
@@ -674,7 +657,6 @@ def compose_gate(meta, blocks, base="."):
         if dup:
             should.append(f"图示数字与正文重复（{'、'.join(dup)}）：正文只留关系，数字交给图示")
     # 首屏：短文开目录，第一屏就只剩目录。
-    heads = [b[1] for b in blocks if b[0] == "h2"]
     if meta.get("toc", "").lower() in ("true", "yes", "1") and len(heads) >= 3:
         if chars < 1600 or len(heads) < 4:
             should.append(f"{chars} 字 / {len(heads)} 节的短文开了目录：首屏被目录占掉，正文被推到折线以下")
@@ -706,11 +688,19 @@ def evidence(meta, blocks, base="."):
     gaps = [sum(visible_len(blocks[j][1]) for j in range(a + 1, b) if blocks[j][0] == "p")
             for a, b in zip(idx, idx[1:])]
     longest = max((visible_len(p) for p in paras), default=0)
+    run = mx_run = 0                     # 最长连续正文：密度判断的事实，不是阈值
+    for k, b in blocks:
+        run = run + visible_len(b) if k == "p" else 0
+        mx_run = max(mx_run, run)
     out.append(f"节奏 · 非正文块 {sum(1 for k in kinds if k != 'p')}/{len(kinds)}"
-               + (f" · 图间承接最少 {min(gaps)} 字" if gaps else "") + f" · 最长段落 {longest} 字")
+               + (f" · 图间承接最少 {min(gaps)} 字" if gaps else "")
+               + f" · 最长段落 {longest} 字 · 最长连续正文 {mx_run} 字")
     strong = sum(len(re.findall(r"==.+?==|<u>.+?</u>", p)) for p in paras)
     weak = sum(len(re.findall(r"\*\*.+?\*\*", p)) for p in paras)
-    out.append(f"结构 · H2 {len(heads)} · 转场 {kinds.count('hr')} · Peak {kinds.count('peak')}"
+    toc_on = meta.get("toc", "").lower() in ("true", "yes", "1") and len(heads) >= 3
+    out.append(f"结构 · H2 {len(heads)} · 转场 {kinds.count('hr')} · 引文 {kinds.count('quote')}"
+               + (" · 目录（排在第一段之后）" if toc_on else "")
+               + f" · 旁注 {kinds.count('note')} · Peak {kinds.count('peak')}"
                f" · 强调 =={strong} / **{weak}")
     if "peak" in kinds:
         i = kinds.index("peak")
@@ -739,9 +729,11 @@ background:#fff;padding:0 5px}}
 .cv{{max-width:390px;margin:24px auto 0;background:#fff;padding:16px;box-sizing:border-box}}
 .cv h4{{margin:0 0 8px;font-size:11px;letter-spacing:1.6px;color:#8A847A;font-weight:600}}
 .cv img{{display:block;width:100%;background:#F0EEE9}}
+.as{{margin-top:14px;padding-top:12px;border-top:1px solid #EFEDE9}}
+.as img{{display:block;width:100%;background:#F0EEE9}}
 .hint{{margin:16px 0 0;font-size:11px;line-height:1.7;color:#A8A29A}}</style></head>
 <body><div class="bar"><span>{theme} · 390px</span><button onclick="cp(this)">复制到公众号</button></div>
-{cover}<div class="phone">{native}<div id="c">{body}</div><div class="fold"><b>首屏 ≈780px</b></div></div>
+{cover}{assets}<div class="phone">{native}<div id="c">{body}</div><div class="fold"><b>首屏 ≈780px</b></div></div>
 <script>function cp(b){{var r=document.createRange();r.selectNodeContents(document.getElementById('c'));
 var s=getSelection();s.removeAllRanges();s.addRange(r);var ok=document.execCommand('copy');s.removeAllRanges();
 b.textContent=ok?'已复制，去编辑器粘贴':'请手动全选复制';setTimeout(function(){{b.textContent='复制到公众号'}},2200)}}</script>
@@ -765,6 +757,35 @@ def cover_block(meta, base):
             f'<p class="hint">默认不放文字。{warn}</p></div>')
 
 
+def asset_sheet(blocks, base="."):
+    """预览顶部的资产对照表：每张正文图按 390px 实际宽度呈现，附职责 / 说明 / 尺寸 / 体积。
+
+    配图闭环的最后一段：视觉决策 → 取资产 → 这里逐张过目（留下 / 重做 / 删除）→ 渲染进正文。
+    只出现在预览里，不进正文、不会被复制进编辑器。
+    """
+    imgs = [b for k, b in blocks if k == "img"]
+    if not imgs:
+        return ""
+    rows = []
+    for alt, src, role in imgs:
+        tag = H.escape(role or "（未声明职责）")
+        if not src or TODO.match(src):
+            rows.append(f'<div class="as"><p class="hint">待补 · {tag}<br>{H.escape(alt or "（无说明）")}</p></div>')
+            continue
+        fp = resolve(src, base)
+        if not os.path.exists(fp):
+            rows.append(f'<div class="as"><p class="hint">{tag} · 文件不存在：{H.escape(src)}</p></div>')
+            continue
+        wh, kb = img_size(fp), os.path.getsize(fp) // 1024
+        info = f"{wh[0]}×{wh[1]}（{wh[0] / wh[1]:.2f}:1）· {kb}KB" if wh else f"{kb}KB"
+        rows.append(f'<div class="as"><img src="{H.escape(src)}" alt="">'
+                    f'<p class="hint">{tag} · {info}<br>{H.escape(alt or "（无说明）")}</p></div>')
+    return (f'<div class="cv"><h4>正文资产 · {len(imgs)} 张（按 390px 实际宽度呈现）</h4>'
+            + "".join(rows)
+            + '<p class="hint">逐张只问三句：合这套语法吗？比正文多给什么？390px 上主语还站得住吗？'
+              '→ 留下 / 重做 / 删除。留下的要能说出「为什么是这张」。</p></div>')
+
+
 def render(md, theme=None):
     meta, blocks = parse(md)
     key = theme or meta.get("theme", "paper")
@@ -777,8 +798,10 @@ def render(md, theme=None):
                    f'<section style="height:1px;background:{r.t["line"]};margin-top:{r.g(24)}px;">{BR}</section>')
     heads = [b[1] for b in blocks if b[0] == "h2"]
     toc_done = meta.get("toc", "").lower() not in ("true", "yes", "1") or len(heads) < 3
+    # 目录排在第一段之后：首屏只留钩子，别让读者先看见一张目录（decide.md Rhythm）。
+    toc_after_p, seen_p = any(k == "p" for k, _ in blocks), False
     for kind, b in blocks:
-        if not toc_done and kind != "lead":
+        if not toc_done and kind != "lead" and (seen_p or not toc_after_p):
             out.append(r.toc(heads))
             toc_done = True
         if kind == "h2":
@@ -788,6 +811,7 @@ def render(md, theme=None):
             out.append(r.h3(b))
         elif kind == "p":
             out.append(r.para(b))
+            seen_p = True
         elif kind in ("lead", "quote"):
             out.append(r.quote(b[0], b[1], kind))
         elif kind == "peak":
@@ -910,7 +934,8 @@ def main():
     native = (f'<div class="nt"><h1>{nt}</h1>' + (f'<p class="au">{au_line}</p>' if au_line else "") + "</div>") if nt else ""
     open(prev, "w", encoding="utf-8").write(
         PREVIEW.format(title=H.escape(meta.get("title", "")), theme=THEMES[key]["name"],
-                       cover=cover_block(meta, base), native=native, body=body))
+                       cover=cover_block(meta, base), assets=asset_sheet(blocks, base),
+                       native=native, body=body))
     # 发布字段 sidecar：publish.py --meta 直接消费，保证草稿原生字段与预览所见一致。
     cover = (meta.get("cover") or "").strip()
     side = {
@@ -928,8 +953,7 @@ def main():
     print(f"{THEMES[key]['name']} → {out}\n预览 → {prev}\n发布字段 → {meta_path}（publish.py --meta 直接消费）\n")
     m1, s1 = check(body)
     m2, s2 = compose_gate(meta, blocks, base)
-    print(f"{THEMES[key]['name']} → {out}\n预览 → {prev}\n")
-    print("Gate 3 证据（可核对的都摆在这里；结论与艺术判断由通读的人 / 视觉模型给）")
+    print("\nGate 3 证据（可核对的都摆在这里；结论与艺术判断由通读的人 / 视觉模型给）")
     for line in evidence(meta, blocks, base):
         print("  " + line)
     for gate, must, should in (("Gate 1 Platform", m1, s1), ("Gate 2 Composition", m2, s2)):

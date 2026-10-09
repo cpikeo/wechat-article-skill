@@ -39,6 +39,8 @@ python3 scripts/publish.py --check-draft-switch
 python3 scripts/publish.py --html "文章.html" --meta "文章.meta.json"
 # 或手工给字段；命令行逐项覆盖 --meta，--meta 逐项覆盖 config.json
 python3 scripts/publish.py --html "文章.html" --cover "封面.jpg" --title "标题" --author "作者" --digest "摘要"
+# 发之前先验收（不联网）：把将要上行的 Gate 1 结论 / 标题·作者·摘要（含上限）/ 封面 / 待传图片摆出来
+python3 scripts/publish.py --html "文章.html" --meta "文章.meta.json" --preflight
 # 企业认证：config.json 里 submit=true，或单次加 --submit 真发布；查发布状态加 --check-publish-id ID
 ```
 
@@ -46,17 +48,10 @@ python3 scripts/publish.py --html "文章.html" --cover "封面.jpg" --title "�
 
 ## 永久素材管理（封面复用 / 对账 / 清理）
 
-草稿封面必须是**永久** MediaID。旧做法每次建草稿都 `add_material` 传新封面，
-发几次就堆几张同款永久素材。现在：
-
-- **复用**：封面按内容 sha256 记进 `.wechat_material_cache.json`（sha256→media_id），
-  同图直接复用；复用前 `get_material` 验活，素材在后台被删（40007）会自动重传并更新缓存。
-  `--no-reuse-cover` 强制重传；`--material-cache PATH` 换缓存位置。
-- **对账**：`--material-count`（官方 GET 接口，image+news 上限 100000）看总量；
-  `--list-materials [--material-type image|video|voice|news]` 翻页取全列表（count≤20/页）。
-- **清理**：`--delete-material MEDIA_ID` 调 `del_material`，不可恢复——先 `--list-materials` 核对。
-- **临时素材不接入**：`media/upload` 的临时素材 3 天过期、且 draft/add 封面要求永久 MediaID；
-  正文图片走 `media/uploadimg`（返回 url，不占永久素材额度），两者都不要混。
+草稿封面必须是**永久** MediaID。封面按内容 sha256 记进 `.wechat_material_cache.json` 复用
+（复用前 `get_material` 验活，后台被删会自动重传）；`--no-reuse-cover` 强制重传。
+对账 `--material-count` / `--list-materials [--material-type …]`，清理 `--delete-material MEDIA_ID`（不可恢复，先核对）。
+正文图片走 `media/uploadimg`（不占永久素材额度），临时素材（3 天过期）不接入。
 
 ## 与编辑器对齐的默认值（草稿底部状态）
 
@@ -73,6 +68,7 @@ python3 scripts/publish.py --html "文章.html" --cover "封面.jpg" --title "�
 
 | 现象 | 先看 |
 |---|---|
+| 预检报封面不存在 | meta.json 的相对封面按「文章目录」解析；确认图还在 images/ 下 |
 | ip not in whitelist | 白名单里的是不是这台机器的公网 IP |
 | 45004 | digest≤120字 / author≤16字 / title≤32字 |
 | 建草稿 48001 | 开关状态 + token 有效性 + 接口权限，不预设单因 |

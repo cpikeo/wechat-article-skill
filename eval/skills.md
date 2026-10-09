@@ -1,6 +1,5 @@
 ---
 title: 做了些爆款 Skills 以后，|我对 Skills 的看法
-kicker: ON SKILLS
 theme: paper
 density: standard
 author: 甲木

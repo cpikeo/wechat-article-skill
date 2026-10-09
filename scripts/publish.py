@@ -2,6 +2,8 @@
 """微信公众号官方 API：草稿 → 可选发布 → 永久链接；永久素材对账/复用/清理。只用标准库。
 
 排版流水线完成后再调用。`--submit` 仅企业认证账号；个人账号止步于草稿。
+发之前先 `python3 scripts/publish.py --html X.html --meta X.meta.json --preflight`：不调接口，
+把将要上行的 Gate 1 结论、原生字段（含上限）、封面与待传图片全摆出来，验收完再真发。
 `--check-draft-switch` 只查询灰度开关（开启不可逆，必须显式 `--enable-draft-switch`）。
 素材管理：封面永久素材按内容 sha256 复用（`--no-reuse-cover` 可关），
 `--material-count` / `--list-materials` / `--delete-material` 做对账与清理。
@@ -22,7 +24,8 @@ import urllib.request
 import urllib.error
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from render import api_title  # noqa: E402  标题断行标记的转换规则单一来源在 render.py
+from render import api_title, img_size  # noqa: E402  标题断行标记的转换规则与图片尺寸读取单一来源在 render.py
+from check import check  # noqa: E402
 
 API_BASE = "https://api.weixin.qq.com/cgi-bin"
 
@@ -331,6 +334,59 @@ def poll_publish_status(access_token, publish_id, interval=10, timeout=600):
     return {"status": None, "status_text": f"轮询超时（{timeout}s），发布任务可能仍在进行，请稍后手动用 --check-publish-id 查询", "article_urls": [], "raw": None}
 
 
+def resolve_cover(cover, html_path):
+    """封面相对路径按「文章目录」解析，不按当前工作目录。
+
+    meta.json 里的 cover 是 frontmatter 原值（相对 md），而发布命令常从仓库根执行——
+    不解析就会 FileNotFoundError 崩在上传那一步。
+    """
+    if not cover or os.path.isabs(cover) or os.path.exists(cover):
+        return cover
+    return os.path.join(os.path.dirname(os.path.abspath(html_path)), cover)
+
+
+def preflight(html_path, s):
+    """不调接口，先把「将要上行的东西」摆出来：Gate 1 + 原生字段 + 封面 + 待传正文图。
+
+    发布可靠性只能验到这一层——接口那边是否放行无法预演，但「发出去的东西对不对」必须能验。
+    """
+    html = open(html_path, encoding="utf-8").read()
+    must, should = check(html)
+    ok = not must
+    base = os.path.dirname(os.path.abspath(html_path))
+    local = [u for u in re.findall(r'<img[^>]+src="([^"]+)"', html)
+             if not u.startswith(("http://", "https://"))]
+    miss = [u for u in local if not os.path.exists(u if os.path.isabs(u) else os.path.join(base, u))]
+    print("预检（不调用接口）")
+    for m in must:
+        print("  必须改 ·", m)
+    for x in should:
+        print("  建议改 ·", x)
+    print(f"  Gate 1 Platform: {'PASS' if ok else 'FAIL'}")
+    for label, v, cap in (("标题", s["title"] or "", 32), ("作者", s["author"] or "", 16),
+                          ("摘要", s["digest"] or "", 120)):
+        print(f"  {label}  {v or '（空）'}（{len(v)}/{cap}）"
+              + (f"  ⚠ 超过官方上限 {cap}，将截断到 {cap} 字" if len(v) > cap else ""))
+    print(f"  原文链接  {s['source'] or '（无）'}")
+    cover = s["cover"]
+    if not cover:
+        ok = False
+        print("  封面  ⚠ 未设置（草稿必须有封面）")
+    elif not os.path.exists(cover):
+        ok = False
+        print(f"  封面  ⚠ 文件不存在：{cover}")
+    else:
+        wh, kb = img_size(cover), os.path.getsize(cover) // 1024
+        print(f"  封面  {cover}" + (f" · {wh[0]}×{wh[1]}（{wh[0] / wh[1]:.2f}:1）· {kb}KB" if wh else f" · {kb}KB"))
+    print(f"  正文图片  {len(local)} 张待上传" + (f" · ⚠ 缺失 {miss}" if miss else ""))
+    if miss:
+        ok = False
+    print(f"  留言 {'开' if s['open_comment'] else '关'} · 仅粉丝 {'是' if s['fans_only'] else '否'}"
+          f" · 建草稿后{'继续发布' if s['submit'] else '止步'}")
+    print("\n预检" + ("通过：可以上行" if ok else "未通过：先修完再发"))
+    return 0 if ok else 1
+
+
 # ---------- 一键流程 ----------
 
 def publish_html_article(appid, secret, html_path, cover_path, title, author=None, digest=None,
@@ -459,6 +515,8 @@ def main():
                     help="建草稿后继续提交发布（需要企业认证账号）；默认只建草稿，config.json 可把 submit 设为 true")
     ap.add_argument("--poll-timeout", type=int, default=600, help="发布状态轮询超时秒数，默认 600")
     ap.add_argument("--check-publish-id", default=None, help="只查询某个 publish_id 的发布状态，不做其它任何操作")
+    ap.add_argument("--preflight", action="store_true",
+                    help="不调接口：跑 Gate 1 并打印将上行的标题/作者/摘要（含上限）、封面与待传正文图，验收通过再真发")
     ap.add_argument("--check-draft-switch", action="store_true", help="只查询「草稿箱和发布功能」开关状态，不做其它任何操作")
     ap.add_argument(
         "--enable-draft-switch",
@@ -480,7 +538,16 @@ def main():
         cfg = load_config(args.config)
     except FileNotFoundError as e:
         ap.error(str(e))
-    s = resolve_settings(args, {}, cfg)  # 凭证与开关；文章字段等拿到 --meta 后重算
+    side = {}
+    if args.meta:
+        with open(args.meta, encoding="utf-8") as f:
+            side = json.load(f)
+    s = resolve_settings(args, side, cfg)
+    if args.preflight:                       # 预检不联网：先于凭证检查，没配凭证也能验
+        if not args.html:
+            ap.error("--preflight 需要 --html")
+        s["cover"] = resolve_cover(s["cover"], args.html)
+        sys.exit(preflight(args.html, s))
     appid, secret = s["appid"], s["secret"]
     if not (appid and secret):
         ap.error("缺少 AppID/AppSecret：写进 config.json（模板 config.example.json），或用 --appid/--secret 传入")
@@ -520,12 +587,9 @@ def main():
                 print(f"  {it.get('media_id')}\t{name}\t{it.get('url', '')}")
         return
 
-    side = {}
-    if args.meta:
-        with open(args.meta, encoding="utf-8") as f:
-            side = json.load(f)
     s = resolve_settings(args, side, cfg)
-    title, cover = s["title"], s["cover"]
+    title, cover = s["title"], resolve_cover(s["cover"], args.html or ".")
+    s["cover"] = cover
 
     missing = [n for n, v in [("--html", args.html), ("--cover", cover), ("--title", title)] if not v]
     if missing:

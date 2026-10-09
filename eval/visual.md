@@ -1,6 +1,5 @@
 ---
 title: AI 不缺算力|缺的是电
-kicker: INFRASTRUCTURE
 theme: frost
 density: airy
 deck: 当电成为算力的交期

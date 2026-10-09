@@ -1,6 +1,5 @@
 ---
 title: 好系统为什么都很无聊|关于基础设施的五个判断
-kicker: ESSAY
 theme: paper
 density: standard
 date: 2026年10月8日

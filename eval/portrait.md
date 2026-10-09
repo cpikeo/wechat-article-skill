@@ -1,6 +1,5 @@
 ---
 title: 山上那个人|和他守着的那条线
-kicker: LETTER
 theme: letter
 density: standard
 date: 2026年10月8日

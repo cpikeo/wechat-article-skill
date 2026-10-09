@@ -9,7 +9,8 @@
     # 内嵌图片解包到 输出.md 同目录的 images/ 下，md 里用相对路径引用
 
 退出码：0 成功；1 失败（文件不存在 / 不是合法 docx）。
-提取不了的复杂结构（表格、文本框）会以「[表格：…]」占位并在 stderr 提示。
+表格转成 Markdown 表格（合并单元格按普通格处理）；文本框等取不到的结构被跳过。
+抽完只是素材，不是成稿：图片必须补职责（![说明](路径 "职责")），文字还要走一遍 EDIT。
 """
 
 import argparse
@@ -88,7 +89,7 @@ def extract(docx_path, out_md):
     media_of = load_rels(z)
     out_dir = os.path.dirname(os.path.abspath(out_md)) or "."
     img_dir = os.path.join(out_dir, "images")
-    lines, img_n, skipped = [], 0, 0
+    lines, img_n, tables = [], 0, 0
 
     body = doc.find(f"{W}body")
     for el in body:
@@ -107,7 +108,7 @@ def extract(docx_path, out_md):
                 lines.append("|" + "---|" * ncols)
                 lines.extend(rows[1:])
                 lines.append("")
-                skipped += 1  # 计数改为"转换的表格数"
+                tables += 1
             continue
         if tag != f"{W}p":
             continue
@@ -151,7 +152,10 @@ def extract(docx_path, out_md):
     print(f"  段落 {sum(1 for l in lines if l and not l.startswith(('#','-','![')))} · "
           f"标题 {sum(1 for l in lines if l.startswith('#'))} · "
           f"列表 {sum(1 for l in lines if l.startswith('- '))} · 图片 {img_n}"
-          + (f" · 表格 {skipped}（已转 Markdown 表格）" if skipped else ""))
+          + (f" · 表格 {tables}（已转 Markdown 表格）" if tables else ""))
+    if img_n:
+        print(f"  ⚠ 抽出的 {img_n} 张图没有职责：进 render 前先补成 ![说明](路径 \"职责\")，"
+              f"否则 Gate 2 会判「必须改」", file=sys.stderr)
     return 0
 
 

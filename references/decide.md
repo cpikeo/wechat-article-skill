@@ -50,7 +50,7 @@ REVIEW 是**先承诺**：写不出「最大的视觉风险」，说明还没看
 
 ## 删除与强调
 
-**Subtraction Before Addition。** 每篇至少找：一个可删元素、一个可弱化层级、一处可合并结构、一段可缩短文字、一处可取消装饰。
+**Subtraction Before Addition。** 每篇至少**检查**这五处：一个可删元素、一个可弱化层级、一处可合并结构、一段可缩短文字、一处可取消装饰——检查的结论可以是「都不用动」。
 
 普通信息不强调。`**` 弱强调；`==` 全篇 ≤3；结论进 Peak。
 禁止：标题失控、每段加粗、每节卡片、每个数字做成 data、每段配图、原语互抢、图片来源与正文无关。
@@ -67,9 +67,6 @@ REVIEW 是**先承诺**：写不出「最大的视觉风险」，说明还没看
 
 ## 新主题
 
-**门槛：新人格必须让上表至少两个轴发生变化**（只换背景色、accent 或字体颜色 = 旧人格的第二种配色，`selftest` 直接 FAIL）。
-
-1. `assets/themes.json` 按现有键加一节（六个轴 + 色值 + `image` + `leading` / `radius`），不发明新键、不加字号。
-2. `python3 scripts/render.py --specimen` 生成对照板（`assets/themes.html`），看它是不是真的区别于已有六种。
-3. 用 `eval/` 任一用例渲染并通读 390px：`python3 scripts/render.py eval/skills.md --theme 新主题`。
-4. 三关过后，把气候与用途补进本文档的六人表（变七人表）。
+**门槛：新人格必须让上表至少两个轴发生变化**（只换颜色 = 旧人格的第二种配色，`selftest` 直接 FAIL）。
+步骤：`assets/themes.json` 按现有键加一节（不发明新键、不加字号）→ `render.py --specimen` 看它是否真的区别于已有六种
+→ `render.py eval/skills.md --theme 新主题` 通读 390px → 三关过后把气候与用途补进上面的六人表。

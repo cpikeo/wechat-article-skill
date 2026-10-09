@@ -20,7 +20,7 @@ Python 3，只用标准库，无需 `pip install`。（可选：发布需要公�
 ```bash
 python3 scripts/render.py 文章.md
 # 产出 文章_{theme}.html          ← 粘贴进公众号（不含标题/作者，它们走原生字段）
-#      文章_{theme}_预览.html    ← 390px 对照（模拟原生标题/作者栏）+ 封面两种裁切 + 一键复制
+#      文章_{theme}_预览.html    ← 390px 对照（模拟原生标题/作者栏 + 封面两种裁切 + 正文资产表 + 一键复制）
 #      文章_{theme}.meta.json    ← 发布字段：title(转｜)/author/digest/cover/原文链接
 # 终端打印 Gate 3 证据 + Gate 1/2 结论
 ```
@@ -32,6 +32,7 @@ python3 scripts/render.py 文章.md
 | Word | `python3 scripts/extract_docx.py 文件.docx -o 文章.md`，再渲染（图必须补职责） |
 | 气候对照板 | `python3 scripts/render.py --specimen` → `assets/themes.html`（入库，随时重生成） |
 | 发布草稿 | `python3 scripts/publish.py --help`（先排完再发） |
+| 发前验收 | `python3 scripts/publish.py --html 文章.html --meta 文章.meta.json --preflight`（不联网） |
 | 回归 | `python3 scripts/selftest.py`（CI 每次提交都会跑） |
 | Gate 3 截图 | `python3 scripts/selftest.py --shots` → `assets/shots/*.png`（生成物，不入库） |
 
@@ -112,6 +113,7 @@ author: 甲木          # 平台原生作者栏，正文不重印
 | Gate 3 Art Direction | 对照证据通读 390px 预览：CONTENT / EDITORIAL / VISUAL / MOBILE / FINAL JUDGMENT | 结论只写 KEEP / REVISE / DELETE，强制回答 **Which element should disappear?** 与「为什么是这张」 |
 
 Gate 3 不打分。数字只服务回归，不替代艺术判断。
+**机器只验可确定的缺陷**（坏了 / 无法核对 / 违反已写明的规则）；密度、节奏、强调多少、裁切好不好看是判断，不写成阈值。「建议改」不是待办清单：答不出「改了读者多得到什么」就不改。
 
 ## 仓库
 
@@ -123,11 +125,11 @@ references/platform.md   技术约束：微信 HTML 硬约束（按需）
 references/publish.md    技术约束：官方 API 草稿 / 发布（按需）
 assets/themes.json       六种 Editorial Mode（唯一来源）
 assets/themes.html       六格气候对照板（真实渲染器生成，--specimen 重生成）
-scripts/render.py        一次调用：正文 HTML + 预览（模拟原生栏）+ 发布字段 meta.json + Gate 1/2 + Gate 3 证据
+scripts/render.py        一次调用：正文 HTML + 预览（模拟原生栏 · 封面两裁切 · 正文资产表）+ 发布字段 meta.json + Gate 1/2 + Gate 3 证据
 scripts/check.py         Gate 1
 scripts/selftest.py      回归：用例 + 六种人格 + 护栏 + 渲染断言
 scripts/extract_docx.py  Word → Markdown
-scripts/publish.py       草稿 → 可选发布；永久素材复用/对账/清理
+scripts/publish.py       发前预检（--preflight，不联网）+ 草稿 → 可选发布；永久素材复用/对账/清理
 eval/                    5 篇用例（契约与覆盖表见 eval/README.md；人格渲染另由 ② 样张全覆盖）
 config.example.json      发布配置模板（appid/secret/作者/原文链接/留言/submit；真 config.json 不入库）
 assets/previews/         六种 Editorial Mode 效果图（--specimen 对照板截图）
@@ -140,14 +142,11 @@ LICENSE.txt              MIT © 2026 cpikeo
 ## 回归
 
 ```bash
-python3 scripts/selftest.py            # ① 五个用例 Gate 1/2 全过 ② 人格系统可渲染 · 不重复 · 键完整
-                                       # ③ 十三条护栏仍拦住负例 ④ 原语渲染断言
-                                       # ⑤ 同文不同 Decision → 不同 Composition（抹掉颜色后仍须不同）
-                                       # ⑥ Word 抽取（标题/加粗/列表/图片/表格 + 非 docx 必须失败）
-                                       # ⑦ 平台原生字段（正文不重印标题/作者 · 预览模拟原生栏 · meta 上限）
-                                       # ⑧ draft/add payload（上限截断 · 留言默认 · 原文链接）
-                                       # ⑨ 永久素材管理（封面复用 · 验活 · 删除重传 · 总数 · 翻页 · 删除）
-                                       # ⑩ 暖信笺无孤立圆点 ⑪ config.json 默认与优先级
+python3 scripts/selftest.py            # ① 五个用例 Gate 1/2 全过 ② 质量基准（5 篇语料的人格/资产/结构/首屏快照）
+                                       # ③ 人格系统可渲染 · 不重复 · 键完整 ④ 十四条护栏仍拦住负例
+                                       # ⑤ 原语渲染断言 + 目录不占首屏 ⑥ 同文不同 Decision → 不同 Composition
+                                       # ⑦ Word 抽取 ⑧ 平台原生字段 ⑨ draft/add payload ⑩ 永久素材管理
+                                       # ⑪ 暖信笺无孤立圆点 ⑫ config.json 默认与优先级 ⑬ 发布预检（不联网）
 python3 scripts/selftest.py --shots    # 真截 390px PNG 到 assets/shots/，作为 Gate 3 的通读输入
 ```
 
@@ -156,6 +155,13 @@ python3 scripts/selftest.py --shots    # 真截 390px PNG 到 assets/shots/，�
 ## 发布
 
 排版完成后再调用。`--submit` 仅企业认证账号；个人账号止步于草稿。凭证、白名单、48001 排查见 [references/publish.md](references/publish.md)。
+
+发之前先验收（不需要凭证、不联网）：
+
+```bash
+python3 scripts/publish.py --html 文章_frost.html --meta 文章_frost.meta.json --preflight
+# Gate 1 结论 · 标题/作者/摘要（含官方上限与截断提醒）· 封面（按文章目录解析）· 待上传的正文图片数
+```
 
 先配一次 `config.json`（复制模板 `config.example.json`，已 gitignore 不入库）：
 `appid` / `secret` / `author` / `source_url` / `need_open_comment` / `only_fans_can_comment` / `submit`。

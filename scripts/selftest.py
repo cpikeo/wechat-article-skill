@@ -63,6 +63,8 @@ GUARDS = (
     ("短文开了目录", "toc: true\n", "## 甲\n\n一段。\n\n## 乙\n\n二段。\n\n## 丙\n\n三段。\n",
      "短文开了目录", "should"),
     ("density 写错静默降级", "density: campact\n", "正文一段。\n", "density", "should"),
+    # 文档化的规则只有这一条：--- 少于 H2 数。两节两转场就必须被点名。
+    ("转场不少于章节数", "", "## 甲\n\n一段。\n\n---\n\n## 乙\n\n二段。\n\n---\n", "转场 2 处 ≥ 章节 2 节", "should"),
 )
 
 
@@ -379,6 +381,10 @@ def docx_ok():
             return False, f"退出码 {code}\n{log}"
         md = open(out, encoding="utf-8").read()
         missing = [x for x in DOCX_EXPECT if x not in md]
+        # 抽完直接渲染：真实路径上用户就是这么做的，图还没补职责也不能崩
+        code3, log3 = run([os.path.join(HERE, "render.py"), out, "-o", os.path.join(d, "a.html")], d)
+        if "Traceback" in log3:
+            missing.append(f"抽取结果渲染崩溃\n{log3[-400:]}")
         img = os.path.join(d, "images", "01-fig1.png")
         if not os.path.exists(img):
             missing.append("图片未解包到 images/")
@@ -422,8 +428,8 @@ def shots():
             if "<img" in open(prev, encoding="utf-8").read() and not pg.evaluate(
                     "() => [...document.images].every(i => i.naturalWidth > 0)"):
                 failed.append(f"{name}（图片未加载）")
-            for f in (html, prev):
-                os.remove(f)
+            for f in (html, prev, os.path.splitext(html)[0] + ".meta.json"):
+                os.path.exists(f) and os.remove(f)   # 就地渲染留下的发布字段 sidecar 也要清掉
             made.append(png)
         b.close()
     print(f"\nGate 3 截图（390px · 2x · 含首屏折线）：{out_dir}")
@@ -433,6 +439,123 @@ def shots():
         print("   失败：" + "、".join(failed))
         return False
     return True
+
+
+# ---- 精简质量基准：5 篇语料的「机器可验证」快照 ----
+# 只锁判断的落点（人格 / 资产数 / 结构 / 首屏层数），不锁文笔。
+# 改稿不该动这张表；这张表动了，说明这套 Skill 对这批文章的判断变了——那必须是有意的。
+BASELINE = {
+    "skills":   {"theme": "paper",  "imgs": 0, "peak": True,  "toc": False, "layers": 1},
+    "portrait": {"theme": "letter", "imgs": 2, "peak": True,  "toc": False, "layers": 1},
+    "visual":   {"theme": "frost",  "imgs": 1, "peak": True,  "toc": False, "layers": 1},
+    "brief":    {"theme": "folio",  "imgs": 0, "peak": True,  "toc": False, "layers": 1},
+    "longread": {"theme": "paper",  "imgs": 0, "peak": True,  "toc": True,  "layers": 1},
+}
+
+
+def baseline_ok():
+    """退回「只看退出码」是不够的：图全丢了、目录没了、主题换了，退出码照样是 0。"""
+    sys.path.insert(0, HERE)
+    import render as _r
+    problems = []
+    for case, want in BASELINE.items():
+        md = open(os.path.join(EVAL, f"{case}.md"), encoding="utf-8").read()
+        meta, blocks = _r.parse(md)
+        got = {
+            "theme": meta.get("theme", "paper"),
+            "imgs": sum(1 for k, _ in blocks if k == "img"),
+            "peak": any(k == "peak" for k, _ in blocks),
+            "toc": meta.get("toc", "").lower() in ("true", "yes", "1")
+                   and len([b for k, b in blocks if k == "h2"]) >= 3,
+            "layers": len(_r.first_screen(meta, blocks)),
+        }
+        for k, v in want.items():
+            if got[k] != v:
+                problems.append(f"{case}.{k} 期望 {v} 实为 {got[k]}")
+    return not problems, ("；".join(problems) if problems else "5 篇 · 人格/资产/结构/首屏 全部对齐基准")
+
+
+def preflight_ok():
+    """发布预检：不联网，验证 Gate 1 + 原生字段 + 封面按文章目录解析（换个 cwd 也得找得到）。"""
+    import io
+    import contextlib
+    sys.path.insert(0, HERE)
+    import publish as _p
+    with tempfile.TemporaryDirectory() as d:
+        art = os.path.join(d, "art")
+        os.makedirs(os.path.join(art, "images"))
+        for n in ("cover.jpg", "fig.jpg"):
+            shutil.copy(os.path.join(EVAL, "images", "cover.jpg"), os.path.join(art, "images", n))
+        md = os.path.join(art, "a.md")
+        open(md, "w", encoding="utf-8").write(
+            HEAD + "author: 甲木\ncover: images/cover.jpg\n---\n\n"
+            "> 钩子一句。\n\n正文一段。\n\n![说明](images/fig.jpg \"证据\")\n")
+        run([os.path.join(HERE, "render.py"), md, "-o", os.path.join(art, "a.html")], art)
+        side = json.load(open(os.path.join(art, "a.html".replace(".html", ".meta.json")), encoding="utf-8"))
+        ns = argparse.Namespace(appid=None, secret=None, title=None, cover=None, author=None, digest=None,
+                                source_url=None, no_open_comment=False, fans_only_comment=False, submit=False)
+        cwd0 = os.getcwd()
+        os.chdir(d)                       # 故意从别处执行：封面相对路径必须仍解析到文章目录
+        try:
+            s1 = _p.resolve_settings(ns, side, {})
+            s1["cover"] = _p.resolve_cover(s1["cover"], os.path.join(art, "a.html"))
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = _p.preflight(os.path.join(art, "a.html"), s1)
+            out = buf.getvalue()
+            s2 = dict(s1, cover=os.path.join(art, "nope.jpg"))
+            with contextlib.redirect_stdout(io.StringIO()) as buf2:
+                rc_bad = _p.preflight(os.path.join(art, "a.html"), s2)
+            out_bad = buf2.getvalue()
+        finally:
+            os.chdir(cwd0)
+    problems = []
+    if rc != 0:
+        problems.append(f"正常稿预检应通过（rc={rc}）")
+    if "a" not in out or "预检通过" not in out:
+        problems.append("预检输出缺少结论")
+    if "images/cover.jpg" not in out or "文件不存在" in out:
+        problems.append("封面未按文章目录解析")
+    if "1 张待上传" not in out:
+        problems.append("未列出待上传的正文图片")
+    if not rc_bad or "文件不存在" not in out_bad:
+        problems.append("封面缺失时预检应判未通过")
+    return not problems, ("；".join(problems) if problems else "Gate 1 · 原生字段 · 封面路径 · 待传图片 全对")
+
+
+def toc_after_first_para_ok():
+    """目录不占首屏：开了 toc 也要等读者读完第一段再出现（decide.md Rhythm 的判据）。"""
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "t.md")
+        open(path, "w", encoding="utf-8").write(
+            HEAD + "toc: true\n---\n\n> 钩子一句。\n\n第一段正文，它必须排在目录之前。\n\n"
+            "## 甲\n\n一段。\n\n## 乙\n\n二段。\n\n## 丙\n\n三段。\n")
+        code, log = run([os.path.join(HERE, "render.py"), path, "-o", os.path.join(d, "o.html")], d)
+        html = open(os.path.join(d, "o.html"), encoding="utf-8").read()
+    a = html.find("第一段正文，它必须排在目录之前")
+    b = html.find("目录")
+    if code != 0:
+        return False, f"渲染失败\n{log}"
+    if a < 0 or b < 0 or a > b:
+        return False, f"目录排在首段之前（段 {a} / 目录 {b}）"
+    return True, "首段 → 目录"
+
+
+def roleless_image_ok():
+    """无职责的图片不许让渲染器崩——Word 抽出来的正是 `![](images/x.png)`。
+
+    崩了，用户看到的是 traceback；不崩，Gate 2 才会明确说「没有声明职责：说不出为什么存在就删除」。
+    """
+    with tempfile.TemporaryDirectory() as d:
+        os.symlink(os.path.join(EVAL, "images"), os.path.join(d, "images"))
+        md = os.path.join(d, "r.md")
+        open(md, "w", encoding="utf-8").write(HEAD + "---\n\n正文一段。\n\n![](images/fig-busbar.jpg)\n")
+        code, log = run([os.path.join(HERE, "render.py"), md, "-o", os.path.join(d, "o.html")], d)
+    if "Traceback" in log:
+        return False, "渲染器崩溃（无职责的图）"
+    if code == 0 or "没有声明职责" not in log:
+        return False, f"无职责的图未被判必须改（code={code}）"
+    return True, "无职责 → 必须改，且不崩"
 
 
 def main():
@@ -449,8 +572,14 @@ def main():
             fails.append(c)
             print("   " + log.strip().replace("\n", "\n   "))
 
+    print("② 质量基准（5 篇语料的机器可验证快照）")
+    ok, why = baseline_ok()
+    print(f"   {'PASS' if ok else 'FAIL'} · {why}")
+    if not ok:
+        fails.append("质量基准")
+
     # themes.json 是所有人格共用的唯一来源：一个键写坏，选到它的人就整篇渲染不出来。
-    print("② 人格系统（themes.json）：可渲染 · 不重复 · 键完整")
+    print("③ 人格系统（themes.json）：可渲染 · 不重复 · 键完整")
     sys.path.insert(0, HERE)
     import render as _r
     for key in _r.THEMES:
@@ -469,7 +598,7 @@ def main():
     else:
         print(f"   不重复 · {len(_r.THEMES)} 个人格两两至少差 2 个编辑语言轴，且键完整")
 
-    print("③ 护栏回归（负例必须仍被拦住）")
+    print("④ 护栏回归（负例必须仍被拦住）")
     for label, fm, body, kw, level in GUARDS:
         hit, log = guard_ok(label, fm, body, kw, level)
         print(f"   {'PASS' if hit else 'FAIL'} · {label}（{level} → {kw}）")
@@ -477,7 +606,7 @@ def main():
             fails.append(label)
             print("   " + log.strip().replace("\n", "\n   "))
 
-    print("④ 原语渲染（渲染出来是不是我以为的样子）")
+    print("⑤ 原语渲染（渲染出来是不是我以为的样子）")
     for label, fm, md, must_have, must_not in RENDER_CHECKS:
         ok, log, missing, leaked = render_check_ok(fm, md, must_have, must_not)
         print(f"   {'PASS' if ok else 'FAIL'} · {label}")
@@ -485,7 +614,19 @@ def main():
             fails.append(label)
             print(f"   缺 {missing} · 泄漏 {leaked}\n   " + log.strip().replace("\n", "\n   "))
 
-    print("⑤ 同文不同 Decision → 不同 Composition")
+    ok, why = roleless_image_ok()
+    print(f"   {'PASS' if ok else 'FAIL'} · 无职责的图不崩（Word 抽取的默认形态），只判必须改")
+    if not ok:
+        fails.append("无职责图")
+        print(f"   {why}")
+
+    ok, why = toc_after_first_para_ok()
+    print(f"   {'PASS' if ok else 'FAIL'} · 目录不占首屏（toc 排在第一段之后）")
+    if not ok:
+        fails.append("目录位置")
+        print(f"   {why}")
+
+    print("⑥ 同文不同 Decision → 不同 Composition")
     ok, why = composition_differs(COMPOSITION_CASE, COMPOSITION_LEFT, COMPOSITION_RIGHT)
     print(f"   {'PASS' if ok else 'FAIL'} · {COMPOSITION_CASE}："
           f"{COMPOSITION_LEFT[0]}/{COMPOSITION_LEFT[1]} vs {COMPOSITION_RIGHT[0]}/{COMPOSITION_RIGHT[1]}")
@@ -493,38 +634,38 @@ def main():
     if not ok:
         fails.append("composition 差异")
 
-    print("⑥ Word 抽取回归（三条输入路径之一，此前零覆盖）")
+    print("⑦ Word 抽取回归（三条输入路径之一，此前零覆盖）")
     ok, why = docx_ok()
     print(f"   {'PASS' if ok else 'FAIL'} · docx → Markdown（标题/加粗/两种列表/图片/表格）")
     if not ok:
         fails.append("docx 抽取")
         print(f"   {why}")
 
-    print("⑦ 平台原生字段（正文不重印标题/作者 · 预览模拟原生栏 · meta 上限）")
+    print("⑧ 平台原生字段（正文不重印标题/作者 · 预览模拟原生栏 · meta 上限）")
     ok, why = platform_fields_ok()
     print(f"   {'PASS' if ok else 'FAIL'} · {why}")
     if not ok:
         fails.append("平台原生字段")
 
-    print("⑧ draft/add payload（上限截断 · 留言默认 · 原文链接）")
+    print("⑨ draft/add payload（上限截断 · 留言默认 · 原文链接）")
     ok, why = draft_payload_ok()
     print(f"   {'PASS' if ok else 'FAIL'} · {why}")
     if not ok:
         fails.append("draft payload")
 
-    print("⑨ 永久素材管理（封面复用 · 验活 · 删除重传 · 总数 · 翻页 · 删除）")
+    print("⑩ 永久素材管理（封面复用 · 验活 · 删除重传 · 总数 · 翻页 · 删除）")
     ok, why = material_ok()
     print(f"   {'PASS' if ok else 'FAIL'} · {why}")
     if not ok:
         fails.append("素材管理")
 
-    print("⑩ 暖信笺无孤立圆点（线上反馈回归）")
+    print("⑪ 暖信笺无孤立圆点（线上反馈回归）")
     ok, why = letter_heading_ok()
     print(f"   {'PASS' if ok else 'FAIL'} · {why or 'H2 不再挂圆点'}")
     if not ok:
         fails.append("letter 圆点")
 
-    print("⑪ config.json 默认与优先级（命令行 > meta > config）")
+    print("⑫ config.json 默认与优先级（命令行 > meta > config）")
     import publish as _p
     ns = argparse.Namespace(appid=None, secret=None, title=None, cover=None, author=None, digest=None,
                             source_url=None, no_open_comment=False, fans_only_comment=False, submit=False)
@@ -559,6 +700,12 @@ def main():
         print(f"   {'PASS' if ok else 'FAIL'} · {why}")
         if not ok:
             fails.append(f"config: {why}")
+
+    print("⑬ 发布预检（不联网：Gate 1 · 原生字段 · 封面路径解析 · 待传图片）")
+    ok, why = preflight_ok()
+    print(f"   {'PASS' if ok else 'FAIL'} · {why}")
+    if not ok:
+        fails.append("发布预检")
 
     if a.shots:
         shot_ok = shots()

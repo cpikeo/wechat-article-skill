@@ -1,6 +1,5 @@
 ---
 title: 席位制正在让位|SaaS 定价的第二次迁移
-kicker: BRIEF
 theme: folio
 density: dense
 date: 2026年10月8日
