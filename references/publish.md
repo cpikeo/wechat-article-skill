@@ -49,7 +49,7 @@ python3 scripts/publish.py --appid "ID" --secret "S" --html "文章.html" --cove
 - **原文链接**进 `content_source_url`（草稿底部「原文链接」）：frontmatter 写 `source:` 或 `--source-url`。
 - **原创声明**API 没有对应参数：建草稿后到公众平台后台手动声明。
 - **摘要**上限 120 字（2026-07-14 官方对齐 mp 端）；不传时用 render 的 `.meta.json`
-  （lead > deck > 首段），不让微信从正文开头抓——正文开头是 kicker / 日期行，抓出来不是摘要。
+  （lead > deck > 首段），不让微信从正文开头抓——抓到的开头不稳定（副题等），不是摘要。
 - **标题/作者**只走原生字段：render 的正文 HTML 已不再印标题与作者名，草稿里不会出现两次；
   frontmatter 的 `|` 断行标记在原生标题栏自动转全角｜。
 

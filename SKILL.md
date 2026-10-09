@@ -113,7 +113,7 @@ Text ≈ Image → 删。**CSS / 表格 / `::: bars` 说得更准 → 不用图�
 | Section Claim | `## / ###` | 章节主张；标题后必须接正文 |
 | Evidence | `![说明](路径 "职责")` · `::: data` · `::: bars` · `表格` · `代码` | 证据、数量、关系；数字交给图示，正文不重复写 |
 | Explanation | 正文 · `- 列表` · `> 引文` | 解释与展开；`> 开头` = 首屏钩子，没有就不写 |
-| Metadata | `kicker` · `date` · `::: note 标签` · `toc` · `bio` · `cta` | 元信息；不抢正文。title/author/发布日期都走原生字段，正文不重印；masthead 单行左右布局：左 kicker 右阅读时长 |
+| Metadata | `date` · `::: note 标签` · `toc` · `bio` · `cta` | 元信息；不抢正文。title/author/发布日期走原生字段；正文顶部元信息块（kicker/阅读时长）线上反馈判为多余，已删，只留 deck 副题 |
 | Decoration | —— | **空。说不出职责的元素不允许存在** |
 
 行内与节奏：`==关键判断==`（全篇 ≤3）· `**弱强调**`（少用）· `---` 转场（少于 H2 数）。
@@ -123,7 +123,6 @@ frontmatter 是 Decision 的落点，不是调参面板；没写＝用默认。
 ```yaml
 ---
 title: 主标题|断行后半    # | 是断行标记：原生标题栏自动转｜；正文不重印标题
-kicker: LETTER
 theme: letter            # paper / letter / ink / frost / bone / folio
 density: airy            # dense / standard / airy
 deck: 一句副题           # 可选；与 lead 不要叠两个钩子

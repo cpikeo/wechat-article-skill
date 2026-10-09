@@ -3,8 +3,7 @@
     "name": "静纸 Silent Paper",
     "text": "#22201E", "sub": "#6B6762", "muted": "#9A968E", "line": "#E8E4DB",
     "field": "#F3F0EA", "accent": "#5C6758", "dark": "#22201E", "on_dark": "#F7F5F0",
-    "display": "sans", "leading": 1.75, "radius": 2,
-    "kicker": "ESSAY", "toc_label": "CONTENTS",
+    "display": "sans", "leading": 1.75, "radius": 2, "toc_label": "CONTENTS",
     "heading": "number", "peak": "rule", "divider": "dots", "quote": "plain",
     "image": "flush", "seal": ""
   },
@@ -12,8 +11,7 @@
     "name": "暖信笺 Warm Letter",
     "text": "#3A2C22", "sub": "#7A6353", "muted": "#B09A84", "line": "#EDDCC8",
     "field": "#F6EBDC", "accent": "#9E4A36", "dark": "#3A2C22", "on_dark": "#FFF8F0",
-    "display": "sans", "leading": 1.8, "radius": 4,
-    "kicker": "LETTER", "toc_label": "这篇想和你聊聊",
+    "display": "sans", "leading": 1.8, "radius": 4, "toc_label": "这篇想和你聊聊",
     "heading": "blank", "peak": "field", "divider": "rule", "quote": "plain",
     "image": "soft", "seal": ""
   },
@@ -21,8 +19,7 @@
     "name": "酌墨 Wine Ink",
     "text": "#191614", "sub": "#6A625E", "muted": "#9E948E", "line": "#E5D9D1",
     "field": "#F2EAE4", "accent": "#6B2828", "dark": "#191614", "on_dark": "#F6EFE9",
-    "display": "serif", "leading": 1.8, "radius": 0,
-    "kicker": "REVIEW", "toc_label": "IN THIS ISSUE",
+    "display": "serif", "leading": 1.8, "radius": 0, "toc_label": "IN THIS ISSUE",
     "heading": "seal", "peak": "dark", "divider": "seal", "quote": "serif",
     "image": "line", "seal": "酌"
   },
@@ -30,8 +27,7 @@
     "name": "北霜 North Frost",
     "text": "#1A2024", "sub": "#5A656D", "muted": "#8A959C", "line": "#D7E0E5",
     "field": "#E8EEF1", "accent": "#3E5A5C", "dark": "#1A2024", "on_dark": "#F3F6F7",
-    "display": "sans", "leading": 1.75, "radius": 0,
-    "kicker": "REPORT", "toc_label": "THE BRIEF",
+    "display": "sans", "leading": 1.75, "radius": 0, "toc_label": "THE BRIEF",
     "heading": "number", "peak": "field", "divider": "rule", "quote": "plain",
     "image": "flush", "seal": ""
   },
@@ -39,8 +35,7 @@
     "name": "素作 Atelier Bone",
     "text": "#2B2824", "sub": "#6D675E", "muted": "#A29B90", "line": "#E3DCD0",
     "field": "#EFEBE2", "accent": "#8A7A5C", "dark": "#2B2824", "on_dark": "#F5F1E9",
-    "display": "serif", "leading": 1.85, "radius": 0,
-    "kicker": "NOTES", "toc_label": "INDEX",
+    "display": "serif", "leading": 1.85, "radius": 0, "toc_label": "INDEX",
     "heading": "blank", "peak": "rule", "divider": "rule", "quote": "serif",
     "image": "flush", "seal": ""
   },
@@ -48,8 +43,7 @@
     "name": "特稿 Feature Folio",
     "text": "#121212", "sub": "#5A5A58", "muted": "#8C8C88", "line": "#E0DCD4",
     "field": "#EFECE6", "accent": "#8F332C", "dark": "#121212", "on_dark": "#F6F3ED",
-    "display": "sans", "leading": 1.75, "radius": 0,
-    "kicker": "FEATURE", "toc_label": "IN THIS FEATURE",
+    "display": "sans", "leading": 1.75, "radius": 0, "toc_label": "IN THIS FEATURE",
     "heading": "number", "peak": "dark", "divider": "dots", "quote": "plain",
     "image": "line", "seal": ""
   }

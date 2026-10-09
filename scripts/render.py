@@ -252,22 +252,15 @@ class R:
                 f'border:1px solid {self.t["muted"]};border-radius:50%;text-align:center;font-size:{MICRO}px;'
                 f'font-weight:600;color:{color or self.t["text"]};box-sizing:border-box;">{self.leaf(glyph)}</span>')
 
-    def masthead(self, meta, minutes):
-        """正文开头一行元信息，左右布局：左 kicker（含印章）、右阅读时长。
-        title/author/发布日期都是平台原生字段（标题栏 / 作者栏 / 元信息行自带发布时间），
-        正文再印 = 读者看到两遍（线上实测：日期与原生元信息行重复）。"""
-        t, out = self.t, []
-        kicker = meta.get("kicker", t["kicker"])
-        left = (f'<section style="display:flex;align-items:center;gap:10px;">'
-                f'{self.seal(meta.get("seal", t["seal"]))}{self.micro(kicker)}</section>'
-                if t["seal"] else self.micro(kicker))
-        right = self.p(self.leaf(f"约 {minutes} 分钟阅读"), MICRO, t["muted"])
-        out.append(f'<section style="display:flex;align-items:center;justify-content:space-between;gap:10px;">'
-                   f'{left}{right}</section>')
-        if meta.get("deck"):
-            out.append(self.p(self.inline(meta["deck"]), BODY, t["sub"], "margin-top:12px;"))
-        return f'<section style="padding-top:4px;">{"".join(out)}</section>' + \
-            f'<section style="height:1px;background:{t["line"]};margin-top:{self.g(24)}px;">{BR}</section>'
+    def masthead(self, meta):
+        """正文开头不放元信息块：title/author/发布日期是平台原生字段，
+        kicker/阅读时长整块被线上反馈判为多余无用，已删。
+        只保留 deck（可选副题）；没有副题就直接进钩子。"""
+        t = self.t
+        if not meta.get("deck"):
+            return ""
+        return (f'<section style="padding-top:4px;">{self.p(self.inline(meta["deck"]), BODY, t["sub"])}</section>'
+                f'<section style="height:1px;background:{t["line"]};margin-top:{self.g(24)}px;">{BR}</section>')
 
     def h2(self, text, n):
         t, ending = self.t, re.search(r"结语|尾声|写在最后|后记", text)
@@ -474,7 +467,7 @@ def plain(s):
 
 def auto_digest(meta, blocks, limit=120):
     """摘要兜底：lead > deck > 首段。官方上限 120 字（2026-07-14 对齐 mp 端）。
-    不能让微信自己抓正文前 54 字——正文开头是 kicker / 日期行，抓出来不是摘要。"""
+    不能让微信自己抓正文前 54 字——抓到的开头不稳定（副题等），不是摘要。"""
     src = next((b[0] for k, b in blocks if k == "lead"), "") \
         or meta.get("deck", "") \
         or next((b for k, b in blocks if k == "p"), "")
@@ -787,8 +780,7 @@ def render(md, theme=None):
     if key not in THEMES:
         sys.exit(f"未知主题 {key}，可选：{', '.join(THEMES)}")
     r = R(THEMES[key], meta.get("density", "standard"))
-    chars = sum(visible_len(b[1]) for b in blocks if b[0] == "p")
-    out, n = [r.masthead(meta, max(1, math.ceil(chars / 400)))], 0
+    out, n = [r.masthead(meta)], 0
     heads = [b[1] for b in blocks if b[0] == "h2"]
     toc_done = meta.get("toc", "").lower() not in ("true", "yes", "1") or len(heads) < 3
     for kind, b in blocks:
@@ -833,7 +825,6 @@ def render(md, theme=None):
 
 SPECIMEN_MD = """---
 title: 留下的东西|比发出去的更重要
-kicker: SPECIMEN
 author: 甲木
 bio: 气候对照用样张
 ---

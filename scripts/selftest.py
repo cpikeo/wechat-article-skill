@@ -20,7 +20,7 @@ ROOT = os.path.dirname(HERE)
 EVAL = os.path.join(ROOT, "eval")
 CASES = ("skills", "portrait", "ink", "visual", "atelier",
          "brief", "longread", "excerpt")
-HEAD = "---\ntitle: 回归用例|固定标题\nkicker: TEST\n"   # 固定内容；不写 date，避免每天产生 diff
+HEAD = "---\ntitle: 回归用例|固定标题\n"   # 固定内容；不写 date，避免每天产生 diff
 
 
 def run(args, cwd):
@@ -91,13 +91,13 @@ RENDER_CHECKS = (
      "> 钩子。\n\n正文一段。\n",
      ("欢迎留言聊聊。", "观察内容与商业的人"),
      ("回归用例", "固定标题", "甲木")),
-    # 线上事故回归：原生元信息行自带发布日期，正文 masthead 再印日期 = 两遍。
-    # masthead 只留左右布局一行：左 kicker、右阅读时长。
-    ("masthead 左右布局且不印发布日期",
-     "date: 2026年10月8日\n",
+    # 线上反馈回归：正文顶部元信息块（kicker/阅读时长/日期）整块多余，已删；
+    # 只保留 deck 副题。
+    ("正文无顶部元信息块，只保留 deck",
+     "date: 2026年10月8日\ndeck: 一句副题\n",
      "正文一段。\n",
-     ("约 1 分钟阅读", "justify-content:space-between"),
-     ("2026年10月8日",)),
+     ("一句副题",),
+     ("分钟阅读", "2026年10月8日")),
 )
 
 
