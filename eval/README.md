@@ -22,7 +22,7 @@ ink / bone 人格的**渲染**由 `selftest.py ②` 六格样张全覆盖，eval
 ## 什么时候合并或删除
 
 - **零独家覆盖** → 删（`letter.md` 就是这样处理的：它的 letter 人格覆盖已被 `portrait` 承接，
-  其余路径都由 brief / excerpt / ink 覆盖）。
+  其余路径都由 brief / portrait / skills 覆盖）。
 - **两篇只差人格** → 若该人格已由别处覆盖，合并为一篇。
 - **想加一篇新人格** → 先确认它至少改了 2 个编辑语言轴（见 `decide.md`「新主题」），
   再加用例；否则跑一遍 `--specimen` 就够了，不需要新语料。
