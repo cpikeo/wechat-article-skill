@@ -105,10 +105,10 @@ Intent → Role → Concept → Subject → Composition → Camera → Light →
 
 ## 8 数据与图示
 
-优先级：**表格 > `::: bars` > `::: data` > 配图**。能用文字说清的数字，什么图都不要做。
+优先级见 SKILL.md（Information Gain），此处只补数字的工艺：
 `::: data` 用于并排才成立的关系（对比、跨度、量级）；`::: bars` 用于量级差异——数值必须同口径、有明确最大值。
-数量与结构的硬门槛（项数、数值接近、非数字）由 Gate 2 把关，写在 `scripts/render.py`，此处不再复述。
 数字必须有出处；预测必须标「预测」；不同口径的数字不要放进同一张图。
+数量与结构的硬门槛由 Gate 2（`render.py`）把关，此处不再复述。
 
 ## 9 失败样例与 gotchas
 

@@ -5,6 +5,7 @@
 `--check-draft-switch` 只查询灰度开关（开启不可逆，必须显式 `--enable-draft-switch`）。
 素材管理：封面永久素材按内容 sha256 复用（`--no-reuse-cover` 可关），
 `--material-count` / `--list-materials` / `--delete-material` 做对账与清理。
+凭证与默认字段来自 config.json（模板 config.example.json，不入库）；命令行逐项覆盖。
 48001 不要预设单因：开关、token、权限都要查。边界与排查见 `references/publish.md`。
 """
 
@@ -347,14 +348,8 @@ def publish_html_article(appid, secret, html_path, cover_path, title, author=Non
             enable_draft_switch(token)
             print("  已开启。")
         else:
-            print(
-                "  ⚠️ 开关处于关闭状态：这个账号还没被灰度覆盖新版草稿箱/发布功能。"
-                "接下来的 draft/add 是否会因此报 48001 目前没有确凿证据（详见文件头部 2026-07 复核说明），"
-                "先当作一个可能原因，如果报错请同时检查 access_token 和参数是否正确。\n"
-                "  想现在开启，重新执行时加 --enable-draft-switch"
-                "（提醒：开启后公众号后台「图文素材库」会永久升级成「草稿箱」，不可逆，且不确定能否解决 48001，请自行确认后再开）。\n"
-                "  继续尝试建草稿……"
-            )
+            print("  ⚠️ 开关处于关闭状态：账号还没被灰度覆盖新版草稿箱（与 48001 的因果关系未证实，作为候选原因）。"
+                  "想开启加 --enable-draft-switch（不可逆，自行确认）。继续尝试建草稿……")
 
     print("[3/6] 上传封面为永久素材（同图复用，不重复占额度）…")
     if material_cache:
@@ -377,17 +372,9 @@ def publish_html_article(appid, secret, html_path, cover_path, title, author=Non
                                 only_fans_can_comment=1 if fans_only else 0)
     except WeChatAPIError as e:
         if e.errcode == 48001:
-            print(
-                "\n❌ 建草稿被拒绝（api unauthorized）：这一步失败可能是下面几个原因之一，"
-                "不要一律归因于'个人账号不能用'，也不要预设就是某一个——\n"
-                "  1) 「草稿箱和发布功能」开关还没开（上一步如果打印了 ⚠️ 未开启，是个候选原因，"
-                "     但开关状态和 48001 的因果关系目前没有确凿证据，重新执行时可以加 --enable-draft-switch 试试，"
-                "     注意这个操作不可逆）；\n"
-                "  2) access_token 无效/过期，或 appid、secret 本身有误；\n"
-                "  3) 账号本身没有获得草稿箱相关接口权限（去公众平台后台「设置与开发 → 接口权限」核实）。\n"
-                "  都排除了还是报错的话，草稿箱这条路径本身对这个账号可能走不通，只能回到手动复制粘贴。",
-                file=sys.stderr,
-            )
+            print("\n❌ 建草稿被拒绝（48001）：逐个排查——① 草稿箱开关未开（可试 --enable-draft-switch，不可逆）；"
+                  "② token/appid/secret 无效；③ 账号缺草稿箱接口权限（后台「设置与开发 → 接口权限」）。"
+                  "都排除仍报错，则该账号草稿箱路径走不通，回手动粘贴。", file=sys.stderr)
         raise
     print(f"  草稿 media_id = {media_id}")
 
@@ -400,13 +387,9 @@ def publish_html_article(appid, secret, html_path, cover_path, title, author=Non
         publish_id = submit_publish(token, media_id)
     except WeChatAPIError as e:
         if e.errcode == 48001:
-            print(
-                "\n❌ 提交发布被拒绝（api unauthorized）：草稿已经建好了（说明开关和基础权限都没问题），"
-                "这一步单独失败大概率是因为账号不是企业主体已认证账号——"
-                "freepublish_submit 这一组接口 2025 年 7 月起只对企业认证账号开放。"
-                "可以去公众平台后台手动发布，或者升级账号认证后再用本脚本 --submit。",
-                file=sys.stderr,
-            )
+            print("\n❌ 提交发布被拒绝（48001）：草稿已建好，此步单独失败多因账号非企业认证"
+                  "（freepublish 自 2025-07 起仅企业认证开放）。后台手动发布，或升级认证后再 --submit。",
+                  file=sys.stderr)
         raise
     print(f"  publish_id = {publish_id}，开始轮询发布状态（这是异步任务，不会立刻返回文章链接）…")
 
@@ -418,22 +401,62 @@ def publish_html_article(appid, secret, html_path, cover_path, title, author=Non
     return {"media_id": media_id, "publish_id": publish_id, **result}
 
 
+CONFIG_NAME = "config.json"
+ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def load_config(explicit=None):
+    """读发布配置：显式路径必须存在；默认依次找 ./config.json、技能根 config.json。
+    找不到返回空 dict——没配置时一切回落到命令行参数。"""
+    candidates = [explicit] if explicit else [
+        os.path.join(os.getcwd(), CONFIG_NAME),
+        os.path.join(ROOT_DIR, CONFIG_NAME),
+    ]
+    for path in candidates:
+        if os.path.isfile(path):
+            with open(path, encoding="utf-8") as f:
+                return json.load(f)
+    if explicit:
+        raise FileNotFoundError(f"配置文件不存在: {explicit}")
+    return {}
+
+
+def resolve_settings(args, side, cfg):
+    """字段优先级：命令行 > --meta > config.json；开关类：命令行旗标 > config.json > 官方默认。
+    空字符串视同未配置。凭证/开关的解析也只此一处，main 的早退分支复用。"""
+    return {
+        "appid": args.appid or cfg.get("appid") or None,
+        "secret": args.secret or cfg.get("secret") or None,
+        "title": args.title or side.get("api_title") or side.get("title"),
+        "cover": args.cover or side.get("cover") or None,
+        "author": args.author if args.author is not None else (side.get("author") or cfg.get("author") or None),
+        "digest": args.digest if args.digest is not None else (side.get("digest") or None),
+        "source": args.source_url or side.get("source_url") or cfg.get("source_url") or None,
+        "open_comment": (not args.no_open_comment) and bool(cfg.get("need_open_comment", True)),
+        "fans_only": args.fans_only_comment or bool(cfg.get("only_fans_can_comment", False)),
+        "submit": args.submit or bool(cfg.get("submit", False)),
+    }
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--appid", required=True, help="公众号 AppID")
-    ap.add_argument("--secret", required=True, help="公众号 AppSecret（不要写进脚本里提交到 Git，建议用环境变量传入）")
+    ap.add_argument("--config", default=None,
+                    help="发布配置文件路径；默认依次找 ./config.json、技能根 config.json（模板：config.example.json）")
+    ap.add_argument("--appid", help="公众号 AppID（默认取自 config.json）")
+    ap.add_argument("--secret", help="公众号 AppSecret（默认取自 config.json；不要写进仓库）")
     ap.add_argument("--html", help="正文 HTML 文件路径（排版引擎生成的 HTML 或任意合规 HTML）")
     ap.add_argument("--cover", help="封面图片本地路径")
     ap.add_argument("--title", help="文章标题：| 断行标记自动转｜，超过32字会被截断")
-    ap.add_argument("--author", default=None, help="作者（原生作者栏），超过16字会被截断")
+    ap.add_argument("--author", default=None, help="作者（原生作者栏），超过16字会被截断；默认取 --meta，再取 config.json")
     ap.add_argument("--digest", default=None, help="摘要（转发卡片/会话摘要），超过120字会被截断（官方上限120）")
     ap.add_argument("--meta", default=None,
-                    help="render.py 产出的 *.meta.json：title/author/digest/cover/原文链接的默认值，命令行参数优先")
+                    help="render.py 产出的 *.meta.json：title/author/digest/cover/原文链接；优先级 命令行 > meta > config.json")
     ap.add_argument("--source-url", default=None, help="原文链接（草稿底部「阅读原文」跳转的 URL）")
     ap.add_argument("--no-open-comment", action="store_true",
                     help="关闭留言。默认开启，与编辑器新建文章「留言自动精选公开」对齐")
     ap.add_argument("--fans-only-comment", action="store_true", help="仅粉丝可评论（默认所有人）")
-    ap.add_argument("--submit", action="store_true", help="建草稿后是否继续提交发布（需要企业认证账号）；不加则只建草稿")
+    ap.add_argument("--submit", action="store_true",
+                    help="建草稿后继续提交发布（需要企业认证账号）；默认只建草稿，config.json 可把 submit 设为 true")
     ap.add_argument("--poll-timeout", type=int, default=600, help="发布状态轮询超时秒数，默认 600")
     ap.add_argument("--check-publish-id", default=None, help="只查询某个 publish_id 的发布状态，不做其它任何操作")
     ap.add_argument("--check-draft-switch", action="store_true", help="只查询「草稿箱和发布功能」开关状态，不做其它任何操作")
@@ -453,14 +476,23 @@ def main():
                     help=f"封面复用映射文件（sha256→media_id），默认 {MATERIAL_CACHE_DEFAULT}")
     args = ap.parse_args()
 
+    try:
+        cfg = load_config(args.config)
+    except FileNotFoundError as e:
+        ap.error(str(e))
+    s = resolve_settings(args, {}, cfg)  # 凭证与开关；文章字段等拿到 --meta 后重算
+    appid, secret = s["appid"], s["secret"]
+    if not (appid and secret):
+        ap.error("缺少 AppID/AppSecret：写进 config.json（模板 config.example.json），或用 --appid/--secret 传入")
+
     if args.check_publish_id:
-        token = get_stable_access_token(args.appid, args.secret)
+        token = get_stable_access_token(appid, secret)
         result = poll_publish_status(token, args.check_publish_id, timeout=0)  # timeout=0：只查一次不轮询
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return
 
     if args.check_draft_switch:
-        token = get_stable_access_token(args.appid, args.secret)
+        token = get_stable_access_token(appid, secret)
         is_open = check_draft_switch(token)
         print(json.dumps({"is_open": is_open}, ensure_ascii=False, indent=2))
         if not is_open:
@@ -473,7 +505,7 @@ def main():
         return
 
     if args.material_count or args.list_materials or args.delete_material:
-        token = get_stable_access_token(args.appid, args.secret)
+        token = get_stable_access_token(appid, secret)
         if args.delete_material:
             print(json.dumps(delete_material(token, args.delete_material), ensure_ascii=False))
             return
@@ -492,11 +524,8 @@ def main():
     if args.meta:
         with open(args.meta, encoding="utf-8") as f:
             side = json.load(f)
-    title = args.title or side.get("api_title") or side.get("title")
-    cover = args.cover or side.get("cover") or None
-    author = args.author if args.author is not None else (side.get("author") or None)
-    digest = args.digest if args.digest is not None else (side.get("digest") or None)
-    source = args.source_url or side.get("source_url") or None
+    s = resolve_settings(args, side, cfg)
+    title, cover = s["title"], s["cover"]
 
     missing = [n for n, v in [("--html", args.html), ("--cover", cover), ("--title", title)] if not v]
     if missing:
@@ -504,18 +533,18 @@ def main():
 
     try:
         publish_html_article(
-            args.appid,
-            args.secret,
+            appid,
+            secret,
             args.html,
             cover,
             title,
-            author=author,
-            digest=digest,
-            source_url=source,
-            open_comment=not args.no_open_comment,
-            fans_only=args.fans_only_comment,
+            author=s["author"],
+            digest=s["digest"],
+            source_url=s["source"],
+            open_comment=s["open_comment"],
+            fans_only=s["fans_only"],
             material_cache=None if args.no_reuse_cover else args.material_cache,
-            do_submit=args.submit,
+            do_submit=s["submit"],
             poll_timeout=args.poll_timeout,
             auto_enable_switch=args.enable_draft_switch,
         )

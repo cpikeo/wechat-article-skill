@@ -30,10 +30,10 @@ python3 scripts/render.py 文章.md
 | Markdown | `python3 scripts/render.py 文章.md` |
 | 指定主题 | `python3 scripts/render.py 文章.md --theme frost` |
 | Word | `python3 scripts/extract_docx.py 文件.docx -o 文章.md`，再渲染（图必须补职责） |
-| 气候对照板 | `python3 scripts/render.py --specimen` → `shots/themes.html`（生成物，不入库） |
+| 气候对照板 | `python3 scripts/render.py --specimen` → `assets/themes.html`（入库，随时重生成） |
 | 发布草稿 | `python3 scripts/publish.py --help`（先排完再发） |
 | 回归 | `python3 scripts/selftest.py`（CI 每次提交都会跑） |
-| Gate 3 截图 | `python3 scripts/selftest.py --shots` → `shots/*.png` |
+| Gate 3 截图 | `python3 scripts/selftest.py --shots` → `assets/shots/*.png`（生成物，不入库） |
 
 退出码 `1` = Gate 1/2 仍有「必须改」，不要交付。
 
@@ -79,6 +79,21 @@ author: 甲木          # 平台原生作者栏，正文不重印
 | `bone` 素作 | 石膏 · 铜尘 | 品牌、工艺、空间、材料 | 无编号 · 衬线 · 细线高潮 |
 | `folio` 特稿 | 油墨 · 干朱 | 文化特稿 | 数字章节 · 深色高潮 |
 
+效果图（同一篇样张过六种人格；由对照板 `assets/themes.html` 截出，存 `assets/previews/`）：
+
+<table>
+<tr>
+<td align="center"><img src="assets/previews/paper.png" width="240" alt="静纸 paper"><br><b>静纸 paper</b></td>
+<td align="center"><img src="assets/previews/letter.png" width="240" alt="暖信笺 letter"><br><b>暖信笺 letter</b></td>
+<td align="center"><img src="assets/previews/ink.png" width="240" alt="酌墨 ink"><br><b>酌墨 ink</b></td>
+</tr>
+<tr>
+<td align="center"><img src="assets/previews/frost.png" width="240" alt="北霜 frost"><br><b>北霜 frost</b></td>
+<td align="center"><img src="assets/previews/bone.png" width="240" alt="素作 bone"><br><b>素作 bone</b></td>
+<td align="center"><img src="assets/previews/folio.png" width="240" alt="特稿 folio"><br><b>特稿 folio</b></td>
+</tr>
+</table>
+
 先判断语气，再选主题。气质对不上，不要硬套。
 **新增主题的唯一门槛**：必须改变至少两个「编辑语言轴」（章节标记 / 高潮处理 / 转场 / 引文 / 图片气质 / 字体气质）。
 只换背景色、accent、字体颜色不算新人格——`selftest` 会把这种主题直接判 FAIL。
@@ -106,15 +121,18 @@ references/decide.md     判断知识：Decision、六种人格、删除与强�
 references/direction.md  视觉知识：Thesis、Grammar、Role、SELECT、Prompt 编译、封面、图示
 references/platform.md   技术约束：微信 HTML 硬约束（按需）
 references/publish.md    技术约束：官方 API 草稿 / 发布（按需）
-assets/themes.json       六种 Editorial Mode（唯一来源；对照板由 --specimen 生成）
+assets/themes.json       六种 Editorial Mode（唯一来源）
+assets/themes.html       六格气候对照板（真实渲染器生成，--specimen 重生成）
 scripts/render.py        一次调用：正文 HTML + 预览（模拟原生栏）+ 发布字段 meta.json + Gate 1/2 + Gate 3 证据
 scripts/check.py         Gate 1
 scripts/selftest.py      回归：用例 + 六种人格 + 护栏 + 渲染断言
 scripts/extract_docx.py  Word → Markdown
 scripts/publish.py       草稿 → 可选发布；永久素材复用/对账/清理
-eval/                    8 篇用例（契约与覆盖表见 eval/README.md）
+eval/                    5 篇用例（契约与覆盖表见 eval/README.md；人格渲染另由 ② 样张全覆盖）
+config.example.json      发布配置模板（appid/secret/作者/原文链接/留言/submit；真 config.json 不入库）
+assets/previews/         六种 Editorial Mode 效果图（--specimen 对照板截图）
+LICENSE.txt              MIT © 2026 cpikeo
 .github/workflows/       CI：每次提交跑回归与截图证据
-AUDIT.md                 本次架构与复杂度审计
 ```
 
 脚本不是设计规则来源；脚本只执行**可确定**的那部分判断，并把 Gate 3 要用的证据摆出来。
@@ -122,17 +140,15 @@ AUDIT.md                 本次架构与复杂度审计
 ## 回归
 
 ```bash
-python3 scripts/selftest.py            # ① 八个用例 Gate 1/2 全过 ② 六种人格都能渲染
+python3 scripts/selftest.py            # ① 五个用例 Gate 1/2 全过 ② 人格系统可渲染 · 不重复 · 键完整
                                        # ③ 十三条护栏仍拦住负例 ④ 原语渲染断言
-                                       # ⑤ 人格不重复（两两至少差 2 个编辑语言轴）+ 键完整性
-                                       # ⑥ 同文不同 Decision → 不同 Composition（抹掉颜色后仍须不同）
-                                       # ⑥ 语料节奏跨度（高潮不能全在结尾）
-                                       # ⑦ 用例独家覆盖（零覆盖 = 可被别人替代 → FAIL）
-                                       # ⑧ Word 抽取（标题/加粗/列表/图片/表格 + 非 docx 必须失败）
-                                       # ⑨ 平台原生字段（正文不重印标题/作者 · 预览模拟原生栏 · meta 上限）
-                                       # ⑩ draft/add payload（上限截断 · 留言默认与编辑器对齐 · 原文链接）
-                                       # ⑪ 永久素材管理（封面复用 · 验活 · 删除重传 · 总数 · 翻页 · 删除）
-python3 scripts/selftest.py --shots    # 真截 390px PNG 到 shots/，作为 Gate 3 的通读输入
+                                       # ⑤ 同文不同 Decision → 不同 Composition（抹掉颜色后仍须不同）
+                                       # ⑥ Word 抽取（标题/加粗/列表/图片/表格 + 非 docx 必须失败）
+                                       # ⑦ 平台原生字段（正文不重印标题/作者 · 预览模拟原生栏 · meta 上限）
+                                       # ⑧ draft/add payload（上限截断 · 留言默认 · 原文链接）
+                                       # ⑨ 永久素材管理（封面复用 · 验活 · 删除重传 · 总数 · 翻页 · 删除）
+                                       # ⑩ 暖信笺无孤立圆点 ⑪ config.json 默认与优先级
+python3 scripts/selftest.py --shots    # 真截 390px PNG 到 assets/shots/，作为 Gate 3 的通读输入
 ```
 
 改了 `render.py`、`check.py` 或 `themes.json` 之后必须跑（CI 也会跑）。新增判断前先问：这能不能先写成一条护栏测试。
@@ -141,21 +157,27 @@ python3 scripts/selftest.py --shots    # 真截 390px PNG 到 shots/，作为 Ga
 
 排版完成后再调用。`--submit` 仅企业认证账号；个人账号止步于草稿。凭证、白名单、48001 排查见 [references/publish.md](references/publish.md)。
 
+先配一次 `config.json`（复制模板 `config.example.json`，已 gitignore 不入库）：
+`appid` / `secret` / `author` / `source_url` / `need_open_comment` / `only_fans_can_comment` / `submit`。
+优先级：命令行 > `--meta` > `config.json`；草稿还是正式发布由 config 的 `submit` 决定（默认 false 只建草稿）。
+
 ```bash
-# 推荐：直接消费 render 产出的发布字段（title 转｜ / author / digest / cover / 原文链接），所见即所得
-python3 scripts/publish.py --appid "$APPID" --secret "$SECRET" \
-  --html 文章_frost.html --meta 文章_frost.meta.json
-# 或手工给字段；留言默认开启（与编辑器一致），--no-open-comment 可关
-python3 scripts/publish.py --appid "$APPID" --secret "$SECRET" \
-  --html 文章_frost.html --cover images/cover.jpg --title "标题" --author "作者" --digest "摘要"
+# 推荐：字段全部走 config.json + meta.json，命令行零参数
+python3 scripts/publish.py --html 文章_frost.html --meta 文章_frost.meta.json
+# 单次覆盖任意字段；留言默认开启（与编辑器一致），--no-open-comment 可关
+python3 scripts/publish.py --html 文章_frost.html --cover images/cover.jpg --title "标题" --author "作者" --digest "摘要"
 
 # 永久素材管理：封面同图复用（sha256 缓存，验活后复用，不再每次建草稿堆一张）
-python3 scripts/publish.py --appid "$APPID" --secret "$SECRET" --material-count
-python3 scripts/publish.py --appid "$APPID" --secret "$SECRET" --list-materials
-python3 scripts/publish.py --appid "$APPID" --secret "$SECRET" --delete-material MEDIA_ID  # 不可恢复，先核对
+python3 scripts/publish.py --material-count
+python3 scripts/publish.py --list-materials
+python3 scripts/publish.py --delete-material MEDIA_ID  # 不可恢复，先核对
 ```
 
 正文 HTML 不再印标题与作者名——它们只走草稿的原生字段，避免草稿里出现两次；
 摘要不传时由 render 的 meta.json 提供（lead > deck > 首段，≤120 字），不让微信从正文开头乱抓。
 
-不要把 AppSecret 写进仓库。
+AppSecret 只写进 `config.json`（已 gitignore），不要提交到仓库。
+
+## 许可证
+
+[MIT](LICENSE.txt) © 2026 cpikeo

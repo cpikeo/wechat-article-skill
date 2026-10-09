@@ -1,5 +1,6 @@
 __pycache__/
 *.pyc
 eval/*.html
-shots/
+assets/shots/
 .wechat_material_cache.json
+config.json

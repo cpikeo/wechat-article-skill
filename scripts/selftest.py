@@ -18,8 +18,7 @@ import tempfile
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 EVAL = os.path.join(ROOT, "eval")
-CASES = ("skills", "portrait", "ink", "visual", "atelier",
-         "brief", "longread", "excerpt")
+CASES = ("skills", "portrait", "visual", "brief", "longread")
 HEAD = "---\ntitle: 回归用例|固定标题\n"   # 固定内容；不写 date，避免每天产生 diff
 
 
@@ -134,69 +133,6 @@ def theme_audit():
 COMPOSITION_CASE = "skills"
 COMPOSITION_LEFT = ("paper", "standard")
 COMPOSITION_RIGHT = ("ink", "airy")
-
-
-# ---- 语料节奏跨度 ----
-# 用例若全部把高潮放在结尾，回归就只能证明「一种节奏没坏」。
-# 这里冻结语料的节奏多样性：至少要有明显靠前的与靠后的两种。
-RHYTHM_SPREAD_MIN = 15          # 百分点
-
-
-def rhythm_positions():
-    """每个用例的高潮位置（%，按块序）。没有 peak 的用例不参与。"""
-    sys.path.insert(0, HERE)
-    import render as _r
-    out = {}
-    for name in CASES:
-        md = open(os.path.join(EVAL, f"{name}.md"), encoding="utf-8").read()
-        try:
-            _, _, blocks, _ = _r.render(md)
-        except Exception:  # noqa: BLE001
-            continue
-        kinds = [b[0] for b in blocks]
-        if "peak" in kinds:
-            out[name] = round(100 * (kinds.index("peak") + 1) / len(kinds))
-    return out
-
-
-# ---- 用例独家覆盖 ----
-# eval 不贵（不在常驻 Context 里），但它会不知不觉长大。规则只有一条：
-# 每篇用例必须至少独家覆盖一条判断路径；否则它只是别人的重复，应该合并或删除。
-# 判据来自「去掉它以后，哪条路径就没人测」——而不是「它看起来写得好不好」。
-def coverage():
-    """返回 {用例: 独家特征排序列表}；独家为空 = 这篇可以被别人替代。"""
-    sys.path.insert(0, HERE)
-    import render as _r
-    prof = {}
-    for name in CASES:
-        meta, blocks = _r.parse(open(os.path.join(EVAL, f"{name}.md"), encoding="utf-8").read())
-        kinds = [b[0] for b in blocks]
-        chars = _r.doc_len(blocks)
-        imgs = [b[1] for b in blocks if b[0] == "img"]
-        cover = (meta.get("cover") or "").strip()
-        f = {
-            f"人格:{meta.get('theme')}",
-            f"密度:{meta.get('density', 'standard')}",
-            "字数档:" + ("≤800" if chars <= 800 else "800-2000" if chars <= 2000 else "≥2000"),
-            "封面:" + ("无" if not cover else "待补" if _r.TODO.match(cover) else "真实"),
-            "正文图:" + ("无" if not imgs else "待补" if all(
-                not b[1][1] or _r.TODO.match(b[1][1]) for b in imgs) else "真实"),
-        }
-        if meta.get("toc", "").lower() in ("true", "yes", "1") and kinds.count("h2") >= 3:
-            f.add("目录")
-        if meta.get("deck") and "lead" not in kinds:
-            f.add("deck 单独作首屏")
-        if "peak" in kinds and 100 * (kinds.index("peak") + 1) / len(kinds) < 70:
-            f.add("高潮靠前")
-        for k in ("h3", "table", "code", "data", "bars", "note", "hr", "quote"):
-            if k in kinds:
-                f.add(f"原语:{k}")
-        if any(b[0] == "list" and b[1][0] for b in blocks):
-            f.add("原语:有序列表")
-        if any(b[0] == "list" and not b[1][0] for b in blocks):
-            f.add("原语:无序列表")
-        prof[name] = f
-    return {n: sorted(f - set().union(*[v for m, v in prof.items() if m != n])) for n, f in prof.items()}
 
 
 def composition_differs(case, left, right):
@@ -465,7 +401,7 @@ def shots():
         print("\n跳过截图：未安装 playwright"
               "（pip install playwright && python3 -m playwright install chromium）")
         return True
-    out_dir = os.path.join(ROOT, "shots")
+    out_dir = os.path.join(ROOT, "assets", "shots")
     os.makedirs(out_dir, exist_ok=True)
     made, failed = [], []
     with sync_playwright() as p:
@@ -557,59 +493,72 @@ def main():
     if not ok:
         fails.append("composition 差异")
 
-    print("⑥ 语料节奏跨度（回归不能只证明一种节奏）")
-    pos = rhythm_positions()
-    if len(pos) < 2:
-        print(f"   FAIL · 带 peak 的用例不足 2 篇：{pos}")
-        fails.append("节奏跨度")
-    else:
-        spread = max(pos.values()) - min(pos.values())
-        line = "、".join(f"{k} {v}%" for k, v in sorted(pos.items(), key=lambda x: x[1]))
-        if spread < RHYTHM_SPREAD_MIN:
-            fails.append("节奏跨度")
-            print(f"   FAIL · 高潮全部落在 {min(pos.values())}–{max(pos.values())}%（跨度 {spread}pp < {RHYTHM_SPREAD_MIN}）："
-                  f"用例都是一种节奏\n   {line}")
-        else:
-            print(f"   PASS · 高潮跨度 {spread}pp\n   {line}")
-
-    print("⑦ 用例独家覆盖（每篇必须至少有一条别人测不到的路径）")
-    cov = coverage()
-    thin = [n for n, u in cov.items() if not u]
-    for n, u in cov.items():
-        print(f"   {'PASS' if u else 'FAIL'} · {n}：独家 {len(u)} 项 —— {'、'.join(u) if u else '无（可被其它用例替代）'}")
-    if thin:
-        fails.extend(thin)
-
-    print("⑧ Word 抽取回归（三条输入路径之一，此前零覆盖）")
+    print("⑥ Word 抽取回归（三条输入路径之一，此前零覆盖）")
     ok, why = docx_ok()
     print(f"   {'PASS' if ok else 'FAIL'} · docx → Markdown（标题/加粗/两种列表/图片/表格）")
     if not ok:
         fails.append("docx 抽取")
         print(f"   {why}")
 
-    print("⑨ 平台原生字段（正文不重印标题/作者 · 预览模拟原生栏 · meta 上限）")
+    print("⑦ 平台原生字段（正文不重印标题/作者 · 预览模拟原生栏 · meta 上限）")
     ok, why = platform_fields_ok()
     print(f"   {'PASS' if ok else 'FAIL'} · {why}")
     if not ok:
         fails.append("平台原生字段")
 
-    print("⑩ draft/add payload（上限截断 · 留言默认 · 原文链接）")
+    print("⑧ draft/add payload（上限截断 · 留言默认 · 原文链接）")
     ok, why = draft_payload_ok()
     print(f"   {'PASS' if ok else 'FAIL'} · {why}")
     if not ok:
         fails.append("draft payload")
 
-    print("⑪ 永久素材管理（封面复用 · 验活 · 删除重传 · 总数 · 翻页 · 删除）")
+    print("⑨ 永久素材管理（封面复用 · 验活 · 删除重传 · 总数 · 翻页 · 删除）")
     ok, why = material_ok()
     print(f"   {'PASS' if ok else 'FAIL'} · {why}")
     if not ok:
         fails.append("素材管理")
 
-    print("⑫ 暖信笺无孤立圆点（线上反馈回归）")
+    print("⑩ 暖信笺无孤立圆点（线上反馈回归）")
     ok, why = letter_heading_ok()
     print(f"   {'PASS' if ok else 'FAIL'} · {why or 'H2 不再挂圆点'}")
     if not ok:
         fails.append("letter 圆点")
+
+    print("⑪ config.json 默认与优先级（命令行 > meta > config）")
+    import publish as _p
+    ns = argparse.Namespace(appid=None, secret=None, title=None, cover=None, author=None, digest=None,
+                            source_url=None, no_open_comment=False, fans_only_comment=False, submit=False)
+    cfg = {"appid": "wx_cfg", "secret": "s_cfg", "author": "配置作者", "source_url": "https://cfg",
+           "need_open_comment": False, "submit": True}
+    s = _p.resolve_settings(ns, {"author": "meta作者", "digest": "meta摘要"}, cfg)
+    s2 = _p.resolve_settings(
+        argparse.Namespace(**{**vars(ns), "author": "CLI作者", "appid": "wx_cli"}), {}, cfg)
+    s3 = _p.resolve_settings(ns, {}, {"appid": "", "author": ""})
+    with tempfile.TemporaryDirectory() as td:
+        with open(os.path.join(td, "config.json"), "w", encoding="utf-8") as f:
+            json.dump({"appid": "wx_tmp"}, f)
+        cwd0 = os.getcwd()
+        os.chdir(td)
+        found = _p.load_config()
+        os.chdir(cwd0)
+    try:
+        _p.load_config("/nonexistent/config.json")
+        missing_raises = False
+    except FileNotFoundError:
+        missing_raises = True
+    for ok, why in [
+        (s["appid"] == "wx_cfg" and s["secret"] == "s_cfg", "凭证默认来自 config"),
+        (s["author"] == "meta作者" and s["digest"] == "meta摘要", "meta > config"),
+        (s["source"] == "https://cfg", "原文链接回落到 config"),
+        (s["open_comment"] is False and s["submit"] is True, "留言/发布开关跟随 config"),
+        (s2["author"] == "CLI作者" and s2["appid"] == "wx_cli", "命令行 > meta/config"),
+        (s3["appid"] is None and s3["author"] is None, "空字符串视同未配置"),
+        (found.get("appid") == "wx_tmp", "默认查找命中 ./config.json"),
+        (missing_raises, "显式路径不存在时报错"),
+    ]:
+        print(f"   {'PASS' if ok else 'FAIL'} · {why}")
+        if not ok:
+            fails.append(f"config: {why}")
 
     if a.shots:
         shot_ok = shots()

@@ -2,7 +2,7 @@
 """Composed Markdown → 公众号 HTML + 390px 预览 + Gate 1/2（一次调用）。
 
     render.py article.md [--theme paper|letter|ink|frost|bone|folio] [-o out.html]
-    render.py --specimen [-o shots/themes.html]       六格气候对照板（生成物，不进公众号）
+    render.py --specimen [-o assets/themes.html]      六格气候对照板（入库，--specimen 重新生成）
 
 产出 {stem}_{theme}.html 与 {stem}_{theme}_预览.html（预览另含封面两种裁切与首屏线）。
 语法见 SKILL.md。退出码 1 = 存在「必须改」。
@@ -252,16 +252,6 @@ class R:
                 f'border:1px solid {self.t["muted"]};border-radius:50%;text-align:center;font-size:{MICRO}px;'
                 f'font-weight:600;color:{color or self.t["text"]};box-sizing:border-box;">{self.leaf(glyph)}</span>')
 
-    def masthead(self, meta):
-        """正文开头不放元信息块：title/author/发布日期是平台原生字段，
-        kicker/阅读时长整块被线上反馈判为多余无用，已删。
-        只保留 deck（可选副题）；没有副题就直接进钩子。"""
-        t = self.t
-        if not meta.get("deck"):
-            return ""
-        return (f'<section style="padding-top:4px;">{self.p(self.inline(meta["deck"]), BODY, t["sub"])}</section>'
-                f'<section style="height:1px;background:{t["line"]};margin-top:{self.g(24)}px;">{BR}</section>')
-
     def h2(self, text, n):
         t, ending = self.t, re.search(r"结语|尾声|写在最后|后记", text)
         title = self.p(self.inline(text), DISPLAY, t["text"],
@@ -421,18 +411,24 @@ class R:
         return f'<section style="margin:{self.g(44)}px 0;text-align:center;">{inner}</section>'
 
     def signature(self, meta):
-        """收束只留 cta + bio。author 与 title 一样是平台原生字段（标题下作者栏），
-        文末再印一遍作者名 = 草稿里上下各出现一次（线上事故实测）。bio 不是原生字段，可以留。"""
+        """收束 = 刊尾（colophon）：cta 进上下细线框，bio 小字落款。
+        author 是平台原生字段，不在此重印；悬浮短线这类说不清职责的装饰，删。"""
         t, out = self.t, []
         if meta.get("cta"):
-            out.append(self.p(self.inline(meta["cta"]), SMALL, t["sub"], "margin-bottom:28px;"))
+            out.append(
+                f'<section style="border-top:1px solid {t["line"]};border-bottom:1px solid {t["line"]};'
+                f'padding:{self.g(24)}px 12px;text-align:center;">'
+                + self.p(self.inline(meta["cta"]), SMALL, t["sub"], "line-height:2;letter-spacing:1px;")
+                + "</section>")
         if meta.get("bio"):
-            out.append(f'<section style="text-align:center;">{self.seal(meta.get("seal", t["seal"]))}</section>'
-                       if t["seal"] else self.rule(24))
-            out.append(self.p(self.leaf(typo(meta["bio"])), MICRO, t["muted"], "margin-top:16px;letter-spacing:1px;"))
+            seal = (f'<section style="margin-bottom:10px;">{self.seal(meta.get("seal", t["seal"]))}</section>'
+                    if t["seal"] else "")
+            out.append(f'<section style="margin-top:{self.g(28)}px;text-align:center;">{seal}'
+                       + self.p(self.leaf(typo(meta["bio"])), MICRO, t["muted"], "letter-spacing:1px;")
+                       + "</section>")
         if not out:
             return ""
-        return f'<section style="margin-top:{self.g(56)}px;text-align:center;">{"".join(out)}</section>'
+        return f'<section style="margin-top:{self.g(56)}px;">{"".join(out)}</section>'
 
     def toc(self, heads):
         t = self.t
@@ -457,21 +453,16 @@ def api_title(t):
     return t.replace("|", "｜").strip()
 
 
-def plain(s):
-    """剥掉行内语法，得到读者可见的纯文本（供摘要等原生字段复用）。"""
-    s = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", s)          # 链接留文字
-    s = re.sub(r"`([^`]*)`|==([^=]*)==|\*\*([^*]*)\*\*|<u>([^<]*)</u>|~~([^~]*)~~",
-               lambda m: next(g for g in m.groups() if g is not None), s)
-    return s.strip()
-
-
 def auto_digest(meta, blocks, limit=120):
     """摘要兜底：lead > deck > 首段。官方上限 120 字（2026-07-14 对齐 mp 端）。
     不能让微信自己抓正文前 54 字——抓到的开头不稳定（副题等），不是摘要。"""
     src = next((b[0] for k, b in blocks if k == "lead"), "") \
         or meta.get("deck", "") \
         or next((b for k, b in blocks if k == "p"), "")
-    return plain(src)[:limit]
+    src = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", src)      # 链接留文字
+    src = re.sub(r"`([^`]*)`|==([^=]*)==|\*\*([^*]*)\*\*|<u>([^<]*)</u>|~~([^~]*)~~",
+                 lambda m: next(g for g in m.groups() if g is not None), src)
+    return src.strip()[:limit]
 
 
 def doc_len(blocks):
@@ -780,7 +771,10 @@ def render(md, theme=None):
     if key not in THEMES:
         sys.exit(f"未知主题 {key}，可选：{', '.join(THEMES)}")
     r = R(THEMES[key], meta.get("density", "standard"))
-    out, n = [r.masthead(meta)], 0
+    out, n = [], 0
+    if meta.get("deck"):  # 正文开头只留副题；元信息全是原生字段
+        out.append(f'<section style="padding-top:4px;">{r.p(r.inline(meta["deck"]), BODY, r.t["sub"])}</section>'
+                   f'<section style="height:1px;background:{r.t["line"]};margin-top:{r.g(24)}px;">{BR}</section>')
     heads = [b[1] for b in blocks if b[0] == "h2"]
     toc_done = meta.get("toc", "").lower() not in ("true", "yes", "1") or len(heads) < 3
     for kind, b in blocks:
@@ -878,7 +872,7 @@ h1{{font-size:28px;font-weight:600;letter-spacing:.4px;margin:10px 0 8px;line-he
 
 
 def specimen(path):
-    """六格对照板由真实渲染器生成，避免与人手维护的样本漂移。写到 shots/（生成物目录）。"""
+    """六格对照板由真实渲染器生成，避免与人手维护的样本漂移。入库 assets/themes.html，--specimen 重新生成。"""
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     cols = []
     for key, t in THEMES.items():
@@ -898,7 +892,7 @@ def main():
     ap.add_argument("--specimen", action="store_true", help="生成六格气候对照板")
     a = ap.parse_args()
     if a.specimen:
-        specimen(a.out or os.path.join(HERE, "..", "shots", "themes.html"))
+        specimen(a.out or os.path.join(HERE, "..", "assets", "themes.html"))
         return
     if not a.md:
         ap.error("需要一个 markdown 文件，或使用 --specimen")

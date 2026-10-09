@@ -73,6 +73,6 @@ REVIEW 是**先承诺**：写不出「最大的视觉风险」，说明还没看
 否则它是旧人格的第二种配色，不是新人格。（`selftest` 会拦住：两两少于 2 个轴差异直接 FAIL。）
 
 1. `assets/themes.json` 按现有键加一节（六个轴 + 色值 + `image` + `leading` / `radius`），不发明新键、不加字号。
-2. `python3 scripts/render.py --specimen` 生成对照板（`shots/themes.html`），看它是不是真的区别于已有六种。
+2. `python3 scripts/render.py --specimen` 生成对照板（`assets/themes.html`），看它是不是真的区别于已有六种。
 3. 用 `eval/` 任一用例渲染并通读 390px：`python3 scripts/render.py eval/skills.md --theme 新主题`。
 4. 三关过后，把气候与用途补进本文档的六人表（变七人表）。
