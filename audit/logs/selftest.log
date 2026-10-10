@@ -1,0 +1,93 @@
+① 用例回归（Gate 1/2 必须全过）
+   PASS · skills
+   PASS · portrait
+   PASS · visual
+   PASS · brief
+   PASS · longread
+② 结构基准（5 篇语料的机器可验证快照）
+   PASS · 5 篇 · 人格/资产/结构/首屏 全部对齐基准
+③ 人格系统（themes.json）：可渲染 · 不重复 · 键完整
+   可渲染 · paper（静纸 Silent Paper）
+   可渲染 · letter（暖信笺 Warm Letter）
+   可渲染 · ink（酌墨 Wine Ink）
+   可渲染 · frost（北霜 North Frost）
+   可渲染 · bone（素作 Atelier Bone）
+   可渲染 · folio（特稿 Feature Folio）
+   不重复 · 6 套参数签名不完全重复，且键完整
+④ 护栏回归（负例必须仍被拦住）
+   PASS · 两张图之间没有承接（should → 两张图片之间缺少文字承接）
+   PASS · 封面写了但文件不存在（must → 封面文件不存在）
+   PASS · 图片分辨率过低（must → 分辨率过低）
+   PASS · bars 值不是数字（must → bars 的值必须是数字）
+   PASS · bars 只有一项（must → bars 至少 2 项）
+   PASS · 正文图超出预算（should → 正文图 > 本文字数档位的预算）
+   PASS · todo 图位也要占预算（should → 正文图 > 本文字数档位的预算）
+   PASS · 首屏压了三层（should → 开篇压了）
+   PASS · bars 缺来源（must → 缺少紧邻来源）
+   PASS · bars 缺单位（must → 必须声明单一单位）
+   PASS · 证据类图片没有说明（must → 证据类图必须写清出处）
+   PASS · density 写错静默降级（must → density）
+⑤ 原语渲染（渲染出来是不是我以为的样子）
+   PASS · data 的全角/半角分隔符都要拆开
+   PASS · 正文不重印原生标题与作者
+   PASS · 正文无顶部元信息块，只保留 deck
+   PASS · 无职责的图不崩（Word 抽取的默认形态），只判必须改
+   PASS · 目录不占首屏（toc 排在第一段之后）
+⑥ 不同配置 → 构成差异（不是编辑质量测量）
+   PASS · skills：paper/standard vs ink/airy
+   不同参数仍改变构成（不代表模型编辑判断已实测）
+⑦ Word 抽取回归（三条输入路径之一，此前零覆盖）
+   PASS · docx → Markdown（标题/加粗/两种列表/图片/表格）
+⑧ 平台原生字段（正文不重印标题/作者 · 预览模拟原生栏 · meta 上限）
+   PASS · 正文无重印 · 预览模拟原生栏 · meta 上限合规
+⑨ draft/add payload（超限拒绝 · 留言默认 · 原文链接）
+   PASS · title｜·上限·留言默认·原文链接 全对
+⑩ 永久素材管理（封面复用 · 验活 · 删除重传 · 总数 · 翻页 · 删除）
+  复用已有封面永久素材 M1
+  缓存的素材 M1 已不可用（errcode=40007），重新上传
+   PASS · 复用·验活·删除重传·总数·翻页·删除 全对
+⑪ 暖信笺无孤立圆点（线上反馈回归）
+   PASS · H2 不再挂圆点
+⑫ config.json 默认与优先级（命令行 > meta > config）
+   PASS · 凭证默认来自 config
+   PASS · meta > config
+   PASS · 原文链接回落到 config
+   PASS · 留言/发布开关跟随 config
+   PASS · 命令行 > meta/config
+   PASS · 空字符串视同未配置
+   PASS · 默认查找命中 ./config.json
+   PASS · 显式路径不存在时报错
+⑬ 发布预检（不联网：Gate 1 · 原生字段 · 封面路径解析 · 待传图片）
+   PASS · Gate 1 · 原生字段 · 封面路径 · 待传图片 全对
+⑭ 真实缺陷回归（数值/路径/剪贴板边界/上传/坏稿0网络）
+   PASS · 零值不造2%长度，小值保持比例
+   PASS · 坏bars无崩溃并报具体错误：-2
+   PASS · 坏bars无崩溃并报具体错误：NaN
+   PASS · 坏bars无崩溃并报具体错误：多
+   PASS · 坏bars无崩溃并报具体错误：99999999
+   PASS · 代码内CSS字面量不误判
+   PASS · 事件与协议相对图片被拦
+   PASS · img/br不泄漏等宽状态
+   PASS · 首屏引文来源不丢失
+   PASS · data 不静默吞标签
+   PASS · 中文逗号不变成分号
+   PASS · 表格转义管道保住列
+   PASS · 不合法输入显式失败
+   PASS · 不合法输入显式失败
+   PASS · 不合法输入显式失败
+   PASS · 真实响应解析支持图片二进制
+   PASS · 二进制路径仍识别JSON错误
+   PASS · 跨目录正文/封面路径可预检
+   PASS · 预览本地嵌图，正文不含base64/工具栏
+   PASS · 实体路径/重复图片只上传一次
+   PASS · 权限错误不重传
+   PASS · 真实入口预检阻断：待补
+   PASS · 真实入口预检阻断：超限
+   PASS · 真实入口预检阻断：旧正文
+   PASS · 真实入口预检阻断：空标题
+   PASS · 真实入口默认草稿且仅替换正文图
+   PASS · 单次查询不额外睡眠或轮询
+   PASS · 原案例不再伪称实测或生成证据
+   PASS · 虚构采访可见声明/混单位伪图已删除
+
+回归：全部通过

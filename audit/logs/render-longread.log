@@ -1,0 +1,18 @@
+静纸 Silent Paper → audit/cases/longread.html
+预览 → audit/cases/longread_预览.html
+发布字段 → audit/cases/longread.meta.json（publish.py --meta 直接消费）
+
+
+Gate 3 证据（可核对的都摆在这里；结论与艺术判断由通读的人 / 视觉模型给）
+  资产 · 全文 2074 字 · 封面 1080×460（2.35:1） · 正文图 0/4（预算）
+  首屏 · 标题 + lead；首段落在第 3 块
+  节奏 · 非正文块 11/37 · 最长段落 111 字 · 最长连续正文 349 字
+  结构 · H2 8 · 转场 0 · 引文 0 · 目录（排在第一段之后） · 旁注 1 · Peak 1 · 强调 ==0 / **5
+  节奏线 · 首屏 → 高潮在第 33/37 块（89%） · 高潮后是 h2 · 收束：note + cta
+  封面 · 2.35:1 与 1:1 中央裁切见预览顶部（主语在正方形里还站得住吗）
+
+Gate 1 Platform: PASS
+
+Gate 2 Composition: PASS
+
+Gate 3 Art Direction：对照上面证据通读 390px 预览。CONTENT / EDITORIAL / VISUAL / MOBILE / FINAL JUDGMENT —— 只写 KEEP / REVISE / DELETE，回答 **Which element should disappear?**，并给每张留下的资产一句「为什么是这张」。

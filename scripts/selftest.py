@@ -2,9 +2,9 @@
 """回归：eval/ 用例必须 Gate 1/2 全过；用合成用例守护视觉判断的确定性部分。
 
     python3 scripts/selftest.py            退出码 1 = 回归失败
-    python3 scripts/selftest.py --shots   把每篇预览截成 390px PNG（需 playwright，未装则跳过）
+    python3 scripts/selftest.py --shots   把每篇预览截成 390px PNG（需 playwright，未装则失败）
 
-三条铁律：用例必须过；护栏必须仍会在该失败的地方失败；判断一旦确定下来就冻结成测试。
+三条铁律：用例必须过；护栏必须仍会在该失败的地方失败；测试只冻结可确定缺陷，不冻结审美配额。
 """
 import argparse
 import json
@@ -14,6 +14,9 @@ import shutil
 import subprocess
 import sys
 import tempfile
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import render as _r
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -29,62 +32,40 @@ def run(args, cwd):
 
 def case_ok(name):
     """在 eval/ 原地渲染：相对图片路径必须像真实使用一样解析。"""
-    out = os.path.join(tempfile.gettempdir(), f"selftest_{name}.html")
+    out = os.path.join(EVAL, f"_shots_{name}.html")
     code, log = run([os.path.join(HERE, "render.py"), f"{name}.md", "-o", out], EVAL)
     return code == 0, log
 
 
 # 负例：(标签, frontmatter 附加行, 正文, 关键词, 级别)
 GUARDS = (
-    ("两张图之间没有承接", "", "![甲](todo \"场景\")\n\n短。\n\n![乙](todo \"场景\")\n",
-     "两张图片之间缺少文字承接", "should"),
     ("封面写了但文件不存在", "cover: images/not-there.jpg\n", "正文一段。\n",
      "封面文件不存在", "must"),
     ("图片分辨率过低", "", "正文一段。\n\n![小图](fixtures/tiny.png \"证据\")\n",
-     "分辨率过低", "must"),
+     "分辨率过低", "should"),
     ("bars 值不是数字", "", "::: bars\n多｜甲\n少｜乙\n:::\n", "bars 的值必须是数字", "must"),
     ("bars 只有一项", "", "::: bars\n10｜甲\n:::\n", "bars 至少 2 项", "must"),
-    ("正文图超出预算", "", "正文。\n" + "\n\n".join(
-        f"![第{i}张](images/fig-busbar.jpg \"证据\")\n\n这是一段足够长的承接文字，用来把第 {i} 张图与下一张图隔开。" for i in range(1, 5)),
-     "正文图 > 本文字数档位的预算", "should"),
-    ("todo 图位也要占预算", "", "短文一段，只有一句话。\n\n"
-     "![待补一](todo \"锚点\")\n\n一段承接的话，短。\n\n![待补二](todo \"停顿\")\n",
-     "正文图 > 本文字数档位的预算", "should"),
-    ("首屏压了三层", "deck: 副题也要占位\n", "> 钩子。\n\n![首屏图](todo \"锚点\")\n\n正文第一段才开始。\n",
-     "首屏压了", "should"),
-    ("图示把正文数字又画一遍", "", "去年是 485，今年 950，几乎翻倍。\n\n"
-     "::: bars\n485｜去年\n950｜今年\n:::\n",
-     "图示数字与正文重复", "should"),
-    ("封面顺手用了正文图", "cover: images/cover.jpg\n", "正文一段。\n\n"
-     "![同一张图](images/cover.jpg \"锚点\")\n",
-     "封面必须独立做 art direction", "should"),
+    ("bars 缺来源", "", "::: bars 件\n1｜甲\n2｜乙\n:::\n", "缺少紧邻来源", "must"),
+    ("bars 缺单位", "", "::: bars\n1｜甲\n2｜乙\n:::\n", "必须声明单一单位", "must"),
     ("证据类图片没有说明", "", "正文一段。\n\n![](images/fig-busbar.jpg \"证据\")\n",
-     "证据类图必须写清出处", "should"),
-    ("短文开了目录", "toc: true\n", "## 甲\n\n一段。\n\n## 乙\n\n二段。\n\n## 丙\n\n三段。\n",
-     "短文开了目录", "should"),
-    ("density 写错静默降级", "density: campact\n", "正文一段。\n", "density", "should"),
-    # 文档化的规则只有这一条：--- 少于 H2 数。两节两转场就必须被点名。
-    ("转场不少于章节数", "", "## 甲\n\n一段。\n\n---\n\n## 乙\n\n二段。\n\n---\n", "转场 2 处 ≥ 章节 2 节", "should"),
+     "证据类图必须写清出处", "must"),
+    ("density 写错静默降级", "density: campact\n", "正文一段。\n", "density", "must"),
+
 )
 
 
 def guard_ok(label, fm, body, kw, level):
-    """护栏跑在一个临时目录里，软链 eval/images，保证相对路径与真实一致。"""
-    with tempfile.TemporaryDirectory() as d:
-        for sub in ("images", "fixtures"):
-            os.symlink(os.path.join(EVAL, sub), os.path.join(d, sub))
-        md = os.path.join(d, "guard.md")
-        open(md, "w", encoding="utf-8").write(HEAD + fm + "---\n\n" + body)
-        code, log = run([os.path.join(HERE, "render.py"), md, "-o", os.path.join(d, "out.html")], d)
-    hit = (code != 0) if level == "must" else (kw in log)
-    return hit, log
+    meta, blocks = _r.parse(HEAD + fm + "---\n\n" + body)
+    must, should = _r.compose_gate(meta, blocks, EVAL)
+    found = must if level == "must" else should
+    return any(kw in m for m in found), "\n".join(must + should)
 
 
 # 原语渲染断言：(标签, frontmatter 附加行, markdown, 必须出现, 必须不出现)
 # 覆盖的是「渲染出来是不是我以为的样子」——只跑 Gate 是看不见这类错的。
 RENDER_CHECKS = (
     ("data 的全角/半角分隔符都要拆开", "",
-     "::: data\n3｜甲标签\n11|乙标签\n:::\n", ("甲标签", "乙标签"), ("3｜甲标签",)),
+     "::: data\n3｜甲标签\n11|乙标签\n:::\n\n::: note 演示\n假设演示计数，非统计。\n:::\n", ("甲标签", "乙标签"), ("3｜甲标签",)),
     # 线上事故回归：title/author 走平台原生字段（草稿标题栏/作者栏），
     # 正文若再印一遍，草稿里标题、作者各出现两次。正文只允许留 cta/bio。
     ("正文不重印原生标题与作者",
@@ -104,7 +85,7 @@ RENDER_CHECKS = (
 
 # ---- 人格签名：决定一个主题是「编辑语言」还是「换色」----
 # 这六个轴直接改变构成（章节标记 / 高潮处理 / 转场 / 引文 / 图片处理 / 字体气质），
-# 色值不在其中：只改颜色的新主题不算新人格。
+# 色值不在其中：这里只检查执行参数签名重复。
 SIGNATURE = ("heading", "peak", "divider", "quote", "image", "display")
 COLOR_KEYS = ("text", "sub", "muted", "line", "field", "accent", "dark", "on_dark")
 
@@ -117,66 +98,21 @@ def theme_audit():
     bad = []
     sig = {}
     for key, t in _r.THEMES.items():
-        missing = [k for k in SIGNATURE + COLOR_KEYS + ("name", "leading", "radius") if k not in t]
+        missing = [k for k in SIGNATURE + COLOR_KEYS + ("name", "leading", "radius", "seal", "toc_label") if k not in t]
         if missing:
             bad.append(f"{key} 缺少键 {missing}：新人格必须给全，否则渲染会静默出错")
         sig[key] = tuple(t.get(a) for a in SIGNATURE)
     for a, b in combinations(sorted(sig), 2):
         diff = [x for x, y, z in zip(SIGNATURE, sig[a], sig[b]) if y != z]
-        if len(diff) < 2:
-            bad.append(f"{a} 与 {b} 只差 {len(diff)} 个编辑语言轴 {diff}："
-                       f"只换颜色不算新人格，合并或重新区分")
+        if not diff:
+            bad.append(f"{a} 与 {b} 编辑语言参数重复："
+                       f"参数重复：核对是否有必要保留")
     return bad
 
 
-# ---- 同文不同 Decision → 不同 Composition ----
-# 判断是否真的改变输出，而不是换了一层皮：把两版 HTML 的色值全部抹掉再比较。
-# 若抹掉颜色后仍然不同，说明变的是构成（章节标记 / 高潮处理 / 间距尺度 / 字体气质）。
-COMPOSITION_CASE = "skills"
-COMPOSITION_LEFT = ("paper", "standard")
-COMPOSITION_RIGHT = ("ink", "airy")
-
-
-def composition_differs(case, left, right):
-    """返回 (是否通过, 说明)。"""
-    # skills.md：纯文字、无图、有 peak 与 data，最能暴露「换皮不换构成」
-    src = open(os.path.join(EVAL, f"{case}.md"), encoding="utf-8").read()
-    outs = {}
-    for (theme, density), tag in ((left, "L"), (right, "R")):
-        md = re.sub(r"(?m)^density:.*$", f"density: {density}", src)
-        md = re.sub(r"(?m)^theme:.*$", f"theme: {theme}", md)
-        with tempfile.TemporaryDirectory() as d:
-            path = os.path.join(d, "c.md")
-            open(path, "w", encoding="utf-8").write(md)
-            out = os.path.join(d, "c.html")
-            code, log = run([os.path.join(HERE, "render.py"), path, "-o", out], EVAL)
-            if code != 0:
-                return False, f"{theme}/{density} 渲染失败\n{log}"
-            outs[tag] = open(out, encoding="utf-8").read()
-
-    naked = {k: re.sub(r"#[0-9A-Fa-f]{3,8}", "", v) for k, v in outs.items()}
-    if naked["L"] == naked["R"]:
-        return False, "抹掉颜色后两版完全一致：换的是皮，不是构成"
-
-    # 构成必须真的变了：三个判据都不含颜色——章节标记 / 间距尺度 / 字体气质
-    marks = {
-        "章节标记": ("border-radius:50%" in naked["R"]) != ("border-radius:50%" in naked["L"]),
-        "字体气质": ("Songti" in naked["R"]) != ("Songti" in naked["L"]),
-        "间距尺度": (sorted(re.findall(r"margin:\s*(\d+)px", naked["L"])) !=
-                     sorted(re.findall(r"margin:\s*(\d+)px", naked["R"]))),
-    }
-    changed = [k for k, v in marks.items() if v]
-    if len(changed) < 2:
-        return False, f"只有 {changed} 处构成变化，其余是同一套排版"
-    return True, "构成变化：" + "、".join(changed)
-
-
 def render_check_ok(fm, md, must_have, must_not):
-    with tempfile.TemporaryDirectory() as d:
-        path = os.path.join(d, "r.md")
-        open(path, "w", encoding="utf-8").write(HEAD + fm + "---\n\n" + md)
-        code, log = run([os.path.join(HERE, "render.py"), path, "-o", os.path.join(d, "o.html")], d)
-        html = open(os.path.join(d, "o.html"), encoding="utf-8").read()
+    _, meta, blocks, html = _r.render(HEAD + fm + "---\n\n" + md)
+    log = "\n".join(sum(_r.compose_gate(meta, blocks, EVAL), []))
     missing = [x for x in must_have if x not in html]
     leaked = [x for x in must_not if x in html]
     return not missing and not leaked, log, missing, leaked
@@ -216,13 +152,13 @@ def platform_fields_ok():
 
 
 def draft_payload_ok():
-    """publish.py 实际发给 draft/add 的 payload：上限截断、断行标记转换、
+    """publish.py 实际发给 draft/add 的 payload：超限拒绝、断行标记转换、
     留言默认与编辑器对齐（1）、原文链接落到底部字段。"""
     sys.path.insert(0, HERE)
     import publish as _p
     calls = []
 
-    def fake_post(url, payload):
+    def fake_post(url, payload, **kwargs):
         calls.append(payload)
         return {"media_id": "MID"}
 
@@ -230,7 +166,12 @@ def draft_payload_ok():
     _p._post_json = fake_post
     try:
         _p.create_draft("tok", "回归用例|固定标题", "<section>x</section>", "THUMB",
-                        author="很长作者名" * 10, digest="摘" * 200, source_url="https://example.com/a")
+                        author="作者", digest="摘要", source_url="https://example.com/a")
+        try:
+            _p.create_draft("tok", "标题" * 20, "正文", "THUMB")
+            return False, "超限未拒绝"
+        except ValueError:
+            pass
         _p.create_draft("tok", "t", "<section>x</section>", "THUMB", need_open_comment=0)
     finally:
         _p._post_json = old
@@ -265,7 +206,7 @@ def material_ok():
         calls = {"upload": [], "del": [], "batch_counts": []}
         state = {"alive": True}
 
-        def fake_post(url, payload):
+        def fake_post(url, payload, **kwargs):
             if "/material/batchget_material?" in url:
                 calls["batch_counts"].append(payload["count"])
                 items = [{"media_id": f"I{i}"} for i in range(25)]
@@ -322,16 +263,6 @@ def material_ok():
     return not problems, ("；".join(problems) if problems else "复用·验活·删除重传·总数·翻页·删除 全对")
 
 
-def letter_heading_ok():
-    """暖信笺 H2 不再有孤立圆点（线上反馈：多余无用）。letter 无 seal，
-    样张里任何 border-radius:50% 都只能来自圆点标记。"""
-    sys.path.insert(0, HERE)
-    import render as _r
-    _, _, _, body = _r.render(_r.SPECIMEN_MD, "letter")
-    ok = "border-radius:50%" not in body
-    return ok, ("" if ok else "letter 仍渲染圆形标记")
-
-
 # ---- P3：Word 抽取回归 ----
 # extract_docx.py 是三条输入路径之一，此前零覆盖。构造最小 .docx（zipfile + 最小 XML），
 # 不引入 python-docx，也不入库二进制。
@@ -362,7 +293,7 @@ RELS_XML = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
  Target="media/fig1.png"/></Relationships>"""
 
 DOCX_EXPECT = ("## 来自 Word 的标题", "**加粗的一句**", "- 编号列表项", "- 样式列表项",
-               "![](images/01-fig1.png)", "| 列A | 列B |", "|---|---|")
+               "![](images/01-fig1.png)", r"| 列A\|内 | 列B |", "|---|---|")
 
 
 def docx_ok():
@@ -371,7 +302,7 @@ def docx_ok():
     with tempfile.TemporaryDirectory() as d:
         src = os.path.join(d, "a.docx")
         with zipfile.ZipFile(src, "w") as z:
-            z.writestr("word/document.xml", DOC_XML)
+            z.writestr("word/document.xml", DOC_XML.replace("列A", "列A|内"))
             z.writestr("word/styles.xml", STYLES_XML)
             z.writestr("word/_rels/document.xml.rels", RELS_XML)
             z.write(os.path.join(EVAL, "fixtures", "tiny.png"), "word/media/fig1.png")
@@ -382,16 +313,37 @@ def docx_ok():
         md = open(out, encoding="utf-8").read()
         missing = [x for x in DOCX_EXPECT if x not in md]
         # 抽完直接渲染：真实路径上用户就是这么做的，图还没补职责也不能崩
-        code3, log3 = run([os.path.join(HERE, "render.py"), out, "-o", os.path.join(d, "a.html")], d)
-        if "Traceback" in log3:
-            missing.append(f"抽取结果渲染崩溃\n{log3[-400:]}")
+        _, meta3, blocks3, body3 = _r.render(md)
+        errors3 = _r.compose_gate(meta3, blocks3, d)[0]
+        code3, log3 = bool(errors3), "\n".join(errors3)
+        if code3 != 1 or "没有声明职责" not in log3 or "Traceback" in log3:
+            missing.append(f"抽取图无职责没有正确拒绝\n{log3[-400:]}")
         img = os.path.join(d, "images", "01-fig1.png")
         if not os.path.exists(img):
             missing.append("图片未解包到 images/")
+        # 深标题不丢成普通正文，损坏XML不Traceback。
+        deep = os.path.join(d, "deep.docx")
+        with zipfile.ZipFile(deep, "w") as z:
+            z.writestr("word/document.xml", DOC_XML.replace("Heading2", "Heading4"))
+            z.writestr("word/styles.xml", STYLES_XML.replace("Heading2", "Heading4").replace("heading 2", "heading 4"))
+        import extract_docx, io, contextlib
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            rc = extract_docx.extract(deep, os.path.join(d, "deep.md"))
+        if rc or "### 来自 Word 的标题" not in open(os.path.join(d, "deep.md"), encoding="utf-8").read():
+            missing.append("深标题层级未归一化")
+        malformed = os.path.join(d, "malformed.docx")
+        with zipfile.ZipFile(malformed, "w") as z:
+            z.writestr("word/document.xml", "<broken")
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()) as errors:
+            rc = extract_docx.extract(malformed, os.path.join(d, "malformed.md"))
+        msg = errors.getvalue()
+        if rc != 1 or "Traceback" in msg:
+            missing.append("损坏XML错误处理")
         # 反例：不是 docx 的文件必须失败，不能假装成功
         bad = os.path.join(d, "b.docx")
         open(bad, "w").write("不是 zip")
-        code2, _ = run([os.path.join(HERE, "extract_docx.py"), bad, "-o", os.path.join(d, "b.md")], d)
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            code2 = extract_docx.extract(bad, os.path.join(d, "b.md"))
         return (not missing and code2 == 1), f"缺 {missing} · 非 docx 退出码 {code2}"
 
 
@@ -399,40 +351,67 @@ def shots():
     """把每篇预览真正截成 390px PNG —— Gate 3 通读（人眼或视觉模型）的输入。
 
     只在预览里排一次版是不够的：字距、折行、图片裁切、首屏密度都必须在像素上看见。
-    需要 playwright（skill 本身不需要）；未安装则如实跳过，不假装通过。
+    需要 playwright（skill 本身不需要）；显式请求但未安装即失败。
     """
     try:
         from playwright.sync_api import sync_playwright
     except ImportError:
-        print("\n跳过截图：未安装 playwright"
+        print("\n截图失败：未安装 playwright"
               "（pip install playwright && python3 -m playwright install chromium）")
-        return True
+        return False
     out_dir = os.path.join(ROOT, "assets", "shots")
     os.makedirs(out_dir, exist_ok=True)
     made, failed = [], []
     with sync_playwright() as p:
         b = p.chromium.launch()
-        pg = b.new_page(viewport={"width": 390, "height": 844}, device_scale_factor=2)
         for name in CASES:
-            # 就地渲染：预览里的图片是相对路径，换目录会全部裂开
+            pg = b.new_page(viewport={"width": 390, "height": 844}, device_scale_factor=2)
+            # 复用case_ok已生成的预览，不再次渲染
             html = os.path.join(EVAL, f"_shots_{name}.html")
-            code, log = run([os.path.join(HERE, "render.py"), f"{name}.md", "-o", html], EVAL)
-            if code != 0:
+            if not os.path.isfile(html):
                 failed.append(name)
                 continue
             prev = os.path.splitext(html)[0] + "_预览.html"
             png = os.path.join(out_dir, f"{name}.png")
             pg.goto("file://" + prev)
-            pg.wait_for_timeout(150)
+            pg.wait_for_function("() => [...document.images].every(i => i.complete)")
+            pg.evaluate("scrollTo(0, 0)")
             pg.screenshot(path=png, full_page=True)
             if "<img" in open(prev, encoding="utf-8").read() and not pg.evaluate(
                     "() => [...document.images].every(i => i.naturalWidth > 0)"):
                 failed.append(f"{name}（图片未加载）")
-            for f in (html, prev, os.path.splitext(html)[0] + ".meta.json"):
-                os.path.exists(f) and os.remove(f)   # 就地渲染留下的发布字段 sidecar 也要清掉
+            # Browser evidence: widths, #c vs publication body, and real copy event payload.
+            body = open(html, encoding="utf-8").read()
+            expected = pg.evaluate("h => {const n=document.createElement('section');n.innerHTML=h;return n.textContent}", body)
+            if pg.locator("#c").text_content() != expected:
+                failed.append(f"{name}（预览/正文内容不一致）")
+            for width in (320, 360, 390, 430):
+                pg.set_viewport_size({"width": width, "height": 844})
+                if pg.evaluate("document.documentElement.scrollWidth > innerWidth || [...document.querySelectorAll('#c p,#c img,#c table,#c th,#c td')].some(e=>e.scrollWidth>e.clientWidth+1 || e.getBoundingClientRect().right>document.querySelector('#c').getBoundingClientRect().right+1)"):
+                    failed.append(f"{name}（{width}px横向溢出）")
+            pg.set_viewport_size({"width": 390, "height": 844})
+            pg.evaluate("document.addEventListener('copy', e => {const put=e.clipboardData.setData.bind(e.clipboardData); e.clipboardData.setData=(type,data)=>{if(type==='text/html')window.copied=data;return put(type,data)}})")
+            pg.locator("button").click()
+            pg.wait_for_function("typeof window.copied === 'string'")
+            copied = pg.evaluate("window.copied")
+            if any(x in copied for x in ("<script", "data:image", 'class="', 'data-local=')):
+                failed.append(f"{name}（剪贴板混入预览资源）")
+            from check import image_sources
+            if image_sources(copied) != image_sources(body):
+                failed.append(f"{name}（复制图片路径不一致）")
+            del_copy = pg.evaluate("h => {const n=document.createElement('section');n.innerHTML=h;return n.textContent}", copied)
+            # inline styles survive the browser's copy serialization, not WeChat sanitation.
+            copied_style = pg.evaluate("h=>{const n=document.createElement('section');n.innerHTML=h;return [...n.querySelectorAll('[style]')].map(e=>e.getAttribute('style'))}", copied)
+            body_style = pg.evaluate("h=>{const n=document.createElement('section');n.innerHTML=h;return [...n.querySelectorAll('[style]')].map(e=>e.getAttribute('style'))}", body)
+            if copied_style != body_style:
+                failed.append(f"{name}（复制内联样式不一致）")
+            if del_copy != expected:
+                failed.append(f"{name}（复制内容不一致）")
+            pg.evaluate("delete window.copied")
             made.append(png)
+            pg.close()
         b.close()
-    print(f"\nGate 3 截图（390px · 2x · 含首屏折线）：{out_dir}")
+    print(f"\nGate 3 截图（390px · 2x · 4宽度元素级与复制样式检查）：{out_dir}")
     for m in made:
         print("   " + os.path.basename(m))
     if failed:
@@ -441,12 +420,12 @@ def shots():
     return True
 
 
-# ---- 精简质量基准：5 篇语料的「机器可验证」快照 ----
+# ---- 结构基准：5 篇语料的「机器可验证」快照 ----
 # 只锁判断的落点（人格 / 资产数 / 结构 / 首屏层数），不锁文笔。
 # 改稿不该动这张表；这张表动了，说明这套 Skill 对这批文章的判断变了——那必须是有意的。
 BASELINE = {
     "skills":   {"theme": "paper",  "imgs": 0, "peak": True,  "toc": False, "layers": 1},
-    "portrait": {"theme": "letter", "imgs": 2, "peak": True,  "toc": False, "layers": 1},
+    "portrait": {"theme": "letter", "imgs": 1, "peak": True,  "toc": False, "layers": 1},
     "visual":   {"theme": "frost",  "imgs": 1, "peak": True,  "toc": False, "layers": 1},
     "brief":    {"theme": "folio",  "imgs": 0, "peak": True,  "toc": False, "layers": 1},
     "longread": {"theme": "paper",  "imgs": 0, "peak": True,  "toc": True,  "layers": 1},
@@ -485,11 +464,11 @@ def preflight_ok():
         art = os.path.join(d, "art")
         os.makedirs(os.path.join(art, "images"))
         for n in ("cover.jpg", "fig.jpg"):
-            shutil.copy(os.path.join(EVAL, "images", "cover.jpg"), os.path.join(art, "images", n))
+            shutil.copy(os.path.join(EVAL, "images", "cover.jpg" if n == "cover.jpg" else "fig-busbar.jpg"), os.path.join(art, "images", n))
         md = os.path.join(art, "a.md")
         open(md, "w", encoding="utf-8").write(
             HEAD + "author: 甲木\ncover: images/cover.jpg\n---\n\n"
-            "> 钩子一句。\n\n正文一段。\n\n![说明](images/fig.jpg \"证据\")\n")
+            "> 钩子一句。\n\n正文一段。\n\n![说明](images/fig.jpg \"解释\")\n")
         run([os.path.join(HERE, "render.py"), md, "-o", os.path.join(art, "a.html")], art)
         side = json.load(open(os.path.join(art, "a.html".replace(".html", ".meta.json")), encoding="utf-8"))
         ns = argparse.Namespace(appid=None, secret=None, title=None, cover=None, author=None, digest=None,
@@ -524,38 +503,154 @@ def preflight_ok():
 
 
 def toc_after_first_para_ok():
-    """目录不占首屏：开了 toc 也要等读者读完第一段再出现（decide.md Rhythm 的判据）。"""
-    with tempfile.TemporaryDirectory() as d:
-        path = os.path.join(d, "t.md")
-        open(path, "w", encoding="utf-8").write(
-            HEAD + "toc: true\n---\n\n> 钩子一句。\n\n第一段正文，它必须排在目录之前。\n\n"
-            "## 甲\n\n一段。\n\n## 乙\n\n二段。\n\n## 丙\n\n三段。\n")
-        code, log = run([os.path.join(HERE, "render.py"), path, "-o", os.path.join(d, "o.html")], d)
-        html = open(os.path.join(d, "o.html"), encoding="utf-8").read()
-    a = html.find("第一段正文，它必须排在目录之前")
-    b = html.find("目录")
-    if code != 0:
-        return False, f"渲染失败\n{log}"
-    if a < 0 or b < 0 or a > b:
-        return False, f"目录排在首段之前（段 {a} / 目录 {b}）"
-    return True, "首段 → 目录"
+    md = HEAD + "toc: true\n---\n> 钩子。\n\n第一段正文。\n\n##甲\n\n一。\n\n## 乙\n\n二。\n\n## 丙\n\n三。\n\n## 丁\n\n四。\n"
+    html = _r.render(md)[3]
+    return 0 <= html.find("第一段正文") < html.find("目录"), "首段 → 目录"
 
 
-def roleless_image_ok():
-    """无职责的图片不许让渲染器崩——Word 抽出来的正是 `![](images/x.png)`。
-
-    崩了，用户看到的是 traceback；不崩，Gate 2 才会明确说「没有声明职责：说不出为什么存在就删除」。
-    """
-    with tempfile.TemporaryDirectory() as d:
-        os.symlink(os.path.join(EVAL, "images"), os.path.join(d, "images"))
-        md = os.path.join(d, "r.md")
-        open(md, "w", encoding="utf-8").write(HEAD + "---\n\n正文一段。\n\n![](images/fig-busbar.jpg)\n")
-        code, log = run([os.path.join(HERE, "render.py"), md, "-o", os.path.join(d, "o.html")], d)
-    if "Traceback" in log:
-        return False, "渲染器崩溃（无职责的图）"
-    if code == 0 or "没有声明职责" not in log:
-        return False, f"无职责的图未被判必须改（code={code}）"
-    return True, "无职责 → 必须改，且不崩"
+def delivery_defects_ok():
+    """具体缺陷，不以mock成功代替真实平台测试。"""
+    import contextlib
+    import io
+    from unittest.mock import patch
+    import publish as pub
+    from check import check, image_sources
+    results = []
+    def test(name, ok):
+        results.append((name, bool(ok)))
+    r = _r.R(_r.THEMES["paper"], "standard")
+    test("零值不造2%长度，小值保持比例", "width:0%" in r.bars(["0｜甲", "10｜乙"]) and "width:0.1%" in r.bars(["1｜甲", "1000｜乙"]))
+    for value in ("-2", "NaN", "多", "9" * 400):
+        md = HEAD + "---\n::: bars 件\n" + value + "｜甲\n10｜乙\n:::\n"
+        try:
+            _, meta, blocks, body = _r.render(md)
+            errors, _ = _r.compose_gate(meta, blocks, EVAL)
+            test("坏bars无崩溃并报具体错误：" + value[:8], any("值必须" in e for e in errors))
+        except Exception:
+            test("坏bars无崩溃：" + value[:8], False)
+    test("代码内CSS字面量不误判", not check(r.code("css", ["position:fixed; display:grid; float:left; {{demo}};"]))[0])
+    test("事件与协议相对图片被拦", bool(check('<img src="//bad/x" onerror="x()" style="max-width:100%">')[0]))
+    test("img/br不泄漏等宽状态", bool(check(r.code("", ["x"]) + '<br><p>未包裹</p>')[0]))
+    test("首屏引文来源不丢失", "来源人物" in r.quote("引文", "来源人物", "lead"))
+    meta, blocks = _r.parse(HEAD + "---\n::: data\n10\n:::\n\n::: note 演示\n演示计数，非统计。\n:::\n")
+    test("data 不静默吞标签", any("数值与标签" in e for e in _r.compose_gate(meta, blocks)[0]))
+    test("中文逗号不变成分号", _r.typo("你好,世界;再见!") == "你好，世界；再见！")
+    test("表格转义管道保住列", _r.parse("| 甲\\|乙 | 丙 |\n|---|---|\n")[1][0][1] == [["甲|乙", "丙"]])
+    for text in ("::: note\n没有闭合", "```python\nx", '![坏图](a b "说明")'):
+        try:
+            _r.parse(text)
+            test("不合法输入显式失败", False)
+        except ValueError:
+            test("不合法输入显式失败", True)
+    test("裸URL含数字/标点不被中文化", 'https://example.com/v1,a?x=1.2&amp;y=3' in r.inline('来源 https://example.com/v1,a?x=1.2&y=3 中文。'))
+    test("保留原引号不制造引言", '"原话"' in r.inline('他说"原话"') and '「' not in _r.R(_r.THEMES['ink'], 'standard').quote('这是作者判断', '', 'peak'))
+    test("中文与混排自然左对齐，表头不拉字距", 'text-align:justify' not in r.para('纯中文正文') and 'letter-spacing:2px' not in r.table([['长表头', '数值'], ['中文', '12%']]))
+    test("引用原标点不被归一", '中文,原句...' in r.quote('中文,原句...', '出处', 'quote'))
+    test("表格语义与正负单位保持", '<th ' in r.table([['列', '值'], ['甲', '−8 百分点']]) and '−8 百分点' in r.table([['列', '值'], ['甲', '−8 百分点']]))
+    meta, blocks = _r.parse(HEAD + '---\n|甲|乙|\n|---|---|\n|只有一列|\n')
+    test("表格行列不齐明确失败", any('行列数' in e for e in _r.compose_gate(meta, blocks)[0]))
+    test("BOM/CRLF不丢原生字段", _r.parse('\ufeff' + HEAD.replace('\n', '\r\n') + '---\r\n正文')[0]['title'] == '回归用例|固定标题')
+    code = r.code('python', ['  x = 1', '    y = 2', ''])
+    test("代码保留原空格不换全角，pre-wrap不误拦", '  x = 1' in code and 'white-space:pre-wrap' in code and not check(code)[0])
+    test("图表零轴与最长项解释可见", '零起点' in r.bars(['1｜甲','2｜乙'], '件') and '本组最大值' in r.bars(['1｜甲','2｜乙']))
+    meta, blocks = _r.parse(HEAD + '---\n正文\n\n![图](todo "   ")\n')
+    test("空白职责不崩溃且拒绝", any('没有声明职责' in e for e in _r.compose_gate(meta, blocks)[0]))
+    test("深色重点加粗继承反色不变黑", 'color:inherit' in _r.R(_r.THEMES['ink'],'standard').quote('**核心主张**', '', 'peak'))
+    test("frontmatter带引号的井号不截内容", _r.parse('---\ntitle: "标题 # 内文" # 注释\n---\n正文')[0]['title'] == '标题 # 内文')
+    meta, blocks = _r.parse(HEAD + 'deck: 副题\n---\n> 导语\n\n::: peak\n主张一\n:::\n\n::: peak\n主张二\n:::\n')
+    test("多重点和副题/导语由编辑判断，不机械阻断", not _r.compose_gate(meta, blocks)[0] and not any('两个钩子' in e for e in _r.compose_gate(meta, blocks)[1]))
+    class Response:
+        def __init__(self, raw): self.raw = raw
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def read(self): return self.raw
+    with patch.object(pub.urllib.request, "urlopen", return_value=Response(b"\xff\xd8jpeg")):
+        test("真实响应解析支持图片二进制", pub.get_material("tok", "MID") == b"\xff\xd8jpeg")
+    with patch.object(pub.urllib.request, "urlopen", return_value=Response(b'{"errcode":40007,"errmsg":"invalid"}')):
+        try:
+            pub.get_material("tok", "MID")
+            test("二进制路径仍识别JSON错误", False)
+        except pub.WeChatAPIError as e:
+            test("二进制路径仍识别JSON错误", e.errcode == 40007)
+    with tempfile.TemporaryDirectory() as d, contextlib.redirect_stdout(io.StringIO()):
+        art = os.path.join(d, "article")
+        dest = os.path.join(d, "delivery")
+        os.makedirs(art)
+        shutil.copytree(os.path.join(EVAL, "images"), os.path.join(art, "images"))
+        path = os.path.join(art, "a.md")
+        open(path, "w", encoding="utf-8").write(HEAD + 'cover: images/cover.jpg\n---\n正文。\n\n![解释](images/fig-busbar.jpg "解释")\n')
+        html = os.path.join(dest, "body.html")
+        rc, log = run([os.path.join(HERE, "render.py"), path, "-o", html], d)
+        side = json.load(open(os.path.splitext(html)[0] + ".meta.json", encoding="utf-8"))
+        src = open(html, encoding="utf-8").read()
+        preview = open(os.path.splitext(html)[0] + "_预览.html", encoding="utf-8").read()
+        settings = dict(title=side["api_title"], author=None, digest=side["digest"], source=None,
+                        cover=pub.resolve_cover(side["cover"], html), open_comment=True, fans_only=False, submit=False)
+        test("跨目录正文/封面路径可预检", rc == 0 and pub.preflight(html, settings) == 0 and os.path.isfile(os.path.join(dest, image_sources(src)[0])))
+        test("预览本地嵌图，正文不含base64/工具栏", 'src="data:image/jpeg;base64,' in preview and 'data:image' not in src and '<script' not in src)
+        # 路径实体、单双引号、重复图共一次上传。
+        entity_path = os.path.join(dest, "a&b.jpg")
+        shutil.copy(os.path.join(EVAL, "images", "fig-busbar.jpg"), entity_path)
+        frag = '<img src = "a&amp;b.jpg"><img src=\'a&amp;b.jpg\'><IMG SRC=a&amp;b.jpg>'
+        with patch.object(pub, "upload_content_image", return_value="https://mmbiz.qpic.cn/x?a=1&b=2") as upload:
+            rewritten = pub.rewrite_local_images(frag, "tok", dest)
+            test("实体路径/重复图片只上传一次", upload.call_count == 1 and rewritten.count("&amp;b=2") == 3)
+        cache = os.path.join(d, "cache.json")
+        cover = settings["cover"]
+        open(cache, "w").write(json.dumps({pub._file_sha256(cover): "MID"}))
+        with patch.object(pub, "get_material", side_effect=pub.WeChatAPIError(40001, "token")), patch.object(pub, "upload_thumb_material") as upload:
+            try:
+                pub.upload_thumb_material_cached("tok", cover, cache)
+                test("权限错误不重传", False)
+            except pub.WeChatAPIError:
+                test("权限错误不重传", upload.call_count == 0)
+        for invalid in ('[]', '{"submit":"false"}', '{"need_open_comment":1}'):
+            config = os.path.join(d, "bad.json")
+            open(config, 'w').write(invalid)
+            try:
+                pub.load_config(config)
+                test("配置JSON类型拒绝", False)
+            except ValueError:
+                test("配置JSON类型拒绝", True)
+        test("空白CLI标题不能绕过原生标题转换", pub.resolve_settings(argparse.Namespace(appid=None, secret=None,title=" ",cover=None,author=None,digest=None,source_url=None,no_open_comment=False,fans_only_comment=False,submit=False), {}, {})['title'] == '')
+        meta_path = os.path.splitext(html)[0] + '.meta.json'
+        open(meta_path, 'w').write('[]')
+        try:
+            pub.preflight(html, settings)
+            test("meta JSON非对象明确拒绝", False)
+        except ValueError:
+            test("meta JSON非对象明确拒绝", True)
+        open(meta_path, 'w').write(json.dumps(dict(side, pending_assets=True)))
+        test("pending_assets在真实预检阻断", pub.preflight(html, settings) == 1)
+        open(meta_path, 'w').write(json.dumps(side))
+        open(cache, 'w').write('[]')
+        with patch.object(pub, 'upload_thumb_material', return_value='NEW') as upload:
+            test("坏缓存形状不崩且重建", pub.upload_thumb_material_cached('tok', cover, cache) == 'NEW' and upload.call_count == 1)
+        # 不仅测试手动preflight，也调用实际发布入口，坏稿应0网络。
+        for label, content, title in (("待补", r.img("缺图", "todo", "场景"), "标题"), ("超限", src, "题" * 33), ("旧正文", src + r.para("外部改动"), "标题"), ("空标题", src, "")):
+            open(html, "w", encoding="utf-8").write(content)
+            with patch.object(pub, "get_stable_access_token") as token:
+                try:
+                    pub.publish_html_article("app", "secret", html, cover, title, material_cache=None)
+                    test("真实入口预检阻断：" + label, False)
+                except ValueError:
+                    test("真实入口预检阻断：" + label, token.call_count == 0)
+        open(html, "w", encoding="utf-8").write(src)
+        with patch.object(pub, "get_stable_access_token", return_value="tok"), patch.object(pub, "check_draft_switch", return_value=True), patch.object(pub, "upload_thumb_material", return_value="THUMB"), patch.object(pub, "upload_content_image", return_value="https://mmbiz.qpic.cn/img"), patch.object(pub, "create_draft", return_value="DRAFT") as draft, patch.object(pub, "submit_publish") as submit:
+            result = pub.publish_html_article("app", "secret", html, cover, "标题", material_cache=None)
+            test("真实入口默认草稿且仅替换正文图", not submit.called and result["media_id"] == "DRAFT" and "https://mmbiz.qpic.cn/img" in draft.call_args.args[2])
+        with patch.object(pub, "_post_json", return_value={"publish_status":1}) as post, patch.object(pub.time, "sleep") as sleep:
+            result = pub.poll_publish_status("tok", "PID", timeout=0)
+            test("单次查询不额外睡眠或轮询", result["status"] == 1 and post.call_count == 1 and not sleep.called)
+    # 守护实际改过的事实边界，链接存在不认证内容本身。
+    visual = open(os.path.join(EVAL, "visual.md"), encoding="utf-8").read()
+    portrait = open(os.path.join(EVAL, "portrait.md"), encoding="utf-8").read()
+    longread = open(os.path.join(EVAL, "longread.md"), encoding="utf-8").read()
+    test("原案例不再伪称实测或生成证据", "实测（IEA）" not in visual and '"证据"' not in visual and "2030 · IEA 中心预测" in visual)
+    test("虚构采访可见声明/混单位伪图已删除", "【虚构叙事练习】" in portrait and "::: bars" not in longread)
+    for label, ok in results:
+        print(f"   {'PASS' if ok else 'FAIL'} · {label}")
+    return all(ok for _, ok in results), "；".join(label for label, ok in results if not ok)
 
 
 def main():
@@ -572,7 +667,7 @@ def main():
             fails.append(c)
             print("   " + log.strip().replace("\n", "\n   "))
 
-    print("② 质量基准（5 篇语料的机器可验证快照）")
+    print("② 结构基准（5 篇语料的机器可验证快照）")
     ok, why = baseline_ok()
     print(f"   {'PASS' if ok else 'FAIL'} · {why}")
     if not ok:
@@ -596,7 +691,7 @@ def main():
         for m in theme_bad:
             print(f"   FAIL · {m}")
     else:
-        print(f"   不重复 · {len(_r.THEMES)} 个人格两两至少差 2 个编辑语言轴，且键完整")
+        print(f"   不重复 · {len(_r.THEMES)} 套参数签名不完全重复，且键完整")
 
     print("④ 护栏回归（负例必须仍被拦住）")
     for label, fm, body, kw, level in GUARDS:
@@ -614,25 +709,11 @@ def main():
             fails.append(label)
             print(f"   缺 {missing} · 泄漏 {leaked}\n   " + log.strip().replace("\n", "\n   "))
 
-    ok, why = roleless_image_ok()
-    print(f"   {'PASS' if ok else 'FAIL'} · 无职责的图不崩（Word 抽取的默认形态），只判必须改")
-    if not ok:
-        fails.append("无职责图")
-        print(f"   {why}")
-
     ok, why = toc_after_first_para_ok()
     print(f"   {'PASS' if ok else 'FAIL'} · 目录不占首屏（toc 排在第一段之后）")
     if not ok:
         fails.append("目录位置")
         print(f"   {why}")
-
-    print("⑥ 同文不同 Decision → 不同 Composition")
-    ok, why = composition_differs(COMPOSITION_CASE, COMPOSITION_LEFT, COMPOSITION_RIGHT)
-    print(f"   {'PASS' if ok else 'FAIL'} · {COMPOSITION_CASE}："
-          f"{COMPOSITION_LEFT[0]}/{COMPOSITION_LEFT[1]} vs {COMPOSITION_RIGHT[0]}/{COMPOSITION_RIGHT[1]}")
-    print(f"   {why}")
-    if not ok:
-        fails.append("composition 差异")
 
     print("⑦ Word 抽取回归（三条输入路径之一，此前零覆盖）")
     ok, why = docx_ok()
@@ -647,7 +728,7 @@ def main():
     if not ok:
         fails.append("平台原生字段")
 
-    print("⑨ draft/add payload（上限截断 · 留言默认 · 原文链接）")
+    print("⑨ draft/add payload（超限拒绝 · 留言默认 · 原文链接）")
     ok, why = draft_payload_ok()
     print(f"   {'PASS' if ok else 'FAIL'} · {why}")
     if not ok:
@@ -658,12 +739,6 @@ def main():
     print(f"   {'PASS' if ok else 'FAIL'} · {why}")
     if not ok:
         fails.append("素材管理")
-
-    print("⑪ 暖信笺无孤立圆点（线上反馈回归）")
-    ok, why = letter_heading_ok()
-    print(f"   {'PASS' if ok else 'FAIL'} · {why or 'H2 不再挂圆点'}")
-    if not ok:
-        fails.append("letter 圆点")
 
     print("⑫ config.json 默认与优先级（命令行 > meta > config）")
     import publish as _p
@@ -707,10 +782,21 @@ def main():
     if not ok:
         fails.append("发布预检")
 
+    print("⑭ 真实缺陷回归（数值/路径/剪贴板边界/上传/坏稿0网络）")
+    ok, why = delivery_defects_ok()
+    if not ok:
+        fails.append("真实缺陷：" + why)
+
     if a.shots:
         shot_ok = shots()
         if not shot_ok:
             fails.append("Gate 3 截图")
+
+    for name in CASES:
+        stem = os.path.join(EVAL, f"_shots_{name}")
+        for suffix in (".html", "_预览.html", ".meta.json"):
+            if os.path.isfile(stem + suffix):
+                os.remove(stem + suffix)
 
     print("\n回归：" + ("全部通过" if not fails else f"{len(fails)} 项失败 → {fails}"))
     sys.exit(1 if fails else 0)

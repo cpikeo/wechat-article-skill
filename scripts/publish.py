@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """微信公众号官方 API：草稿 → 可选发布 → 永久链接；永久素材对账/复用/清理。只用标准库。
 
-排版流水线完成后再调用。`--submit` 仅企业认证账号；个人账号止步于草稿。
+排版流水线完成后再调用。`--submit` 需具备发布权限；账号能力以接口返回与后台权限为准。
 发之前先 `python3 scripts/publish.py --html X.html --meta X.meta.json --preflight`：不调接口，
 把将要上行的 Gate 1 结论、原生字段（含上限）、封面与待传图片全摆出来，验收完再真发。
 `--check-draft-switch` 只查询灰度开关（开启不可逆，必须显式 `--enable-draft-switch`）。
@@ -13,6 +13,7 @@
 
 import argparse
 import hashlib
+import html as H
 import json
 import mimetypes
 import os
@@ -25,7 +26,7 @@ import urllib.error
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from render import api_title, img_size  # noqa: E402  标题断行标记的转换规则与图片尺寸读取单一来源在 render.py
-from check import check  # noqa: E402
+from check import check, image_sources  # noqa: E402
 
 API_BASE = "https://api.weixin.qq.com/cgi-bin"
 
@@ -40,12 +41,15 @@ class WeChatAPIError(RuntimeError):
         super().__init__(f"微信接口报错 errcode={errcode} errmsg={errmsg}")
 
 
-def _post_json(url, payload):
+def _post_json(url, payload, binary=False):
     data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json; charset=utf-8"})
     with urllib.request.urlopen(req, timeout=30) as resp:
-        body = json.loads(resp.read().decode("utf-8"))
-    if isinstance(body, dict) and body.get("errcode", 0) != 0:
+        raw = resp.read()
+        if binary and not raw.lstrip().startswith((b"{", b"[")):
+            return raw
+        body = json.loads(raw.decode("utf-8"))
+    if isinstance(body, dict) and body.get("errcode", 0) not in (0, None):
         raise WeChatAPIError(body.get("errcode"), body.get("errmsg"), body)
     return body
 
@@ -54,7 +58,7 @@ def _get_json(url):
     """官方文档里 get_materialcount 标注为 GET 请求，按文档实现。"""
     with urllib.request.urlopen(urllib.request.Request(url), timeout=30) as resp:
         body = json.loads(resp.read().decode("utf-8"))
-    if isinstance(body, dict) and body.get("errcode", 0) != 0:
+    if isinstance(body, dict) and body.get("errcode", 0) not in (0, None):
         raise WeChatAPIError(body.get("errcode"), body.get("errmsg"), body)
     return body
 
@@ -107,14 +111,14 @@ def get_stable_access_token(appid, secret, force_refresh=False):
     return body["access_token"]
 
 
-# ---------- 2. 草稿箱开关（灰度功能，务必先查） ----------
+# ---------- 2. 草稿箱开关（灰度功能，显式按需） ----------
 
 def check_draft_switch(access_token):
     """查询"草稿箱和发布功能"开关状态，不会修改任何东西。
     is_open == 0：这个账号的草稿箱/发布新接口还没开通；这是否会导致 draft/add
-                  报 48001 目前证据不确凿（见文件头部 2026-07 复核说明），仅作参考。
+                  报 48001 目前证据不确凿（权限仍需实际账号核对），仅作参考。
     is_open == 1：开关已开，draft/add 应该能正常调用（发布 freepublish_submit 是否能用
-                  仍取决于企业认证状态，这一条已核实）。
+                  需按实际账号接口权限确认）。
 
     请求方式用 POST：官方文档明确标注 `draft/switch` 是 POST 接口，本函数按文档实现。
     """
@@ -153,24 +157,28 @@ def upload_content_image(access_token, image_path):
     return result["url"]
 
 
-IMG_SRC_RE = re.compile(r'(<img[^>]+src=["\'])([^"\']+)(["\'])', re.IGNORECASE)
+IMG_SRC_RE = re.compile(r"(<img\b[^>]*?\bsrc\s*=\s*)(?:\"([^\"]*)\"|'([^']*)'|([^\s>]+))", re.IGNORECASE)
 
 
 def rewrite_local_images(html, access_token, base_dir="."):
     """扫描 HTML 里的 <img src="本地路径">，逐个上传替换成微信图片 URL。
     已经是 http(s) 链接的图片不动（是否会被微信过滤由官方接口决定，这里不重复判断）。
     """
+    uploaded = {}
     def _replace(match):
-        prefix, src, suffix = match.groups()
+        prefix, double, single, bare = match.groups()
+        src = H.unescape(next(v for v in (double, single, bare) if v is not None))
         if src.startswith("http://") or src.startswith("https://"):
             return match.group(0)
         local_path = src if os.path.isabs(src) else os.path.join(base_dir, src)
         if not os.path.isfile(local_path):
-            print(f"  警告：正文引用的本地图片不存在，原样保留 src：{src}", file=sys.stderr)
-            return match.group(0)
-        wechat_url = upload_content_image(access_token, local_path)
+            raise ValueError(f"正文图片不存在：{src}")
+        local_path = os.path.realpath(local_path)
+        if local_path not in uploaded:
+            uploaded[local_path] = upload_content_image(access_token, local_path)
+        wechat_url = uploaded[local_path]
         print(f"  已上传正文图片 {src} -> {wechat_url}")
-        return f"{prefix}{wechat_url}{suffix}"
+        return f'{prefix}"{H.escape(wechat_url)}"'
 
     return IMG_SRC_RE.sub(_replace, html)
 
@@ -195,7 +203,7 @@ def _file_sha256(path):
 def get_material(access_token, media_id):
     """按 media_id 取永久素材详情；素材被删时返回 errcode=40007。"""
     url = f"{API_BASE}/material/get_material?access_token={access_token}"
-    return _post_json(url, {"media_id": media_id})
+    return _post_json(url, {"media_id": media_id}, binary=True)
 
 
 def get_material_count(access_token):
@@ -243,6 +251,8 @@ def upload_thumb_material_cached(access_token, cover_path, cache_path=MATERIAL_C
         try:
             with open(cache_path, encoding="utf-8") as f:
                 cache = json.load(f)
+                if not isinstance(cache, dict):
+                    cache = {}
         except (ValueError, OSError):
             cache = {}
     media_id = cache.get(digest)
@@ -252,6 +262,8 @@ def upload_thumb_material_cached(access_token, cover_path, cache_path=MATERIAL_C
             print(f"  复用已有封面永久素材 {media_id}")
             return media_id
         except WeChatAPIError as e:
+            if e.errcode != 40007:
+                raise
             print(f"  缓存的素材 {media_id} 已不可用（errcode={e.errcode}），重新上传")
     media_id = upload_thumb_material(access_token, cover_path)
     if cache_path:
@@ -265,26 +277,28 @@ def upload_thumb_material_cached(access_token, cover_path, cache_path=MATERIAL_C
 
 def create_draft(access_token, title, content_html, thumb_media_id, author=None, digest=None,
                  source_url=None, need_open_comment=1, only_fans_can_comment=0):
-    """字段上限以官方文档（2026-07-14 版）为准：title≤32 / author≤16 / digest≤120。
+    """字段上限以官方文档（见 references/publish.md）为准：title≤32 / author≤16 / digest≤120。
 
     正文 HTML 由 render.py 产出时已不再印标题与作者名——它们只走这里原生字段，
     否则草稿里标题、作者各出现两次。
 
-    need_open_comment 默认 1：与公众平台编辑器新建文章默认「留言自动精选公开」对齐；
-    API 自身默认是 0（不开启留言），不显式传会把草稿底部变成「不开启留言」。
+    need_open_comment 本工具默认1，可用配置或CLI关闭；不代表所有账号编辑器默认。
     """
+    for label, value, cap in (("title", api_title(title), 32), ("author", author or "", 16), ("digest", digest or "", 120)):
+        if len(value) > cap or (label == "title" and not value):
+            raise ValueError(f"{label} 为空或超过上限 {cap}：请编辑，不静默截断")
     article = {
         "article_type": "news",
-        "title": api_title(title)[:32],
+        "title": api_title(title),
         "content": content_html,
         "thumb_media_id": thumb_media_id,
         "need_open_comment": 1 if need_open_comment else 0,
         "only_fans_can_comment": 1 if only_fans_can_comment else 0,
     }
     if author:
-        article["author"] = author[:16]
+        article["author"] = author
     if digest:
-        article["digest"] = digest[:120]
+        article["digest"] = digest
     if source_url:
         article["content_source_url"] = source_url
     url = f"{API_BASE}/draft/add?access_token={access_token}"
@@ -292,11 +306,10 @@ def create_draft(access_token, title, content_html, thumb_media_id, author=None,
     return body["media_id"]
 
 
-# ---------- 5. 发布（仅企业认证账号可用） ----------
+# ---------- 5. 发布（须核对实际账号权限） ----------
 
 def submit_publish(access_token, media_id):
-    """提交发布。errcode=48001 通常意味着当前账号不是企业认证账号，调不了这个接口——
-    这不是脚本的问题，是微信官方对该接口的账号类型限制（详见模块顶部文档说明）。"""
+    """提交发布；48001提示接口未授权，按实际账号核对，不推断认证身份。"""
     url = f"{API_BASE}/freepublish/submit?access_token={access_token}"
     body = _post_json(url, {"media_id": media_id})
     return body["publish_id"]
@@ -322,6 +335,8 @@ def poll_publish_status(access_token, publish_id, interval=10, timeout=600):
         status = body.get("publish_status")
         status_text = PUBLISH_STATUS_TEXT.get(status, f"未知状态码 {status}")
         if status == 1:
+            if waited >= timeout:
+                return {"status": 1, "status_text": "仍在发布中；请稍后查询", "article_urls": [], "raw": body}
             print(f"  发布中，已等待 {waited}s，{interval}s 后重试…")
             time.sleep(interval)
             waited += interval
@@ -340,7 +355,7 @@ def resolve_cover(cover, html_path):
     meta.json 里的 cover 是 frontmatter 原值（相对 md），而发布命令常从仓库根执行——
     不解析就会 FileNotFoundError 崩在上传那一步。
     """
-    if not cover or os.path.isabs(cover) or os.path.exists(cover):
+    if not cover or os.path.isabs(cover):
         return cover
     return os.path.join(os.path.dirname(os.path.abspath(html_path)), cover)
 
@@ -353,37 +368,60 @@ def preflight(html_path, s):
     html = open(html_path, encoding="utf-8").read()
     must, should = check(html)
     ok = not must
+    # Consume the existing render sidecar: detect stale/failed generation, not factual truth.
+    side_path = os.path.splitext(html_path)[0] + ".meta.json"
+    if os.path.isfile(side_path):
+        side = json.load(open(side_path, encoding="utf-8"))
+        if not isinstance(side, dict):
+            raise ValueError("meta 必须是JSON对象")
+        if side.get("body_sha256") != hashlib.sha256(html.encode()).hexdigest() or side.get("render_errors") or side.get("pending_assets"):
+            ok = False
+            print("  必须改 · 正文与渲染验收不一致，或 Gate 1/2 未通过：重渲染")
+    else:
+        print("  注意 · HTML 无渲染验收记录：只做静态检查，不能正式提交发布")
+        if s["submit"]:
+            ok = False
+    if "待补素材" in html:
+        ok = False
+        print("  必须改 · 正文仍有待补素材")
     base = os.path.dirname(os.path.abspath(html_path))
-    local = [u for u in re.findall(r'<img[^>]+src="([^"]+)"', html)
-             if not u.startswith(("http://", "https://"))]
+    local = image_sources(html)
     miss = [u for u in local if not os.path.exists(u if os.path.isabs(u) else os.path.join(base, u))]
     print("预检（不调用接口）")
     for m in must:
         print("  必须改 ·", m)
     for x in should:
         print("  建议改 ·", x)
-    print(f"  Gate 1 Platform: {'PASS' if ok else 'FAIL'}")
+    print(f"  Gate 1 Platform: {'PASS' if not must else 'FAIL'}（仅静态检查）")
     for label, v, cap in (("标题", s["title"] or "", 32), ("作者", s["author"] or "", 16),
                           ("摘要", s["digest"] or "", 120)):
+        if len(v) > cap or (label == "标题" and not v.strip()):
+            ok = False
         print(f"  {label}  {v or '（空）'}（{len(v)}/{cap}）"
-              + (f"  ⚠ 超过官方上限 {cap}，将截断到 {cap} 字" if len(v) > cap else ""))
+              + (f"  ⚠ 超过官方上限 {cap}，拒绝上行，请编辑" if len(v) > cap else ""))
     print(f"  原文链接  {s['source'] or '（无）'}")
+    if s["source"] and not re.match(r"^https?://[^/\s]+", s["source"], re.I):
+        ok = False
+        print("  必须改 · 原文链接不是有效的 HTTP(S) URL")
     cover = s["cover"]
     if not cover:
         ok = False
         print("  封面  ⚠ 未设置（草稿必须有封面）")
-    elif not os.path.exists(cover):
+    elif not os.path.isfile(cover):
         ok = False
         print(f"  封面  ⚠ 文件不存在：{cover}")
     else:
         wh, kb = img_size(cover), os.path.getsize(cover) // 1024
+        if not wh or not all(wh):
+            ok = False
+            print("  必须改 · 封面不是可识别图片")
         print(f"  封面  {cover}" + (f" · {wh[0]}×{wh[1]}（{wh[0] / wh[1]:.2f}:1）· {kb}KB" if wh else f" · {kb}KB"))
     print(f"  正文图片  {len(local)} 张待上传" + (f" · ⚠ 缺失 {miss}" if miss else ""))
-    if miss:
+    if miss or any(not img_size(os.path.join(base, u)) for u in local):
         ok = False
     print(f"  留言 {'开' if s['open_comment'] else '关'} · 仅粉丝 {'是' if s['fans_only'] else '否'}"
           f" · 建草稿后{'继续发布' if s['submit'] else '止步'}")
-    print("\n预检" + ("通过：可以上行" if ok else "未通过：先修完再发"))
+    print("\n预检" + ("通过：仅本地工程检查；事实、裁切与微信清洗仍须人工核对" if ok else "未通过：先修完再发"))
     return 0 if ok else 1
 
 
@@ -392,20 +430,17 @@ def preflight(html_path, s):
 def publish_html_article(appid, secret, html_path, cover_path, title, author=None, digest=None,
                          source_url=None, open_comment=True, fans_only=False,
                          material_cache=MATERIAL_CACHE_DEFAULT,
-                         do_submit=True, poll_timeout=600, auto_enable_switch=False):
+                         do_submit=False, poll_timeout=600, auto_enable_switch=False):
+    settings = {"title": title, "author": author, "digest": digest, "cover": cover_path,
+                "source": source_url, "open_comment": open_comment, "fans_only": fans_only, "submit": do_submit}
+    if preflight(html_path, settings):
+        raise ValueError("发布预检未通过：未调用微信接口")
     print("[1/6] 获取 access_token …")
     token = get_stable_access_token(appid, secret)
 
-    print("[2/6] 检查「草稿箱和发布功能」开关状态 …")
-    is_open = check_draft_switch(token)
-    if not is_open:
-        if auto_enable_switch:
-            print("  开关未开启，已传 --enable-draft-switch，正在开启（注意：此操作不可逆）…")
-            enable_draft_switch(token)
-            print("  已开启。")
-        else:
-            print("  ⚠️ 开关处于关闭状态：账号还没被灰度覆盖新版草稿箱（与 48001 的因果关系未证实，作为候选原因）。"
-                  "想开启加 --enable-draft-switch（不可逆，自行确认）。继续尝试建草稿……")
+    if auto_enable_switch and not check_draft_switch(token):
+        print("显式授权开启草稿箱开关（不可逆）…")
+        enable_draft_switch(token)
 
     print("[3/6] 上传封面为永久素材（同图复用，不重复占额度）…")
     if material_cache:
@@ -435,7 +470,7 @@ def publish_html_article(appid, secret, html_path, cover_path, title, author=Non
     print(f"  草稿 media_id = {media_id}")
 
     if not do_submit:
-        print("\n未传 --submit，已止步于「草稿已建好」，需要发布请到公众平台后台手动操作，或重新带 --submit 执行。")
+        print("\n草稿已建好，未继续发布。请后台检查；不要为查询状态重新建稿。")
         return {"media_id": media_id, "publish_id": None, "article_urls": []}
 
     print("[6/6] 提交发布 …")
@@ -443,8 +478,8 @@ def publish_html_article(appid, secret, html_path, cover_path, title, author=Non
         publish_id = submit_publish(token, media_id)
     except WeChatAPIError as e:
         if e.errcode == 48001:
-            print("\n❌ 提交发布被拒绝（48001）：草稿已建好，此步单独失败多因账号非企业认证"
-                  "（freepublish 自 2025-07 起仅企业认证开放）。后台手动发布，或升级认证后再 --submit。",
+            print("\n❌ 提交发布被拒绝（48001）：草稿已建好，此接口未获授权"
+                  "。请核对实际接口权限；草稿已保留，不要重复建稿。",
                   file=sys.stderr)
         raise
     print(f"  publish_id = {publish_id}，开始轮询发布状态（这是异步任务，不会立刻返回文章链接）…")
@@ -454,6 +489,8 @@ def publish_html_article(appid, secret, html_path, cover_path, title, author=Non
     if result["article_urls"]:
         for u in result["article_urls"]:
             print(f"  文章链接: {u}")
+    if result["status"] != 0:
+        raise RuntimeError(f"发布未成功：{result['status_text']}；publish_id={publish_id}")
     return {"media_id": media_id, "publish_id": publish_id, **result}
 
 
@@ -471,7 +508,13 @@ def load_config(explicit=None):
     for path in candidates:
         if os.path.isfile(path):
             with open(path, encoding="utf-8") as f:
-                return json.load(f)
+                cfg = json.load(f)
+                if not isinstance(cfg, dict):
+                    raise ValueError("config 必须是JSON对象")
+                for key in ("submit", "need_open_comment", "only_fans_can_comment"):
+                    if key in cfg and not isinstance(cfg[key], bool):
+                        raise ValueError(f"{key} 必须是true/false，不能是字符串")
+                return cfg
     if explicit:
         raise FileNotFoundError(f"配置文件不存在: {explicit}")
     return {}
@@ -483,7 +526,7 @@ def resolve_settings(args, side, cfg):
     return {
         "appid": args.appid or cfg.get("appid") or None,
         "secret": args.secret or cfg.get("secret") or None,
-        "title": args.title or side.get("api_title") or side.get("title"),
+        "title": api_title(args.title or side.get("api_title") or side.get("title") or ""),
         "cover": args.cover or side.get("cover") or None,
         "author": args.author if args.author is not None else (side.get("author") or cfg.get("author") or None),
         "digest": args.digest if args.digest is not None else (side.get("digest") or None),
@@ -502,17 +545,17 @@ def main():
     ap.add_argument("--secret", help="公众号 AppSecret（默认取自 config.json；不要写进仓库）")
     ap.add_argument("--html", help="正文 HTML 文件路径（排版引擎生成的 HTML 或任意合规 HTML）")
     ap.add_argument("--cover", help="封面图片本地路径")
-    ap.add_argument("--title", help="文章标题：| 断行标记自动转｜，超过32字会被截断")
-    ap.add_argument("--author", default=None, help="作者（原生作者栏），超过16字会被截断；默认取 --meta，再取 config.json")
-    ap.add_argument("--digest", default=None, help="摘要（转发卡片/会话摘要），超过120字会被截断（官方上限120）")
+    ap.add_argument("--title", help="文章标题：| 断行标记自动转｜，超过32字拒绝上行")
+    ap.add_argument("--author", default=None, help="作者（原生作者栏），超过16字拒绝上行；默认取 --meta，再取 config.json")
+    ap.add_argument("--digest", default=None, help="摘要（转发卡片/会话摘要），超过120字拒绝上行（官方上限120）")
     ap.add_argument("--meta", default=None,
                     help="render.py 产出的 *.meta.json：title/author/digest/cover/原文链接；优先级 命令行 > meta > config.json")
     ap.add_argument("--source-url", default=None, help="原文链接（草稿底部「阅读原文」跳转的 URL）")
     ap.add_argument("--no-open-comment", action="store_true",
-                    help="关闭留言。默认开启，与编辑器新建文章「留言自动精选公开」对齐")
+                    help="关闭留言。本工具默认开启，不代表所有账号编辑器默认")
     ap.add_argument("--fans-only-comment", action="store_true", help="仅粉丝可评论（默认所有人）")
     ap.add_argument("--submit", action="store_true",
-                    help="建草稿后继续提交发布（需要企业认证账号）；默认只建草稿，config.json 可把 submit 设为 true")
+                    help="建草稿后继续提交发布（需账号具备发布权限）；默认只建草稿，config.json 可把 submit 设为 true")
     ap.add_argument("--poll-timeout", type=int, default=600, help="发布状态轮询超时秒数，默认 600")
     ap.add_argument("--check-publish-id", default=None, help="只查询某个 publish_id 的发布状态，不做其它任何操作")
     ap.add_argument("--preflight", action="store_true",
@@ -536,12 +579,14 @@ def main():
 
     try:
         cfg = load_config(args.config)
-    except FileNotFoundError as e:
+    except (OSError, ValueError) as e:
         ap.error(str(e))
     side = {}
     if args.meta:
         with open(args.meta, encoding="utf-8") as f:
             side = json.load(f)
+        if not isinstance(side, dict):
+            ap.error("meta 必须是JSON对象")
     s = resolve_settings(args, side, cfg)
     if args.preflight:                       # 预检不联网：先于凭证检查，没配凭证也能验
         if not args.html:
@@ -556,6 +601,8 @@ def main():
         token = get_stable_access_token(appid, secret)
         result = poll_publish_status(token, args.check_publish_id, timeout=0)  # timeout=0：只查一次不轮询
         print(json.dumps(result, ensure_ascii=False, indent=2))
+        if result["status"] not in (0, 1):
+            sys.exit(1)
         return
 
     if args.check_draft_switch:
@@ -565,7 +612,7 @@ def main():
         if not is_open:
             print(
                 "\n开关处于关闭状态：草稿箱/发布新接口大概率还没对这个账号开通，"
-                "和企业认证与否无关。想开启，加 --enable-draft-switch 单独跑一次"
+                "权限须按实际账号核对。想开启，加 --enable-draft-switch 单独跑一次"
                 "（提醒：不可逆，会把公众号后台图文素材库永久升级成草稿箱）。",
                 file=sys.stderr,
             )
@@ -587,7 +634,6 @@ def main():
                 print(f"  {it.get('media_id')}\t{name}\t{it.get('url', '')}")
         return
 
-    s = resolve_settings(args, side, cfg)
     title, cover = s["title"], resolve_cover(s["cover"], args.html or ".")
     s["cover"] = cover
 
@@ -612,13 +658,13 @@ def main():
             poll_timeout=args.poll_timeout,
             auto_enable_switch=args.enable_draft_switch,
         )
-    except WeChatAPIError as e:
+    except (WeChatAPIError, ValueError, OSError, RuntimeError) as e:
         print(f"\n❌ {e}", file=sys.stderr)
-        sys.exit(1)
-    except urllib.error.URLError as e:
-        print(f"\n❌ 网络请求失败: {e}", file=sys.stderr)
         sys.exit(1)
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except (ValueError, OSError, WeChatAPIError) as e:
+        sys.exit(f"发布错误：{e}")

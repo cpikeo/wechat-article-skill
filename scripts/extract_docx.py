@@ -64,8 +64,8 @@ def para_text(p):
         rpr = r_el.find(f"{W}rPr")
         bold = rpr is not None and rpr.find(f"{W}b") is not None \
             and (rpr.find(f"{W}b").get(f"{W}val") or "1") not in ("0", "false")
-        ul = rpr is not None and rpr.find(f"{W}u") is not None
-        text = "".join(t.text or "" for t in r_el.iter(f"{W}t"))
+        ul = rpr is not None and rpr.find(f"{W}u") is not None and rpr.find(f"{W}u").get(f"{W}val") != "none"
+        text = "".join((x.text or "") if x.tag == f"{W}t" else "\n" if x.tag == f"{W}br" else "\t" if x.tag == f"{W}tab" else "" for x in r_el)
         if not text:
             continue
         if bold:
@@ -81,17 +81,27 @@ def extract(docx_path, out_md):
     try:
         z = zipfile.ZipFile(docx_path)
         doc = ET.fromstring(z.read("word/document.xml"))
-    except (zipfile.BadZipFile, KeyError) as e:
+    except (OSError, zipfile.BadZipFile, KeyError, ET.ParseError) as e:
         print(f"✗ 不是合法 docx：{e}", file=sys.stderr)
         return 1
 
-    heading_of = load_styles(z)
-    media_of = load_rels(z)
+    try:
+        heading_of = load_styles(z)
+        media_of = load_rels(z)
+    except ET.ParseError as e:
+        z.close()
+        print(f"✗ docx XML无效：{e}", file=sys.stderr)
+        return 1
     out_dir = os.path.dirname(os.path.abspath(out_md)) or "."
     img_dir = os.path.join(out_dir, "images")
     lines, img_n, tables = [], 0, 0
 
     body = doc.find(f"{W}body")
+    if body is None:
+        print("✗ docx 缺少正文body", file=sys.stderr)
+        z.close()
+        return 1
+    os.makedirs(out_dir, exist_ok=True)
     for el in body:
         tag = el.tag
         if tag == f"{W}tbl":
@@ -104,7 +114,7 @@ def extract(docx_path, out_md):
                 rows.append("| " + " | ".join(cells) + " |")
             if rows:
                 lines.append(rows[0])
-                ncols = rows[0].count("|") - 1
+                ncols = len(el.findall(f"{W}tr")[0].findall(f"{W}tc"))
                 lines.append("|" + "---|" * ncols)
                 lines.extend(rows[1:])
                 lines.append("")
@@ -138,13 +148,16 @@ def extract(docx_path, out_md):
             or bool(re.search(r"list|列表", sid or "", re.I))
         if lvl:
             text_clean = re.sub(r"^\*\*(.*)\*\*$", r"\1", text)  # 标题不需要再加粗
-            lines.append("#" * min(lvl + 0, 6) + " " + text_clean)
+            lines.append("#" * min(lvl, 3) + " " + text_clean)
+            if lvl > 3:
+                print(f"  注意：标题{lvl}归一化为三级，请核对层级", file=sys.stderr)
         elif is_list:
             lines.append("- " + text)
         else:
             lines.append(text)
         lines.append("")
 
+    z.close()
     md = "\n".join(lines).rstrip() + "\n"
     with open(out_md, "w", encoding="utf-8") as f:
         f.write(md)
@@ -168,7 +181,10 @@ def main():
         print(f"✗ 文件不存在: {args.docx}", file=sys.stderr)
         sys.exit(1)
     out = args.out or re.sub(r"\.docx$", "", args.docx, flags=re.I) + ".md"
-    sys.exit(extract(args.docx, out))
+    try:
+        sys.exit(extract(args.docx, out))
+    except (OSError, KeyError, ET.ParseError) as e:
+        sys.exit(f"✗ docx 抽取失败：{e}")
 
 
 if __name__ == "__main__":

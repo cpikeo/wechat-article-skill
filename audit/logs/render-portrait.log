@@ -1,0 +1,18 @@
+暖信笺 Warm Letter → audit/cases/portrait.html
+预览 → audit/cases/portrait_预览.html
+发布字段 → audit/cases/portrait.meta.json（publish.py --meta 直接消费）
+
+
+Gate 3 证据（可核对的都摆在这里；结论与艺术判断由通读的人 / 视觉模型给）
+  资产 · 全文 1084 字 · 封面 1080×460（2.35:1） · 正文图 2/3（预算）：场景、锚点 · 待补位 1
+  首屏 · 标题 + lead；首段落在第 3 块
+  节奏 · 非正文块 10/22 · 图间承接最少 238 字 · 最长段落 100 字 · 最长连续正文 238 字
+  结构 · H2 4 · 转场 0 · 引文 1 · 旁注 1 · Peak 1 · 强调 ==0 / **1
+  节奏线 · 首屏 → 高潮在第 21/22 块（95%） · 高潮后是 p · 收束：p + cta
+  封面 · 2.35:1 与 1:1 中央裁切见预览顶部（主语在正方形里还站得住吗）
+
+Gate 1 Platform: PASS
+
+Gate 2 Composition: PASS
+
+Gate 3 Art Direction：对照上面证据通读 390px 预览。CONTENT / EDITORIAL / VISUAL / MOBILE / FINAL JUDGMENT —— 只写 KEEP / REVISE / DELETE，回答 **Which element should disappear?**，并给每张留下的资产一句「为什么是这张」。

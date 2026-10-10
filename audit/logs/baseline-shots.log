@@ -1,0 +1,72 @@
+① 用例回归（Gate 1/2 必须全过）
+   PASS · skills
+   PASS · portrait
+   PASS · visual
+   PASS · brief
+   PASS · longread
+② 质量基准（5 篇语料的机器可验证快照）
+   PASS · 5 篇 · 人格/资产/结构/首屏 全部对齐基准
+③ 人格系统（themes.json）：可渲染 · 不重复 · 键完整
+   可渲染 · paper（静纸 Silent Paper）
+   可渲染 · letter（暖信笺 Warm Letter）
+   可渲染 · ink（酌墨 Wine Ink）
+   可渲染 · frost（北霜 North Frost）
+   可渲染 · bone（素作 Atelier Bone）
+   可渲染 · folio（特稿 Feature Folio）
+   不重复 · 6 个人格两两至少差 2 个编辑语言轴，且键完整
+④ 护栏回归（负例必须仍被拦住）
+   PASS · 两张图之间没有承接（should → 两张图片之间缺少文字承接）
+   PASS · 封面写了但文件不存在（must → 封面文件不存在）
+   PASS · 图片分辨率过低（must → 分辨率过低）
+   PASS · bars 值不是数字（must → bars 的值必须是数字）
+   PASS · bars 只有一项（must → bars 至少 2 项）
+   PASS · 正文图超出预算（should → 正文图 > 本文字数档位的预算）
+   PASS · todo 图位也要占预算（should → 正文图 > 本文字数档位的预算）
+   PASS · 首屏压了三层（should → 首屏压了）
+   PASS · 图示把正文数字又画一遍（should → 图示数字与正文重复）
+   PASS · 封面顺手用了正文图（should → 封面必须独立做 art direction）
+   PASS · 证据类图片没有说明（should → 证据类图必须写清出处）
+   PASS · 短文开了目录（should → 短文开了目录）
+   PASS · density 写错静默降级（should → density）
+   PASS · 转场不少于章节数（should → 转场 2 处 ≥ 章节 2 节）
+⑤ 原语渲染（渲染出来是不是我以为的样子）
+   PASS · data 的全角/半角分隔符都要拆开
+   PASS · 正文不重印原生标题与作者
+   PASS · 正文无顶部元信息块，只保留 deck
+   PASS · 无职责的图不崩（Word 抽取的默认形态），只判必须改
+   PASS · 目录不占首屏（toc 排在第一段之后）
+⑥ 同文不同 Decision → 不同 Composition
+   PASS · skills：paper/standard vs ink/airy
+   构成变化：章节标记、字体气质、间距尺度
+⑦ Word 抽取回归（三条输入路径之一，此前零覆盖）
+   PASS · docx → Markdown（标题/加粗/两种列表/图片/表格）
+⑧ 平台原生字段（正文不重印标题/作者 · 预览模拟原生栏 · meta 上限）
+   PASS · 正文无重印 · 预览模拟原生栏 · meta 上限合规
+⑨ draft/add payload（上限截断 · 留言默认 · 原文链接）
+   PASS · title｜·上限·留言默认·原文链接 全对
+⑩ 永久素材管理（封面复用 · 验活 · 删除重传 · 总数 · 翻页 · 删除）
+  复用已有封面永久素材 M1
+  缓存的素材 M1 已不可用（errcode=40007），重新上传
+   PASS · 复用·验活·删除重传·总数·翻页·删除 全对
+⑪ 暖信笺无孤立圆点（线上反馈回归）
+   PASS · H2 不再挂圆点
+⑫ config.json 默认与优先级（命令行 > meta > config）
+   PASS · 凭证默认来自 config
+   PASS · meta > config
+   PASS · 原文链接回落到 config
+   PASS · 留言/发布开关跟随 config
+   PASS · 命令行 > meta/config
+   PASS · 空字符串视同未配置
+   PASS · 默认查找命中 ./config.json
+   PASS · 显式路径不存在时报错
+⑬ 发布预检（不联网：Gate 1 · 原生字段 · 封面路径解析 · 待传图片）
+   PASS · Gate 1 · 原生字段 · 封面路径 · 待传图片 全对
+
+Gate 3 截图（390px · 2x · 含首屏折线）：/home/user/wechat-article-skill/assets/shots
+   skills.png
+   portrait.png
+   visual.png
+   brief.png
+   longread.png
+
+回归：全部通过

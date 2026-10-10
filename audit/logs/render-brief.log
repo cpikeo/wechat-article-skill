@@ -1,0 +1,18 @@
+特稿 Feature Folio → audit/cases/brief.html
+预览 → audit/cases/brief_预览.html
+发布字段 → audit/cases/brief.meta.json（publish.py --meta 直接消费）
+
+
+Gate 3 证据（可核对的都摆在这里；结论与艺术判断由通读的人 / 视觉模型给）
+  资产 · 全文 937 字 · 封面 待补 · 正文图 0/3（预算）
+  首屏 · 标题 + lead；首段落在第 3 块
+  节奏 · 非正文块 9/18 · 最长段落 84 字 · 最长连续正文 215 字
+  结构 · H2 4 · 转场 0 · 引文 0 · 旁注 1 · Peak 1 · 强调 ==0 / **0
+  节奏线 · 首屏 → 高潮在第 18/18 块（100%） · 高潮后是 （结尾） · 收束：peak + cta
+  封面 · 2.35:1 与 1:1 中央裁切见预览顶部（主语在正方形里还站得住吗）
+
+Gate 1 Platform: PASS
+
+Gate 2 Composition: PASS
+
+Gate 3 Art Direction：对照上面证据通读 390px 预览。CONTENT / EDITORIAL / VISUAL / MOBILE / FINAL JUDGMENT —— 只写 KEEP / REVISE / DELETE，回答 **Which element should disappear?**，并给每张留下的资产一句「为什么是这张」。
