@@ -284,8 +284,8 @@ class R:
         if weight == "quote":
             cite = self.p(self.leaf(f"—— {src}"), MICRO, t["muted"],
                           "margin-top:8px;") if src else ""
-            return (f'<section style="margin:{self.g(24)}px 0;padding:0 4px 0 12px;'
-                    f'border-left:1px solid {t["line"]};">'
+            return (f'<section style="margin:{self.g(24)}px 0;padding:0 4px 0 14px;'
+                    f'border-left:2px solid {t["accent"]};">'
                     + self.p(self.inline(text, normalize=False), LEAD, t["sub"], f"font-weight:500;line-height:1.8;{fam}")
                     + cite + "</section>")
         style = t["peak"]
@@ -346,13 +346,15 @@ class R:
 
     def table(self, rows):
         t, out = self.t, []
+        widths = col_widths(rows)
         for i, cells in enumerate(rows):
             tag = "th" if i == 0 else "td"
             out.append("<tr>" + "".join(
-                f'<{tag} style="width:{100 / len(cells):.6g}%;padding:10px 6px;vertical-align:top;'
+                f'<{tag} style="width:{widths[j]:.6g}%;padding:10px 6px;vertical-align:top;'
                 f'text-align:left;border-bottom:1px solid {t["line"]};font-weight:{600 if i == 0 else 400};">'
-                + self.p(self.inline(c), SMALL, t["sub"] if i == 0 else t["text"], "line-height:1.75;")
-                + f'</{tag}>' for c in cells) + "</tr>")
+                + self.p(self.inline(c), SMALL, t["sub"] if i == 0 else t["text"], "line-height:1.75;"
+                         + ("white-space:nowrap;" if NUMERIC.fullmatch(c) else ""))
+                + f'</{tag}>' for j, c in enumerate(cells)) + "</tr>")
         return f'<table style="width:100%;table-layout:fixed;border-collapse:collapse;margin:{self.g(24)}px 0;">' + "".join(out) + "</table>"
 
     def lst(self, ordered, items):
@@ -416,10 +418,41 @@ class R:
 
     def toc(self, heads):
         t = self.t
-        rows = "".join(self.p(self.leaf(f"{n:02d}　{h}"), SMALL, t["text"], "line-height:2.1;")
+        rows = "".join(self.p(self.leaf(f"{n:02d}　{plain(h)}"), SMALL, t["text"], "line-height:2.1;")
                        for n, h in enumerate(heads, 1))
         return (f'<section style="margin:0 0 {self.g(36)}px;padding:16px 0;border-top:1px solid {t["line"]};'
                 f'border-bottom:1px solid {t["line"]};">{self.micro(t["toc_label"], extra="margin-bottom:10px;")}{rows}</section>')
+
+
+NUMERIC = re.compile(r"[+\-−]?[\d.,，]+\s*(%|％|百分点|元|万|亿)?")
+
+
+def col_widths(rows):
+    """表格列宽按内容权重分配：中文字占 1，ASCII 占 0.5，每列至少 1 个字宽。
+
+    等分列宽会让「备注」这类长文本列被挤成一字一行，而「是/否」「数值」列空得很。
+    权重按列内最长的一格（封顶 12 字宽，防止单格撑爆整表），保证短数值列不被无谓放大。
+    """
+    if not rows or not rows[0]:
+        return []
+    n = len(rows[0])
+    weights = []
+    for j in range(n):
+        best = 1.0
+        for row in rows:
+            if j < len(row):
+                w = sum(0.5 if ord(ch) < 128 else 1.0 for ch in re.sub(r"[`*=~]", "", row[j]))
+                best = max(best, min(w, 12.0))
+        weights.append(max(best, 3.0))      # 下限 3 字宽：数值列不被挤到断行
+    total = sum(weights)
+    return [w / total * 100 for w in weights]
+
+
+def plain(s):
+    """去掉行内标记只留文字，供目录等不走 inline() 的位置使用，避免 ** == 原样外露。"""
+    s = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", s)
+    return re.sub(r"`([^`]*)`|==([^=]*)==|\*\*([^*]*)\*\*|<u>([^<]*)</u>|~~([^~]*)~~",
+                  lambda m: next(g for g in m.groups() if g is not None), s).strip()
 
 
 def visible_len(s):
@@ -578,6 +611,8 @@ def compose_gate(meta, blocks, base="."):
             must.append("标题后缺少内容")
         if k == "table" and (not b or any(len(row) != len(b[0]) for row in b)):
             must.append("表格行列数不一致，不能对齐数据")
+        if k == "table" and b and len(b[0]) >= 5:
+            should.append(f"表格 {len(b[0])} 列：390px 下每列过窄，改成更少列或拆成两张表（不要缩小字号硬塞）")
     title = meta.get("title", "")
     if not api_title(title):
         must.append("缺少标题")

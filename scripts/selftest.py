@@ -540,6 +540,14 @@ def delivery_defects_ok():
     test("裸URL含数字/标点不被中文化", 'https://example.com/v1,a?x=1.2&amp;y=3' in r.inline('来源 https://example.com/v1,a?x=1.2&y=3 中文。'))
     test("保留原引号不制造引言", '"原话"' in r.inline('他说"原话"') and '「' not in _r.R(_r.THEMES['ink'], 'standard').quote('这是作者判断', '', 'peak'))
     test("中文与混排自然左对齐，表头不拉字距", 'text-align:justify' not in r.para('纯中文正文') and 'letter-spacing:2px' not in r.table([['长表头', '数值'], ['中文', '12%']]))
+    wide = _r.col_widths([["方案", "研发占比", "备注"], ["甲：重研发", "60%", "产品迭代快，获客慢，留存中等"]])
+    test("表格列宽按内容分配，数值列不被挤窄", wide[1] >= 9 and wide[2] > wide[1] and abs(sum(wide) - 100) < 1e-6)
+    test("纯数字单元格禁止断行", "white-space:nowrap" in r.table([["列", "值"], ["甲", "60%"]]) and "white-space:nowrap" not in r.table([["列", "值"], ["甲", "中文很长的一格"]]))
+    toc_md = HEAD + "toc: true\n---\n> 导语。\n\n第一段。\n\n## **重点**结论\n\n一。\n\n## ==关键词==\n\n二。\n\n## 第三\n\n三。\n"
+    toc_html = _r.render(toc_md)[3]
+    toc_block = toc_html[toc_html.find("目录") - 200:toc_html.find("目录") + 400] if "目录" in toc_html else ""
+    test("目录不外露行内标记", "重点结论" in toc_html and "**重点**" not in toc_block and "==关键词==" not in toc_block)
+    test("引文侧线使用主题强调色而非发丝线", 'border-left:2px solid' in r.quote("引文", "出处", "quote") and 'border-left:1px solid' not in r.quote("引文", "出处", "quote"))
     test("引用原标点不被归一", '中文,原句...' in r.quote('中文,原句...', '出处', 'quote'))
     test("表格语义与正负单位保持", '<th ' in r.table([['列', '值'], ['甲', '−8 百分点']]) and '−8 百分点' in r.table([['列', '值'], ['甲', '−8 百分点']]))
     meta, blocks = _r.parse(HEAD + '---\n|甲|乙|\n|---|---|\n|只有一列|\n')
