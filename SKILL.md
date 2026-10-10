@@ -5,7 +5,7 @@ description: 将 Markdown、Word、纯文本编辑为可信、精致、移动端
 
 # WeChat Article · Editorial Intelligence
 
-**唯一设计智能基准是本文件。** references 只供工艺与接口，scripts 只执行与验确定性缺陷，eval/tests不另立审美配额。
+**唯一设计智能基准是本文件。** references 只供工艺与接口，scripts 只执行与验确定性缺陷，测试不另立审美配额。
 **删除 > 合并 > 简化 > 复用 > 新增。** 每个元素须有读者所得；保留已经成立的设计，不为清单制造改动。
 
 ## 判断与工作流
@@ -76,4 +76,4 @@ Gate1验静态工程风险；Gate2验坏结构、缺资源、数据声明与字�
 API按需读publish，预检不联网，真实入口同一预检。正式发布须明确授权；本地通过、草稿成功、发布、群发不同。无微信会话就列未验证粘贴清洗、草稿回读与真机。
 
 交付源稿、正文、预览、meta、封面／正文素材及短Decision、验收结果、待办；命令、失败与未验如实记录。
-每次只读本文件；素材才读direction，发布才读publish，Gate1问题才读platform；不重复加载references或全读eval。改执行器跑selftest；显式shots缺环境即失败，截图供判断而非认证。只保捕获真实缺陷的测试，不冻结审美配额。
+每次只读本文件；素材才读direction，发布才读publish，Gate1问题才读platform；不重复加载references。改执行器跑selftest；显式shots缺环境即失败，截图供判断而非认证。只保捕获真实缺陷的测试，不冻结审美配额。

@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""回归：eval/ 用例必须 Gate 1/2 全过；用合成用例守护视觉判断的确定性部分。
+"""回归：合成语料必须 Gate 1/2 全过；用负例守护视觉判断的确定性部分。
 
     python3 scripts/selftest.py            退出码 1 = 回归失败
     python3 scripts/selftest.py --shots   把每篇预览截成 390px PNG（需 playwright，未装则失败）
 
+语料与素材不入库：fixtures.py 每次在临时目录里现生成（原 eval/ 已删除）。
 三条铁律：用例必须过；护栏必须仍会在该失败的地方失败；测试只冻结可确定缺陷，不冻结审美配额。
 """
 import argparse
@@ -17,11 +18,12 @@ import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import render as _r
+import fixtures as _fx
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
-EVAL = os.path.join(ROOT, "eval")
-CASES = ("skills", "portrait", "visual", "brief", "longread")
+FIX = None          # main() 生成的临时语料目录；用例、素材与负例都在这里解析
+CASES = _fx.CASES
 HEAD = "---\ntitle: 回归用例|固定标题\n"   # 固定内容；不写 date，避免每天产生 diff
 
 
@@ -31,9 +33,9 @@ def run(args, cwd):
 
 
 def case_ok(name):
-    """在 eval/ 原地渲染：相对图片路径必须像真实使用一样解析。"""
-    out = os.path.join(EVAL, f"_shots_{name}.html")
-    code, log = run([os.path.join(HERE, "render.py"), f"{name}.md", "-o", out], EVAL)
+    """在语料目录原地渲染：相对图片路径必须像真实使用一样解析。"""
+    out = os.path.join(FIX, f"_shots_{name}.html")
+    code, log = run([os.path.join(HERE, "render.py"), f"{name}.md", "-o", out], FIX)
     return code == 0, log
 
 
@@ -41,13 +43,13 @@ def case_ok(name):
 GUARDS = (
     ("封面写了但文件不存在", "cover: images/not-there.jpg\n", "正文一段。\n",
      "封面文件不存在", "must"),
-    ("图片分辨率过低", "", "正文一段。\n\n![小图](fixtures/tiny.png \"证据\")\n",
+    ("图片分辨率过低", "", "正文一段。\n\n![小图](fixtures/tiny.png \"场景\")\n",
      "分辨率过低", "should"),
     ("bars 值不是数字", "", "::: bars\n多｜甲\n少｜乙\n:::\n", "bars 的值必须是数字", "must"),
     ("bars 只有一项", "", "::: bars\n10｜甲\n:::\n", "bars 至少 2 项", "must"),
     ("bars 缺来源", "", "::: bars 件\n1｜甲\n2｜乙\n:::\n", "缺少紧邻来源", "must"),
     ("bars 缺单位", "", "::: bars\n1｜甲\n2｜乙\n:::\n", "必须声明单一单位", "must"),
-    ("证据类图片没有说明", "", "正文一段。\n\n![](images/fig-busbar.jpg \"证据\")\n",
+    ("证据类图片没有说明", "", "正文一段。\n\n![](images/fig.jpg \"证据\")\n",
      "证据类图必须写清出处", "must"),
     ("density 写错静默降级", "density: campact\n", "正文一段。\n", "density", "must"),
 
@@ -56,7 +58,7 @@ GUARDS = (
 
 def guard_ok(label, fm, body, kw, level):
     meta, blocks = _r.parse(HEAD + fm + "---\n\n" + body)
-    must, should = _r.compose_gate(meta, blocks, EVAL)
+    must, should = _r.compose_gate(meta, blocks, FIX)
     found = must if level == "must" else should
     return any(kw in m for m in found), "\n".join(must + should)
 
@@ -112,7 +114,7 @@ def theme_audit():
 
 def render_check_ok(fm, md, must_have, must_not):
     _, meta, blocks, html = _r.render(HEAD + fm + "---\n\n" + md)
-    log = "\n".join(sum(_r.compose_gate(meta, blocks, EVAL), []))
+    log = "\n".join(sum(_r.compose_gate(meta, blocks, FIX), []))
     missing = [x for x in must_have if x not in html]
     leaked = [x for x in must_not if x in html]
     return not missing and not leaked, log, missing, leaked
@@ -305,7 +307,7 @@ def docx_ok():
             z.writestr("word/document.xml", DOC_XML.replace("列A", "列A|内"))
             z.writestr("word/styles.xml", STYLES_XML)
             z.writestr("word/_rels/document.xml.rels", RELS_XML)
-            z.write(os.path.join(EVAL, "fixtures", "tiny.png"), "word/media/fig1.png")
+            z.write(os.path.join(FIX, "fixtures", "tiny.png"), "word/media/fig1.png")
         out = os.path.join(d, "a.md")
         code, log = run([os.path.join(HERE, "extract_docx.py"), src, "-o", out], d)
         if code != 0 or not os.path.exists(out):
@@ -367,7 +369,7 @@ def shots():
         for name in CASES:
             pg = b.new_page(viewport={"width": 390, "height": 844}, device_scale_factor=2)
             # 复用case_ok已生成的预览，不再次渲染
-            html = os.path.join(EVAL, f"_shots_{name}.html")
+            html = os.path.join(FIX, f"_shots_{name}.html")
             if not os.path.isfile(html):
                 failed.append(name)
                 continue
@@ -423,23 +425,15 @@ def shots():
 # ---- 结构基准：5 篇语料的「机器可验证」快照 ----
 # 只锁判断的落点（人格 / 资产数 / 结构 / 首屏层数），不锁文笔。
 # 改稿不该动这张表；这张表动了，说明这套 Skill 对这批文章的判断变了——那必须是有意的。
-BASELINE = {
-    "skills":   {"theme": "paper",  "imgs": 0, "peak": True,  "toc": False, "layers": 1},
-    "portrait": {"theme": "letter", "imgs": 1, "peak": True,  "toc": False, "layers": 1},
-    "visual":   {"theme": "frost",  "imgs": 1, "peak": True,  "toc": False, "layers": 1},
-    "brief":    {"theme": "folio",  "imgs": 0, "peak": True,  "toc": False, "layers": 1},
-    "longread": {"theme": "paper",  "imgs": 0, "peak": True,  "toc": True,  "layers": 1},
-}
-
-
 def baseline_ok():
-    """退回「只看退出码」是不够的：图全丢了、目录没了、主题换了，退出码照样是 0。"""
-    sys.path.insert(0, HERE)
-    import render as _r
+    """退回「只看退出码」是不够的：图全丢了、目录没了、主题换了，退出码照样是 0。
+
+    期望值与语料同源于 fixtures.CORPUS，避免两张表各说一套。
+    语料是合成的，所以这里锁的是解析与首屏推导；对真实稿件的编辑判断仍属 Gate 3 通读。
+    """
     problems = []
-    for case, want in BASELINE.items():
-        md = open(os.path.join(EVAL, f"{case}.md"), encoding="utf-8").read()
-        meta, blocks = _r.parse(md)
+    for case, spec in _fx.CORPUS.items():
+        meta, blocks = _r.parse(spec["md"])
         got = {
             "theme": meta.get("theme", "paper"),
             "imgs": sum(1 for k, _ in blocks if k == "img"),
@@ -448,10 +442,11 @@ def baseline_ok():
                    and len([b for k, b in blocks if k == "h2"]) >= 3,
             "layers": len(_r.first_screen(meta, blocks)),
         }
-        for k, v in want.items():
+        for k, v in spec["baseline"].items():
             if got[k] != v:
                 problems.append(f"{case}.{k} 期望 {v} 实为 {got[k]}")
-    return not problems, ("；".join(problems) if problems else "5 篇 · 人格/资产/结构/首屏 全部对齐基准")
+    return not problems, ("；".join(problems) if problems
+                          else f"{len(CASES)} 篇合成稿 · 人格/资产/结构/首屏 全部对齐基准")
 
 
 def preflight_ok():
@@ -464,7 +459,7 @@ def preflight_ok():
         art = os.path.join(d, "art")
         os.makedirs(os.path.join(art, "images"))
         for n in ("cover.jpg", "fig.jpg"):
-            shutil.copy(os.path.join(EVAL, "images", "cover.jpg" if n == "cover.jpg" else "fig-busbar.jpg"), os.path.join(art, "images", n))
+            shutil.copy(os.path.join(FIX, "images", n), os.path.join(art, "images", n))
         md = os.path.join(art, "a.md")
         open(md, "w", encoding="utf-8").write(
             HEAD + "author: 甲木\ncover: images/cover.jpg\n---\n\n"
@@ -524,7 +519,7 @@ def delivery_defects_ok():
         md = HEAD + "---\n::: bars 件\n" + value + "｜甲\n10｜乙\n:::\n"
         try:
             _, meta, blocks, body = _r.render(md)
-            errors, _ = _r.compose_gate(meta, blocks, EVAL)
+            errors, _ = _r.compose_gate(meta, blocks, FIX)
             test("坏bars无崩溃并报具体错误：" + value[:8], any("值必须" in e for e in errors))
         except Exception:
             test("坏bars无崩溃：" + value[:8], False)
@@ -576,9 +571,9 @@ def delivery_defects_ok():
         art = os.path.join(d, "article")
         dest = os.path.join(d, "delivery")
         os.makedirs(art)
-        shutil.copytree(os.path.join(EVAL, "images"), os.path.join(art, "images"))
+        shutil.copytree(os.path.join(FIX, "images"), os.path.join(art, "images"))
         path = os.path.join(art, "a.md")
-        open(path, "w", encoding="utf-8").write(HEAD + 'cover: images/cover.jpg\n---\n正文。\n\n![解释](images/fig-busbar.jpg "解释")\n')
+        open(path, "w", encoding="utf-8").write(HEAD + 'cover: images/cover.jpg\n---\n正文。\n\n![解释](images/fig.jpg "解释")\n')
         html = os.path.join(dest, "body.html")
         rc, log = run([os.path.join(HERE, "render.py"), path, "-o", html], d)
         side = json.load(open(os.path.splitext(html)[0] + ".meta.json", encoding="utf-8"))
@@ -590,7 +585,7 @@ def delivery_defects_ok():
         test("预览本地嵌图，正文不含base64/工具栏", 'src="data:image/jpeg;base64,' in preview and 'data:image' not in src and '<script' not in src)
         # 路径实体、单双引号、重复图共一次上传。
         entity_path = os.path.join(dest, "a&b.jpg")
-        shutil.copy(os.path.join(EVAL, "images", "fig-busbar.jpg"), entity_path)
+        shutil.copy(os.path.join(FIX, "images", "fig.jpg"), entity_path)
         frag = '<img src = "a&amp;b.jpg"><img src=\'a&amp;b.jpg\'><IMG SRC=a&amp;b.jpg>'
         with patch.object(pub, "upload_content_image", return_value="https://mmbiz.qpic.cn/x?a=1&b=2") as upload:
             rewritten = pub.rewrite_local_images(frag, "tok", dest)
@@ -642,21 +637,22 @@ def delivery_defects_ok():
         with patch.object(pub, "_post_json", return_value={"publish_status":1}) as post, patch.object(pub.time, "sleep") as sleep:
             result = pub.poll_publish_status("tok", "PID", timeout=0)
             test("单次查询不额外睡眠或轮询", result["status"] == 1 and post.call_count == 1 and not sleep.called)
-    # 守护实际改过的事实边界，链接存在不认证内容本身。
-    visual = open(os.path.join(EVAL, "visual.md"), encoding="utf-8").read()
-    portrait = open(os.path.join(EVAL, "portrait.md"), encoding="utf-8").read()
-    longread = open(os.path.join(EVAL, "longread.md"), encoding="utf-8").read()
-    test("原案例不再伪称实测或生成证据", "实测（IEA）" not in visual and '"证据"' not in visual and "2030 · IEA 中心预测" in visual)
-    test("虚构采访可见声明/混单位伪图已删除", "【虚构叙事练习】" in portrait and "::: bars" not in longread)
+    # 原 eval/ 语料已删。这两条曾经锁「具体案例的事实边界」，现在改锁同一批规则本身：
+    # 用合成负例验证——链接存在不等于内容核真，机器只拦可确定的错。
+    meta, blocks = _r.parse(HEAD + '---\n正文一段。\n\n![AI 生成示意](images/fig.jpg "证据")\n\n'
+                                   '::: note 来源\nhttps://example.com/synthetic-data\n:::\n')
+    test("生成示意图不能担任证据职责", any("生成示意" in e for e in _r.compose_gate(meta, blocks, FIX)[0]))
+    meta, blocks = _r.parse(HEAD + '---\n正文一段。\n\n![母线排布](images/fig.jpg "证据")\n')
+    test("证据图缺可核对来源被拦", any("缺少可核对来源" in e for e in _r.compose_gate(meta, blocks, FIX)[0]))
+    test("合成语料自带可见声明，不冒充事实",
+         all(re.search(r"合成|演示|虚构", spec["md"]) for spec in _fx.CORPUS.values()))
     for label, ok in results:
         print(f"   {'PASS' if ok else 'FAIL'} · {label}")
     return all(ok for _, ok in results), "；".join(label for label, ok in results if not ok)
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--shots", action="store_true")
-    a = ap.parse_args()
+def run_all(a):
+    """跑完全部回归，返回失败项。语料目录 FIX 由 main() 生成并回收。"""
     fails = []
 
     print("① 用例回归（Gate 1/2 必须全过）")
@@ -667,7 +663,7 @@ def main():
             fails.append(c)
             print("   " + log.strip().replace("\n", "\n   "))
 
-    print("② 结构基准（5 篇语料的机器可验证快照）")
+    print("② 结构基准（5 篇合成稿的机器可验证快照）")
     ok, why = baseline_ok()
     print(f"   {'PASS' if ok else 'FAIL'} · {why}")
     if not ok:
@@ -715,32 +711,32 @@ def main():
         fails.append("目录位置")
         print(f"   {why}")
 
-    print("⑦ Word 抽取回归（三条输入路径之一，此前零覆盖）")
+    print("⑥ Word 抽取回归（三条输入路径之一，此前零覆盖）")
     ok, why = docx_ok()
     print(f"   {'PASS' if ok else 'FAIL'} · docx → Markdown（标题/加粗/两种列表/图片/表格）")
     if not ok:
         fails.append("docx 抽取")
         print(f"   {why}")
 
-    print("⑧ 平台原生字段（正文不重印标题/作者 · 预览模拟原生栏 · meta 上限）")
+    print("⑦ 平台原生字段（正文不重印标题/作者 · 预览模拟原生栏 · meta 上限）")
     ok, why = platform_fields_ok()
     print(f"   {'PASS' if ok else 'FAIL'} · {why}")
     if not ok:
         fails.append("平台原生字段")
 
-    print("⑨ draft/add payload（超限拒绝 · 留言默认 · 原文链接）")
+    print("⑧ draft/add payload（超限拒绝 · 留言默认 · 原文链接）")
     ok, why = draft_payload_ok()
     print(f"   {'PASS' if ok else 'FAIL'} · {why}")
     if not ok:
         fails.append("draft payload")
 
-    print("⑩ 永久素材管理（封面复用 · 验活 · 删除重传 · 总数 · 翻页 · 删除）")
+    print("⑨ 永久素材管理（封面复用 · 验活 · 删除重传 · 总数 · 翻页 · 删除）")
     ok, why = material_ok()
     print(f"   {'PASS' if ok else 'FAIL'} · {why}")
     if not ok:
         fails.append("素材管理")
 
-    print("⑫ config.json 默认与优先级（命令行 > meta > config）")
+    print("⑩ config.json 默认与优先级（命令行 > meta > config）")
     import publish as _p
     ns = argparse.Namespace(appid=None, secret=None, title=None, cover=None, author=None, digest=None,
                             source_url=None, no_open_comment=False, fans_only_comment=False, submit=False)
@@ -776,13 +772,13 @@ def main():
         if not ok:
             fails.append(f"config: {why}")
 
-    print("⑬ 发布预检（不联网：Gate 1 · 原生字段 · 封面路径解析 · 待传图片）")
+    print("⑪ 发布预检（不联网：Gate 1 · 原生字段 · 封面路径解析 · 待传图片）")
     ok, why = preflight_ok()
     print(f"   {'PASS' if ok else 'FAIL'} · {why}")
     if not ok:
         fails.append("发布预检")
 
-    print("⑭ 真实缺陷回归（数值/路径/剪贴板边界/上传/坏稿0网络）")
+    print("⑫ 真实缺陷回归（数值/路径/剪贴板边界/上传/坏稿0网络）")
     ok, why = delivery_defects_ok()
     if not ok:
         fails.append("真实缺陷：" + why)
@@ -792,12 +788,20 @@ def main():
         if not shot_ok:
             fails.append("Gate 3 截图")
 
-    for name in CASES:
-        stem = os.path.join(EVAL, f"_shots_{name}")
-        for suffix in (".html", "_预览.html", ".meta.json"):
-            if os.path.isfile(stem + suffix):
-                os.remove(stem + suffix)
+    return fails
 
+
+def main():
+    """语料与素材不入库：每次在临时目录现生成（fixtures.py），跑完整体回收。"""
+    global FIX
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--shots", action="store_true")
+    a = ap.parse_args()
+    FIX = _fx.build(tempfile.mkdtemp(prefix="wechat-selftest-"))
+    try:
+        fails = run_all(a)
+    finally:
+        shutil.rmtree(FIX, ignore_errors=True)
     print("\n回归：" + ("全部通过" if not fails else f"{len(fails)} 项失败 → {fails}"))
     sys.exit(1 if fails else 0)
 

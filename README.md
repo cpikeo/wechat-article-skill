@@ -47,14 +47,15 @@ python3 scripts/publish.py --html 正文.html --meta 正文.meta.json
 |scripts/render.py、check.py|渲染、确定性检查、预览、meta|
 |scripts/publish.py|统一预检、草稿、可选发布、素材管理|
 |scripts/extract_docx.py|标准库Word抽取|
-|scripts/selftest.py|案例、缺陷负例、输入／接口与浏览器回归|
-|eval/|五篇教学／回归源与素材；不是五篇已经事实认证的新闻稿|
+|scripts/selftest.py|回归：合成语料、缺陷负例、输入／接口与浏览器|
+|scripts/fixtures.py|回归用的合成语料与素材，运行时现生成，不入库|
 |.github/workflows/ci.yml|回归与可选像素证据上传|
 
 六种材料：paper、letter、ink、frost、bone、folio；用途见SKILL，不在README重复制定设计门槛。
 
-## 审计交付
+## 回归与验证边界
 
-[audit-magazine/REPORT.md](audit-magazine/REPORT.md) 是第二轮（基线c4303c3）审计；[audit/REPORT.md](audit/REPORT.md)保留第一轮记录，不作当前认证。新报告记录2026-10-10基线、具体修改、命令、结果、局限和评分。案例重写保留现有素材，不新建模板或Agent。教学假设、虚构人物与来源限制在成品正文可见，不以CI通过充当事实认证。
+`python3 scripts/selftest.py` 跑完整回归：语料与素材由 `scripts/fixtures.py` 在临时目录现生成，仓库不再保存语料、审计产物或二进制素材。加 `--shots` 会把每篇预览截成 390px PNG 作为 Gate 3 通读输入（需 playwright）。
+回归只覆盖可确定的缺陷；CI 通过不等于事实核真，也不等于微信端效果，仍须在目标账号核验。
 
 [MIT](LICENSE.txt) © 2026 cpikeo

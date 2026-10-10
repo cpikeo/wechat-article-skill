@@ -8,7 +8,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: 回归（用例 · 人格 · 护栏 · 渲染断言 · payload · 素材 · 配置优先级）
+      - name: 回归（合成语料 · 人格 · 护栏 · 渲染断言 · payload · 素材 · 配置优先级）
         run: python3 scripts/selftest.py
       - name: Gate 3 截图证据（390px · 2x）
         run: |
