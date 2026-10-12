@@ -37,7 +37,7 @@
     "heading": "blank",
     "peak": "field",
     "divider": "rule",
-    "quote": "plain",
+    "quote": "voice",
     "image": "soft",
     "seal": ""
   },
@@ -77,8 +77,8 @@
     "radius": 0,
     "toc_label": "本期要点",
     "heading": "number",
-    "peak": "field",
-    "divider": "rule",
+    "peak": "line",
+    "divider": "hairline",
     "quote": "plain",
     "image": "flush",
     "seal": ""
@@ -98,10 +98,10 @@
     "radius": 0,
     "toc_label": "目录",
     "heading": "blank",
-    "peak": "rule",
+    "peak": "plate",
     "divider": "rule",
     "quote": "serif",
-    "image": "flush",
+    "image": "mat",
     "seal": ""
   },
   "folio": {
@@ -119,7 +119,7 @@
     "radius": 0,
     "toc_label": "特稿目录",
     "heading": "number",
-    "peak": "dark",
+    "peak": "compact",
     "divider": "dots",
     "quote": "plain",
     "image": "line",

@@ -44,6 +44,11 @@ COVER_MIN_W = 900                     # 下方会被裁，再窄就糊
 
 BR = '<span leaf=""><br></span>'
 INLINE = re.compile(r"`([^`]+)`|==(.+?)==|\*\*(.+?)\*\*|<u>(.+?)</u>|~~(.+?)~~|\[([^\]]+)\]\(([^)\s]+)\)")
+# 标题自带序号（一、/（二）/第三章/1. /01 …）：章标是构成不是内容，不叠加第二套编号。
+ORDINAL = re.compile(r"^(?:[一二三四五六七八九十]{1,3}[、．.．]|[（(][一二三四五六七八九十0-9]{1,3}[）)]"
+                     r"|第[一二三四五六七八九十0-9]{1,3}[章节回讲部篇期段条则辑卷问日]"
+                     r"|[0-9]{1,2}[、．.]\s|[0-9]{1,2}\s"
+                     r"|[①-⑳⑴-⒇]|[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩⅪⅫ]+[、．.\s]?)")
 
 
 def typo(s):
@@ -255,9 +260,9 @@ class R:
 
     def h2(self, text, n):
         t = self.t
-        if t["heading"] == "seal":
+        if t["heading"] == "seal" and not ORDINAL.match(text.strip()):
             mark = self.seal(f"{n:02d}", 24) + " "
-        elif t["heading"] == "number":
+        elif t["heading"] == "number" and not ORDINAL.match(text.strip()):
             mark = f'<span style="font-size:{SMALL}px;color:{t["muted"]};font-weight:500;">{self.leaf(f"{n:02d}　")}</span>'
         else:
             mark = ""
@@ -266,46 +271,59 @@ class R:
 
     def h3(self, text):
         return f'<section style="margin:{self.g(24)}px 0 {self.g(10)}px;">' + \
-            self.p(self.inline(text), BODY, self.t["text"], "font-weight:700;") + "</section>"
+            self.p(self.inline(text), BODY, self.t["text"], f"font-weight:700;font-family:{self.font};") + "</section>"
 
     def para(self, text):
         return f'<section style="margin:0 0 {self.g(20)}px;">' + \
             self.p(self.inline(text), extra="text-align:left;") + "</section>"
 
     def quote(self, text, src, weight):
-        """lead / quote / peak 同一原语，三种重量。引用不改原句；重点可用文字、侧线或少量反色。"""
+        """lead / quote / peak 同一原语，三种重量。引用不改原句；重点按主题语言呈现，不与引文同貌。"""
         t = self.t
-        serif = t["quote"] == "serif"
         if weight == "lead":
             return f'<section style="margin:{self.g(8)}px 0 {self.g(24)}px;">' + \
                 self.p(self.inline(text, normalize=False), LEAD, t["text"],
                        f"line-height:1.85;font-family:{self.font};") + (self.p(self.leaf("—— " + src), MICRO, t["muted"], "margin-top:12px;") if src else "") + "</section>"
-        fam = f"font-family:{SERIF};" if serif else ""
         if weight == "quote":
             cite = self.p(self.leaf(f"—— {src}"), MICRO, t["muted"],
                           "margin-top:8px;") if src else ""
+            if t["quote"] == "voice":
+                return (f'<section style="margin:{self.g(24)}px 0;padding:0 4px 0 14px;">'
+                        + self.p(self.inline(text, normalize=False), LEAD, t["text"], "font-weight:500;line-height:1.8;")
+                        + cite + "</section>")
+            fam = f"font-family:{SERIF};" if t["quote"] == "serif" else ""
             return (f'<section style="margin:{self.g(24)}px 0;padding:0 4px 0 14px;'
                     f'border-left:2px solid {t["accent"]};">'
                     + self.p(self.inline(text, normalize=False), LEAD, t["sub"], f"font-weight:500;line-height:1.8;{fam}")
                     + cite + "</section>")
-        style = t["peak"]
-        body_color = t["on_dark"] if style == "dark" else t["text"]
-        claim = self.p(self.inline(text, normalize=False), DISPLAY, body_color,
+        style, fam = t["peak"], f"font-family:{self.font};"
+        if style in ("dark", "compact"):
+            inner = self.p(self.inline(text, normalize=False), DISPLAY, t["on_dark"],
+                           f"font-weight:600;line-height:{'1.65' if style == 'dark' else '1.55'};{fam}")
+            pad = f"{self.g(20)}px 18px" if style == "dark" else "13px 15px"
+            return f'<section style="margin:{self.g(32)}px 0;text-align:left;padding:{pad};background:{t["dark"]};">{inner}</section>'
+        claim = self.p(self.inline(text, normalize=False), DISPLAY, t["text"],
                        f"font-weight:600;line-height:1.65;{fam}")
-        box = ""
         if style == "field":
-            box = f"padding:0 0 0 16px;border-left:2px solid {t['accent']};"
-        elif style == "dark":
-            box = f"padding:{self.g(20)}px 18px;background:{t['dark']};"
-        return f'<section style="margin:{self.g(32)}px 0;text-align:left;{box}">{claim}</section>'
+            return f'<section style="margin:{self.g(32)}px 0;text-align:left;padding:{self.g(18)}px 16px;background:{t["field"]};">{claim}</section>'
+        if style == "line":
+            return (f'<section style="margin:{self.g(32)}px 0;text-align:left;padding:0 4px 0 14px;'
+                    f'border-left:3px solid {t["accent"]};">{claim}</section>')
+        if style == "plate":
+            return (f'<section style="margin:{self.g(32)}px 0;text-align:left;padding:14px 0;'
+                    f'border-top:1px solid {t["line"]};border-bottom:1px solid {t["line"]};">{claim}</section>')
+        return (f'<section style="margin:{self.g(32)}px 0;text-align:left;">'
+                f'<section style="width:28px;height:2px;background:{t["accent"]};margin:0 0 14px;">{BR}</section>'
+                f'{claim}</section>')
 
-    def note(self, label, lines):
+    def note(self, label, lines, tight=False):
         t = self.t
         head = self.micro(label, extra="margin-bottom:6px;") if label else ""
         body = "".join(self.p(self.inline(x), SMALL, t["sub"], "line-height:1.8;") for x in lines)
-        return f'<section style="margin:{self.g(16)}px 0;">{head}{body}</section>'
+        # tight 只收顶边：来源紧贴上面的证据，下面仍按正常节奏离开。
+        return f'<section style="margin:{self.g(10) if tight else self.g(16)}px 0 {self.g(16)}px;">{head}{body}</section>'
 
-    def data(self, lines):
+    def data(self, lines, below=None):
         # 全角「｜」与半角「|」都要能拆：中文输入法默认给的是全角，
         # 只按半角拆会把「3｜标签」整条当成数值，标签消失、大字号里挤进一整句。
         t, rows, items = self.t, [], [x.replace("|", "｜").split("｜", 1) for x in lines]
@@ -319,9 +337,9 @@ class R:
                          "margin-top:6px;")
                 + "</section>" for v, *rest in items[i:i + per] for lab in [rest[0] if rest else ""])
             rows.append(f'<section style="display:flex;gap:16px;margin-top:{16 if i else 0}px;">{cells}</section>')
-        return f'<section style="margin:{self.g(36)}px 0;">{"".join(rows)}</section>'
+        return f'<section style="margin:{self.g(36)}px 0 {below if below is not None else self.g(36)}px;">{"".join(rows)}</section>'
 
-    def bars(self, lines, label=""):
+    def bars(self, lines, label="", below=None):
         """数量对比图：值｜标签。数值同时以文字给出——即使长度表达失效，信息也不丢。"""
         t, rows, items = self.t, [], []
         for ln in lines:
@@ -342,20 +360,21 @@ class R:
                 + "</section>"
                 + f'<section style="height:5px;background:{t["line"]};margin-top:6px;">'
                 + f'<section style="width:{w}%;height:5px;background:{t["accent"]};">{BR}</section></section>')
-        return f'<section style="margin:{self.g(32)}px 0;">{"".join(rows)}</section>'
+        return f'<section style="margin:{self.g(32)}px 0 {below if below is not None else self.g(32)}px;">{"".join(rows)}</section>'
 
-    def table(self, rows):
+    def table(self, rows, below=None):
         t, out = self.t, []
         widths = col_widths(rows)
         for i, cells in enumerate(rows):
             tag = "th" if i == 0 else "td"
             out.append("<tr>" + "".join(
                 f'<{tag} style="width:{widths[j]:.6g}%;padding:10px 6px;vertical-align:top;'
-                f'text-align:left;border-bottom:1px solid {t["line"]};font-weight:{600 if i == 0 else 400};">'
+                f'text-align:left;border-bottom:1px solid {t["muted"] if i == 0 else t["line"]};font-weight:{600 if i == 0 else 400};">'
                 + self.p(self.inline(c), SMALL, t["sub"] if i == 0 else t["text"], "line-height:1.75;"
                          + ("white-space:nowrap;" if NUMERIC.fullmatch(c) else ""))
                 + f'</{tag}>' for j, c in enumerate(cells)) + "</tr>")
-        return f'<table style="width:100%;table-layout:fixed;border-collapse:collapse;margin:{self.g(24)}px 0;">' + "".join(out) + "</table>"
+        return (f'<table style="width:100%;table-layout:fixed;border-collapse:collapse;'
+                f'margin:{self.g(24)}px 0 {below if below is not None else self.g(24)}px;">' + "".join(out) + "</table>")
 
     def lst(self, ordered, items):
         t, out = self.t, []
@@ -377,34 +396,43 @@ class R:
         return (f'<section style="margin:{self.g(24)}px 0;padding:16px 18px;background:{t["field"]};'
                 f'border-radius:{t["radius"]}px;">{label}{rows}</section>')
 
-    def img(self, alt, src, role):
+    def img(self, alt, src, role, below=None):
         t = self.t
         role0 = next(iter((role or "").split()), "")   # 无职责的图不该崩：Gate 2 会判「必须改」
         mt = self.g(24)
+        mb = below if below is not None else mt
         if not src or TODO.match(src):
-            return (f'<section style="margin:{mt}px 0;padding:36px 16px;border:1px dashed {t["muted"]};'
+            return (f'<section style="margin:{mt}px 0 {mb}px;padding:36px 16px;border:1px dashed {t["muted"]};'
                     f'text-align:center;">{self.micro("待补素材")}'
                     + self.p(self.leaf(alt or "此处插入图片"), SMALL, t["sub"], "margin-top:8px;")
                     + (self.p(self.leaf(f"职责：{role}"), MICRO, t["muted"], "margin-top:4px;") if role else "")
                     + "</section>")
         treat = t.get("image", "flush")
-        extra = ""
+        extra, wrap = "", ""
         if treat == "soft":
             extra = f"border-radius:{t['radius']}px;"
         elif treat == "line":
             extra = f"border:1px solid {t['line']};"
+        elif treat == "mat":
+            wrap = f"padding:12px 12px 10px;background:{t['field']};"   # 器物台纸：图与说明同在一整块底上
         cap = ("GIF · " if src.lower().endswith(".gif") else "") + (alt or "")
         cap_size = SMALL if role0 in FACT else MICRO
         cap_color = t["sub"] if role0 in FACT else t["muted"]
-        return (f'<section style="margin:{mt}px 0;">'
+        return (f'<section style="margin:{mt}px 0 {mb}px;{wrap}">'
                 f'<img src="{H.escape(src)}" alt="{H.escape(alt or "")}" style="max-width:100%;height:auto;display:block;margin:0 auto;{extra}" />'
                 + (self.p(self.leaf(typo(cap)), cap_size, cap_color, "margin-top:8px;") if cap else "")
                 + "</section>")
 
     def hr(self):
         t, kind = self.t, self.t["divider"]
-        inner = (self.seal("·", 20, t["muted"]) if kind == "seal" else self.rule(32) if kind == "rule"
-                 else self.p(self.leaf("· · ·"), SMALL, t["muted"], "letter-spacing:8px;"))
+        if kind == "seal":
+            inner = self.seal("·", 20, t["muted"])
+        elif kind == "rule":
+            inner = self.rule(32)
+        elif kind == "hairline":
+            inner = f'<section style="width:100%;height:1px;background:{t["line"]};margin:0;">{BR}</section>'
+        else:
+            inner = self.p(self.leaf("· · ·"), SMALL, t["muted"], "letter-spacing:8px;")
         return f'<section style="margin:{self.g(44)}px 0;text-align:center;">{inner}</section>'
 
     def signature(self, meta):
@@ -418,8 +446,10 @@ class R:
 
     def toc(self, heads):
         t = self.t
-        rows = "".join(self.p(self.leaf(f"{n:02d}　{plain(h)}"), SMALL, t["text"], "line-height:2.1;")
-                       for n, h in enumerate(heads, 1))
+        rows = "".join(
+            self.p(self.leaf((f"{n:02d}　" if not ORDINAL.match(h.strip()) else "") + plain(h)),
+                   SMALL, t["text"], f"line-height:2.1;font-family:{self.font};")
+            for n, h in enumerate(heads, 1))
         return (f'<section style="margin:0 0 {self.g(36)}px;padding:16px 0;border-top:1px solid {t["line"]};'
                 f'border-bottom:1px solid {t["line"]};">{self.micro(t["toc_label"], extra="margin-bottom:10px;")}{rows}</section>')
 
@@ -473,7 +503,15 @@ def auto_digest(meta, blocks, limit=120):
     src = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", src)      # 链接留文字
     src = re.sub(r"`([^`]*)`|==([^=]*)==|\*\*([^*]*)\*\*|<u>([^<]*)</u>|~~([^~]*)~~",
                  lambda m: next(g for g in m.groups() if g is not None), src)
-    return src.strip()[:limit]
+    src = src.strip()
+    if len(src) <= limit:
+        return src
+    cut = src[:limit]
+    end = max(cut.rfind(ch) for ch in "。！？")          # 优先在句末收口
+    if end >= 0:
+        return cut[:end + 1]
+    end = max(cut.rfind(ch) for ch in "，；、：")          # 其次在停顿处收口并标省略
+    return (cut[:end] + "…") if end > 0 else cut + "…"
 
 
 def doc_len(blocks):
@@ -732,12 +770,15 @@ def render(md, theme=None):
     r = R(THEMES[key], meta.get("density", "standard"))
     out, n = [], 0
     if meta.get("deck"):
-        out.append(f'<section style="margin-bottom:{r.g(24)}px;">{r.p(r.inline(meta["deck"]), BODY, r.t["sub"])}</section>')
+        out.append(f'<section style="margin-bottom:{r.g(24)}px;">{r.p(r.inline(meta["deck"]), BODY, r.t["sub"], f"font-family:{r.font};")}</section>')
     heads = [b[1] for b in blocks if b[0] == "h2"]
     toc_done = meta.get("toc", "").lower() not in ("true", "yes", "1") or len(heads) < 3
     # 目录只在首段后，顺序由源稿决定。
     toc_after_p, seen_p = any(k == "p" for k, _ in blocks), False
-    for kind, b in blocks:
+    attach = ("bars", "data", "table", "img")     # 来源/口径紧贴其证据，不做悬空脚注
+    for i, (kind, b) in enumerate(blocks):
+        nxt = blocks[i + 1][0] if i + 1 < len(blocks) else ""
+        below = 10 if nxt == "note" else None
         if not toc_done and kind != "lead" and (seen_p or not toc_after_p):
             out.append(r.toc(heads))
             toc_done = True
@@ -754,19 +795,19 @@ def render(md, theme=None):
         elif kind == "peak":
             out.append(r.quote(peak_text(b), "", "peak"))
         elif kind == "note":
-            out.append(r.note(*b))
+            out.append(r.note(*b, tight=i > 0 and blocks[i - 1][0] in attach))
         elif kind == "data":
-            out.append(r.data(b[1]))
+            out.append(r.data(b[1], below=below))
         elif kind == "bars":
-            out.append(r.bars(b[1], b[0]))
+            out.append(r.bars(b[1], b[0], below=below))
         elif kind == "table":
-            out.append(r.table(b))
+            out.append(r.table(b, below=below))
         elif kind == "list":
             out.append(r.lst(*b))
         elif kind == "code":
             out.append(r.code(*b))
         elif kind == "img":
-            out.append(r.img(*b))
+            out.append(r.img(*b, below=below))
         elif kind == "hr":
             out.append(r.hr())
         else:

@@ -562,6 +562,34 @@ def delivery_defects_ok():
     test("frontmatter带引号的井号不截内容", _r.parse('---\ntitle: "标题 # 内文" # 注释\n---\n正文')[0]['title'] == '标题 # 内文')
     meta, blocks = _r.parse(HEAD + 'deck: 副题\n---\n> 导语\n\n::: peak\n主张一\n:::\n\n::: peak\n主张二\n:::\n')
     test("多重点和副题/导语由编辑判断，不机械阻断", not _r.compose_gate(meta, blocks)[0] and not any('两个钩子' in e for e in _r.compose_gate(meta, blocks)[1]))
+    # ---- 本次视觉审计固化的缺陷：章标叠加、重点无形态、来源悬空、表头无基线 ----
+    def text_of(md):
+        return re.sub(r'<[^>]+>', '', _r.render(md)[3])
+    t1 = text_of(HEAD + '---\n## 一、问题\n\n正文。\n\n## 二、办法\n\n正文。\n\n## 三、收尾\n\n正文。\n')
+    test("章标不叠加标题自带序号", '01　一、问题' not in t1 and '02　二、办法' not in t1 and '一、问题' in t1)
+    t2 = text_of(HEAD + '---\n## 问题\n\n正文。\n\n## 办法\n\n正文。\n\n## 收尾\n\n正文。\n')
+    test("无序号标题仍获得章标", '01　问题' in t2 and '02　办法' in t2)
+    t3 = text_of(HEAD + 'toc: true\n---\n> 钩。\n\n首段。\n\n## 一、问题\n\n一。\n\n## 二、办法\n\n二。\n\n## 三、收尾\n\n三。\n')
+    test("目录行跟随同一套编号规则", '01　一、问题' not in t3 and '一、问题' in t3)
+    t4 = text_of(HEAD + '---\n## 第一段：准备\n\n正文。\n\n## 第二段：装箱\n\n正文。\n\n## 第三段：收尾\n\n正文。\n')
+    test("第X段式标题同样不叠加章标", '01　第一段' not in t4 and '第一段：准备' in t4 and '02　第二段' not in t4)
+    rp, rb, rfr, rl, rfo, ri = (_r.R(_r.THEMES[k], 'standard') for k in ('paper', 'bone', 'frost', 'letter', 'folio', 'ink'))
+    test("paper 重点是短强调线，与标题层级不同貌", 'background:#5C6758' in rp.quote('主张', '', 'peak') and 'width:28px' in rp.quote('主张', '', 'peak'))
+    test("bone 重点是衬线上下细线", ('border-top:1px solid' in rb.quote('主张', '', 'peak')
+          and 'border-bottom:1px solid' in rb.quote('主张', '', 'peak') and _r.SERIF in rb.quote('主张', '', 'peak')))
+    test("frost 重点是加粗侧线", 'border-left:3px solid' in rfr.quote('主张', '', 'peak'))
+    test("letter 重点是暖底色块，引文是纯文字语气", ('background:#F6EBDC' in rl.quote('主张', '', 'peak')
+          and 'border-left' not in rl.quote('引文', '出处', 'quote') and 'padding:0 4px 0 14px' in rl.quote('引文', '出处', 'quote')))
+    test("folio 反色紧凑、ink 反色舒展", 'padding:13px 15px' in rfo.quote('主张', '', 'peak') and 'padding:20px 18px' in ri.quote('主张', '', 'peak'))
+    html = _r.render(HEAD + '---\n::: bars 件\n1｜甲\n2｜乙\n:::\n\n::: note 来源\nhttps://example.com/x\n:::\n')[3]
+    test("来源 note 紧贴图示而非悬空", 'margin:32px 0 10px' in html and 'margin:10px 0 16px;' in html)
+    html = _r.render(HEAD + '---\n![图](images/fig.jpg "证据")\n\n::: note 来源\nhttps://example.com/x\n:::\n')[3]
+    test("证据图来源紧贴图片", 'margin:24px 0 10px' in html and 'margin:10px 0 16px;' in html)
+    test("表头基线重于行线", 'border-bottom:1px solid #746F66' in r.table([['列', '值'], ['甲', '1']])
+          and 'border-bottom:1px solid #E8E4DB' in r.table([['列', '值'], ['甲', '1']]))
+    long_one = '这是一句足够长的测试句子。' * 12
+    d = _r.auto_digest(*_r.parse(HEAD + '---\n' + long_one + '\n'))
+    test("自动摘要在句末收口，不腰斩", len(d) <= 120 and d.endswith('。') and '测试句子。' in d)
     class Response:
         def __init__(self, raw): self.raw = raw
         def __enter__(self): return self
