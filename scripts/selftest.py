@@ -597,6 +597,10 @@ def delivery_defects_ok():
           any("两行内" in m for m in _r.compose_gate(*_r.parse(_note3.format("来源：甲（2025）。\n口径：第一条。\n口径：第二条多写一句。")))[0]))
     test("地址单独一行不占来源行数",
           not any("两行内" in m for m in _r.compose_gate(*_r.parse(_note3.format("来源：甲（2025）。\n口径：媒体转述。\nhttps://example.com/x")))[0]))
+    _dup = r.note("来源", ["来源: 甲（2025）。", "口径：媒体转述。"])
+    test("标签点明来源，正文不重复「来源」", _dup.count("来源") == 1 and "甲（2025）" in _dup and "口径：" in _dup)
+    _dup2 = r.note("来源与口径", ["来源：甲（2025）。", "口径：媒体转述。"])
+    test("来源与口径标签剥两个前缀", _dup2.count("来源") == 1 and _dup2.count("口径") == 1 and "甲（2025）" in _dup2)
     test("代码内CSS字面量不误判", not check(r.code("css", ["position:fixed; display:grid; float:left; {{demo}};"]))[0])
     test("事件与协议相对图片被拦", bool(check('<img src="//bad/x" onerror="x()" style="max-width:100%">')[0]))
     test("img/br不泄漏等宽状态", bool(check(r.code("", ["x"]) + '<br><p>未包裹</p>')[0]))

@@ -318,7 +318,14 @@ class R:
     def note(self, label, lines, tight=False):
         t = self.t
         head = self.micro(label, extra="margin-bottom:6px;") if label else ""
-        body = "".join(self.p(self.inline(x), SMALL, t["sub"], "line-height:1.8;") for x in lines)
+        # 标签已点明「来源／口径」，正文同词前缀就是同一处说两遍：剥掉前缀，一词一处
+        body_lines = []
+        for x in lines:
+            for word in ("来源", "口径"):
+                if word in (label or ""):
+                    x = re.sub(rf"^{word}[：:]\s*", "", x)
+            body_lines.append(x)
+        body = "".join(self.p(self.inline(x), SMALL, t["sub"], "line-height:1.8;") for x in body_lines)
         # tight 只收顶边：来源紧贴上面的证据，下面仍按正常节奏离开。
         return f'<section style="margin:{self.g(10) if tight else self.g(16)}px 0 {self.g(16)}px;">{head}{body}</section>'
 
@@ -669,7 +676,7 @@ def compose_gate(meta, blocks, base="."):
             # 来源与口径两行内：一行来源、一行口径；单独的地址行不计，单位写在图表头不进注
             text = [ln for ln in lines if not re.fullmatch(r"\s*https?://\S+\s*", ln)]
             if re.search(r"来源|口径", label) and len(text) > 2:
-                must.append("数据来源与口径过长：两行内（一行「来源：主体（日期）」、一行「口径：一句话」），地址单独一行不计")
+                must.append("数据来源与口径过长：两行内（来源一行、口径一行；标签点明的词不写前缀），地址单独一行不计")
             for ln in text:
                 if len(ln) > 60:
                     should.append(f"注释行过长（{len(ln)} 字）：来源短写「主体（日期）」，口径一句话")
