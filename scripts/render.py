@@ -665,9 +665,14 @@ def compose_gate(meta, blocks, base="."):
         if k == "table" and b and len(b[0]) >= 5:
             should.append(f"表格 {len(b[0])} 列：390px 下每列过窄，改成更少列或拆成两张表（不要缩小字号硬塞）")
         if k == "note":
-            for ln in b[1]:
-                if len(ln) > 90:
-                    should.append(f"注释行过长（{len(ln)} 字）：来源短写「主体（日期）」，长地址不进正文")
+            label, lines = b[0] or "", b[1]
+            # 来源与口径两行内：一行来源、一行口径；单独的地址行不计，单位写在图表头不进注
+            text = [ln for ln in lines if not re.fullmatch(r"\s*https?://\S+\s*", ln)]
+            if re.search(r"来源|口径", label) and len(text) > 2:
+                must.append("数据来源与口径过长：两行内（一行「来源：主体（日期）」、一行「口径：一句话」），地址单独一行不计")
+            for ln in text:
+                if len(ln) > 60:
+                    should.append(f"注释行过长（{len(ln)} 字）：来源短写「主体（日期）」，口径一句话")
                     break
     title = meta.get("title", "")
     if not api_title(title):

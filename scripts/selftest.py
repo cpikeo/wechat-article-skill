@@ -590,6 +590,13 @@ def delivery_defects_ok():
     test("裸地址仍原样可见（要就整行写）", "https://example.com/x" in r.inline("https://example.com/x"))
     test("来源/口径行过长被提醒",
           any("过长" in m for m in _r.compose_gate(*_r.parse(HEAD + "---\n::: note 口径\n" + "长句" * 50 + "\n:::\n"))[1]))
+    _note3 = HEAD + "---\n::: note 来源与口径\n{}\n:::\n"
+    test("来源与口径两行内（一行来源一行口径）",
+          not any("两行内" in m for m in _r.compose_gate(*_r.parse(_note3.format("来源：21经济网（2025-01-14）。\n口径：媒体转述，非审计。")))[0]))
+    test("来源与口径三行被拦",
+          any("两行内" in m for m in _r.compose_gate(*_r.parse(_note3.format("来源：甲（2025）。\n口径：第一条。\n口径：第二条多写一句。")))[0]))
+    test("地址单独一行不占来源行数",
+          not any("两行内" in m for m in _r.compose_gate(*_r.parse(_note3.format("来源：甲（2025）。\n口径：媒体转述。\nhttps://example.com/x")))[0]))
     test("代码内CSS字面量不误判", not check(r.code("css", ["position:fixed; display:grid; float:left; {{demo}};"]))[0])
     test("事件与协议相对图片被拦", bool(check('<img src="//bad/x" onerror="x()" style="max-width:100%">')[0]))
     test("img/br不泄漏等宽状态", bool(check(r.code("", ["x"]) + '<br><p>未包裹</p>')[0]))
