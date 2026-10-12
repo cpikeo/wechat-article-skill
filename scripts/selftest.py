@@ -580,6 +580,16 @@ def delivery_defects_ok():
             test("坏bars无崩溃并报具体错误：" + value[:8], any("值必须" in e for e in errors))
         except Exception:
             test("坏bars无崩溃：" + value[:8], False)
+    _bars_md = HEAD + "---\n::: bars 件\n1｜甲\n2｜乙\n:::\n\n::: note 来源\n{}\n:::\n"
+    test("来源短写主体＋日期被接受",
+          not any("缺少紧邻来源" in m for m in _r.compose_gate(*_r.parse(_bars_md.format("来源：21经济网（2025-01-14）。口径：媒体转述。")))[0]))
+    test("来源仅主体无日期无地址被拦",
+          any("缺少紧邻来源" in m for m in _r.compose_gate(*_r.parse(_bars_md.format("来源：网友说的。")))[0]))
+    _link = r.inline("[短名](https://example.com/a/very/long/path?x=1)")
+    test("链接不再追加长地址，短名即显示", "短名" in _link and "example.com" not in _link)
+    test("裸地址仍原样可见（要就整行写）", "https://example.com/x" in r.inline("https://example.com/x"))
+    test("来源/口径行过长被提醒",
+          any("过长" in m for m in _r.compose_gate(*_r.parse(HEAD + "---\n::: note 口径\n" + "长句" * 50 + "\n:::\n"))[1]))
     test("代码内CSS字面量不误判", not check(r.code("css", ["position:fixed; display:grid; float:left; {{demo}};"]))[0])
     test("事件与协议相对图片被拦", bool(check('<img src="//bad/x" onerror="x()" style="max-width:100%">')[0]))
     test("img/br不泄漏等宽状态", bool(check(r.code("", ["x"]) + '<br><p>未包裹</p>')[0]))

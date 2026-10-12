@@ -231,9 +231,8 @@ class R:
             elif strike:
                 out.append(f'<span style="text-decoration:line-through;color:{t["muted"]};">{self.leaf(strike)}</span>')
             else:
-                out.append(f'<span style="border-bottom:1px solid {t["line"]};">{self.leaf(ltext)}</span>'
-                           + (f'<span style="color:{t["muted"]};font-size:{SMALL}px;">{self.leaf(" " + url)}</span>'
-                              if url.startswith("http") else ""))
+                # [短名](地址) 只显示短名：来源短写到可核对为止，长地址不进正文（要地址可见就写裸地址）。
+                out.append(f'<span style="border-bottom:1px solid {t["line"]};">{self.leaf(ltext)}</span>')
             pos = m.end()
         if pos < len(s):
             out.append(self.leaf(s[pos:]))
@@ -622,8 +621,9 @@ def compose_gate(meta, blocks, base="."):
             continue
         note = blocks[i + 1][1] if i + 1 < len(blocks) and blocks[i + 1][0] == "note" else ("", [])
         source = " ".join(note[1])
-        if not re.search(r"https?://\S+|假设|演示|非统计", source):
-            must.append(f"{k} 缺少紧邻来源 note：提供链接与口径，或明确假设/演示（机器不核真）")
+        # 来源短写到可核对为止：主体＋日期即可，或一行地址，或明确假设/演示（机器不核真）
+        if not re.search(r"https?://\S+|\d{4}\s*(?:年|[-–/]\d{1,2}|\))|假设|演示|非统计", source):
+            must.append(f"{k} 缺少紧邻来源 note：写清主体与日期（或一行地址），或明确假设/演示（机器不核真）")
         if k == "data":
             for line in b[1]:
                 val, _, lab = line.replace("|", "｜").partition("｜")
@@ -664,6 +664,11 @@ def compose_gate(meta, blocks, base="."):
                     must.append(f"表格第 {j + 1} 列数值在 320px 小屏放不下（需约 {need:.0f}px，仅分到 {w / 100 * 288:.0f}px）：删低价值列或改结构，不要缩字号硬塞")
         if k == "table" and b and len(b[0]) >= 5:
             should.append(f"表格 {len(b[0])} 列：390px 下每列过窄，改成更少列或拆成两张表（不要缩小字号硬塞）")
+        if k == "note":
+            for ln in b[1]:
+                if len(ln) > 90:
+                    should.append(f"注释行过长（{len(ln)} 字）：来源短写「主体（日期）」，长地址不进正文")
+                    break
     title = meta.get("title", "")
     if not api_title(title):
         must.append("缺少标题")
