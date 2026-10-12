@@ -349,10 +349,12 @@ def docx_ok():
         return (not missing and code2 == 1), f"缺 {missing} · 非 docx 退出码 {code2}"
 
 
-def shots():
-    """把每篇预览真正截成 390px PNG —— Gate 3 通读（人眼或视觉模型）的输入。
+def shots(shoot=None):
+    """把每篇预览真正截成 390px PNG —— Gate 3 通读（人眼或视觉模型）的**证据**，不是视觉合格证。
 
-    只在预览里排一次版是不够的：字距、折行、图片裁切、首屏密度都必须在像素上看见。
+    产出证据包：全页 + 首屏截图、REVIEW.md 逐张检查清单与复现命令。截图成功只证明渲染与
+    截图流程顺利；构图、层级、密度、小字清晰度、封面裁切的结论只能由通读的人给出。
+    --shoot 额外指定稿件 md（如 evals 样稿），同样进证据包，供缺陷复现与人工审阅。
     需要 playwright（skill 本身不需要）；显式请求但未安装即失败。
     """
     try:
@@ -363,7 +365,34 @@ def shots():
         return False
     out_dir = os.path.join(ROOT, "assets", "shots")
     os.makedirs(out_dir, exist_ok=True)
-    made, failed = [], []
+    made, failed, manifest = [], [], []
+    look = {  # 语料的视觉审阅重点：给通读的人的指引，不是自动判定项
+        "skills": "纯文字层级：段距/章标/重点与正文的权重差",
+        "portrait": "图注可读性、引文出处行、叙事段落节奏",
+        "visual": "bars 数值口径、表头基线、来源紧邻、airy 密度",
+        "brief": "dense 节奏、表格与 data 大字、待补封面提示",
+        "longread": "目录位置与编号、代码块小字、长文转场留白",
+    }
+
+    def one_shot(pg, prev, stem):
+        """截全页 + 首屏，并跑元素级溢出检查。返回 (png路径, 失败原因或 None)。"""
+        pg.goto("file://" + prev)
+        pg.wait_for_function("() => [...document.images].every(i => i.complete)")
+        pg.evaluate("scrollTo(0, 0)")
+        png = os.path.join(out_dir, stem + ".png")
+        pg.screenshot(path=png, full_page=True)
+        pg.screenshot(path=os.path.join(out_dir, stem + "_首屏.png"),
+                      clip={"x": 0, "y": 0, "width": 390, "height": 844})
+        if "<img" in open(prev, encoding="utf-8").read() and not pg.evaluate(
+                "() => [...document.images].every(i => i.naturalWidth > 0)"):
+            return png, f"{stem}（图片未加载）"
+        for width in (320, 360, 390, 430):
+            pg.set_viewport_size({"width": width, "height": 844})
+            if pg.evaluate("document.documentElement.scrollWidth > innerWidth || [...document.querySelectorAll('#c p,#c img,#c table,#c th,#c td')].some(e=>e.scrollWidth>e.clientWidth+1 || e.getBoundingClientRect().right>document.querySelector('#c').getBoundingClientRect().right+1)"):
+                return png, f"{stem}（{width}px横向溢出）"
+        pg.set_viewport_size({"width": 390, "height": 844})
+        return png, None
+
     with sync_playwright() as p:
         b = p.chromium.launch()
         for name in CASES:
@@ -372,26 +401,17 @@ def shots():
             html = os.path.join(FIX, f"_shots_{name}.html")
             if not os.path.isfile(html):
                 failed.append(name)
+                pg.close()
                 continue
             prev = os.path.splitext(html)[0] + "_预览.html"
-            png = os.path.join(out_dir, f"{name}.png")
-            pg.goto("file://" + prev)
-            pg.wait_for_function("() => [...document.images].every(i => i.complete)")
-            pg.evaluate("scrollTo(0, 0)")
-            pg.screenshot(path=png, full_page=True)
-            if "<img" in open(prev, encoding="utf-8").read() and not pg.evaluate(
-                    "() => [...document.images].every(i => i.naturalWidth > 0)"):
-                failed.append(f"{name}（图片未加载）")
-            # Browser evidence: widths, #c vs publication body, and real copy event payload.
+            png, err = one_shot(pg, prev, name)
+            if err:
+                failed.append(err)
+            # Browser evidence: #c vs publication body, and real copy event payload.
             body = open(html, encoding="utf-8").read()
             expected = pg.evaluate("h => {const n=document.createElement('section');n.innerHTML=h;return n.textContent}", body)
             if pg.locator("#c").text_content() != expected:
                 failed.append(f"{name}（预览/正文内容不一致）")
-            for width in (320, 360, 390, 430):
-                pg.set_viewport_size({"width": width, "height": 844})
-                if pg.evaluate("document.documentElement.scrollWidth > innerWidth || [...document.querySelectorAll('#c p,#c img,#c table,#c th,#c td')].some(e=>e.scrollWidth>e.clientWidth+1 || e.getBoundingClientRect().right>document.querySelector('#c').getBoundingClientRect().right+1)"):
-                    failed.append(f"{name}（{width}px横向溢出）")
-            pg.set_viewport_size({"width": 390, "height": 844})
             pg.evaluate("document.addEventListener('copy', e => {const put=e.clipboardData.setData.bind(e.clipboardData); e.clipboardData.setData=(type,data)=>{if(type==='text/html')window.copied=data;return put(type,data)}})")
             pg.locator("button").click()
             pg.wait_for_function("typeof window.copied === 'string'")
@@ -411,11 +431,48 @@ def shots():
                 failed.append(f"{name}（复制内容不一致）")
             pg.evaluate("delete window.copied")
             made.append(png)
+            manifest.append((name + ".png", f"fixtures 合成语料 {name}", look.get(name, "")))
+            pg.close()
+        for md in (shoot or []):
+            md = os.path.abspath(md)
+            stem = os.path.splitext(os.path.basename(md))[0]
+            out_html = os.path.join(FIX, f"shoot_{stem}.html")
+            code, log = run([os.path.join(HERE, "render.py"), md, "-o", out_html], os.path.dirname(md))
+            if code != 0:
+                failed.append(f"{stem}（渲染失败）\n{log[-300:]}")
+                continue
+            pg = b.new_page(viewport={"width": 390, "height": 844}, device_scale_factor=2)
+            prev = os.path.splitext(out_html)[0] + "_预览.html"
+            png, err = one_shot(pg, prev, f"eval_{stem}")
+            if err:
+                failed.append(err)
+            else:
+                made.append(png)
+                manifest.append((f"eval_{stem}.png", md.replace(ROOT + os.sep, ""),
+                                 "按稿件实际：断行/小字来源/层级/密度/图表/中英混排"))
             pg.close()
         b.close()
-    print(f"\nGate 3 截图（390px · 2x · 4宽度元素级与复制样式检查）：{out_dir}")
+    review = os.path.join(out_dir, "REVIEW.md")
+    with open(review, "w", encoding="utf-8") as f:
+        f.write("# Gate 3 截图证据包（390px · 2x）\n\n"
+                "**截图通过 ≠ 视觉通过。** 本目录只证明渲染与截图流程顺利完成；构图、层级、密度、"
+                "小字清晰度、封面裁切由通读的人（视觉总监）判定，结论写回验收记录，可无需修改。\n\n"
+                "复现：`python3 scripts/selftest.py --shots [--shoot 文章.md ...]`；"
+                "单稿另可 `python3 scripts/render.py 文章.md` 得正文、预览与 meta。\n\n"
+                "## 逐张必看\n\n"
+                "- 中文断行、标点避头尾；标题／正文／图注层级一眼可分\n"
+                "- 图注、来源、表头等 12–14px 小字放大 100% 是否读得清（结论以真机为准）\n"
+                "- 长表是否需要改结构（不缩字号硬塞）；数值图的口径与来源是否紧邻\n"
+                "- 长文密度与转场留白；首屏信息量与视觉重心（对照 *_首屏.png）\n"
+                "- 封面 2.35:1 与 1:1 裁切的主体是否成立（见各预览的封面区）\n"
+                "- 每个问题给 保留／修改／删除 + 理由\n\n"
+                "## 证据清单\n\n| 文件 | 来源 | 审阅重点 |\n|---|---|---|\n")
+        for png_name, src, w in manifest:
+            f.write(f"| {png_name} + {png_name[:-4]}_首屏.png | {src} | {w or '按稿件实际'} |\n")
+    print(f"\nGate 3 截图证据（390px · 2x · 4宽度元素级与复制样式检查）：{out_dir}")
     for m in made:
         print("   " + os.path.basename(m))
+    print("   证据清单 → REVIEW.md（截图是审阅输入，不是视觉合格证）")
     if failed:
         print("   失败：" + "、".join(failed))
         return False
@@ -542,6 +599,16 @@ def delivery_defects_ok():
     test("中文与混排自然左对齐，表头不拉字距", 'text-align:justify' not in r.para('纯中文正文') and 'letter-spacing:2px' not in r.table([['长表头', '数值'], ['中文', '12%']]))
     wide = _r.col_widths([["方案", "研发占比", "备注"], ["甲：重研发", "60%", "产品迭代快，获客慢，留存中等"]])
     test("表格列宽按内容分配，数值列不被挤窄", wide[1] >= 9 and wide[2] > wide[1] and abs(sum(wide) - 100) < 1e-6)
+    _t4 = [["项目", "瑞幸测算（拿铁）", "库迪拆解", "备注"],
+           ["原料", "3–4 元", "5.7 元", "口径与产品不同"],
+           ["包材", "—", "1.5 元", "库迪单列"],
+           ["人工+房租", "不到 2 元", "3.7 元", "城市差异大"],
+           ["合计", "4–5 元", "11.1 元", "均为公开转述"]]
+    test("表格数值列小屏放不下被拦（320px 溢出）",
+         any("小屏放不下" in m for m in _r.compose_gate({"title": "回归"}, [("table", _t4)])[0]))
+    test("表格删低价值列后小屏放得下",
+         not any("小屏放不下" in m for m in _r.compose_gate({"title": "回归"},
+                                                           [("table", [_t4[0][:3], _t4[1][:3], _t4[4][:3]])])[0]))
     test("纯数字单元格禁止断行", "white-space:nowrap" in r.table([["列", "值"], ["甲", "60%"]]) and "white-space:nowrap" not in r.table([["列", "值"], ["甲", "中文很长的一格"]]))
     toc_md = HEAD + "toc: true\n---\n> 导语。\n\n第一段。\n\n## **重点**结论\n\n一。\n\n## ==关键词==\n\n二。\n\n## 第三\n\n三。\n"
     toc_html = _r.render(toc_md)[3]
@@ -670,6 +737,30 @@ def delivery_defects_ok():
         with patch.object(pub, "get_stable_access_token", return_value="tok"), patch.object(pub, "check_draft_switch", return_value=True), patch.object(pub, "upload_thumb_material", return_value="THUMB"), patch.object(pub, "upload_content_image", return_value="https://mmbiz.qpic.cn/img"), patch.object(pub, "create_draft", return_value="DRAFT") as draft, patch.object(pub, "submit_publish") as submit:
             result = pub.publish_html_article("app", "secret", html, cover, "标题", material_cache=None)
             test("真实入口默认草稿且仅替换正文图", not submit.called and result["media_id"] == "DRAFT" and "https://mmbiz.qpic.cn/img" in draft.call_args.args[2])
+        # 正式发布单次授权：config 不能持久授权；--submit 之外还须逐字确认标题；缺确认 0 网络。
+        with open(os.path.join(d, "cfg_submit.json"), "w", encoding="utf-8") as f:
+            json.dump({"appid": "wx", "secret": "s", "submit": True}, f)
+        try:
+            pub.load_config(os.path.join(d, "cfg_submit.json"))
+            test("config 持久授权发布被拒绝", False)
+        except ValueError as e:
+            test("config 持久授权发布被拒绝", "单次" in str(e) or "submit" in str(e))
+        with patch.object(pub, "get_stable_access_token") as token:
+            try:
+                pub.publish_html_article("app", "secret", html, cover, "标题", material_cache=None, do_submit=True)
+                test("正式发布缺单次确认被拦（0 网络）", False)
+            except ValueError as e:
+                test("正式发布缺单次确认被拦（0 网络）", token.call_count == 0 and "确认" in str(e))
+            try:
+                pub.publish_html_article("app", "secret", html, cover, "标题", material_cache=None,
+                                         do_submit=True, submit_confirm="别的标题")
+                test("确认标题不符被拦", False)
+            except ValueError:
+                test("确认标题不符被拦", token.call_count == 0)
+        with patch.object(pub, "get_stable_access_token", return_value="tok"), patch.object(pub, "upload_thumb_material", return_value="THUMB"), patch.object(pub, "upload_content_image", return_value="https://mmbiz.qpic.cn/img"), patch.object(pub, "create_draft", return_value="DRAFT"), patch.object(pub, "submit_publish", return_value="PID") as submit, patch.object(pub, "poll_publish_status", return_value={"status": 0, "status_text": "ok", "article_urls": []}):
+            pub.publish_html_article("app", "secret", html, cover, "标题", material_cache=None,
+                                     do_submit=True, submit_confirm="标题")
+            test("单次确认后才走到发布", submit.called)
         with patch.object(pub, "_post_json", return_value={"publish_status":1}) as post, patch.object(pub.time, "sleep") as sleep:
             result = pub.poll_publish_status("tok", "PID", timeout=0)
             test("单次查询不额外睡眠或轮询", result["status"] == 1 and post.call_count == 1 and not sleep.called)
@@ -798,7 +889,7 @@ def run_all(a):
         (s["appid"] == "wx_cfg" and s["secret"] == "s_cfg", "凭证默认来自 config"),
         (s["author"] == "meta作者" and s["digest"] == "meta摘要", "meta > config"),
         (s["source"] == "https://cfg", "原文链接回落到 config"),
-        (s["open_comment"] is False and s["submit"] is True, "留言/发布开关跟随 config"),
+        (s["open_comment"] is False and s["submit"] is False, "留言开关跟随 config；submit 只来自本次命令行"),
         (s2["author"] == "CLI作者" and s2["appid"] == "wx_cli", "命令行 > meta/config"),
         (s3["appid"] is None and s3["author"] is None, "空字符串视同未配置"),
         (found.get("appid") == "wx_tmp", "默认查找命中 ./config.json"),
@@ -820,7 +911,7 @@ def run_all(a):
         fails.append("真实缺陷：" + why)
 
     if a.shots:
-        shot_ok = shots()
+        shot_ok = shots(a.shoot)
         if not shot_ok:
             fails.append("Gate 3 截图")
 
@@ -832,6 +923,8 @@ def main():
     global FIX
     ap = argparse.ArgumentParser()
     ap.add_argument("--shots", action="store_true")
+    ap.add_argument("--shoot", nargs="*", default=None, metavar="文章.md",
+                    help="把指定稿件一并截进证据包（如 evals 样稿），供人工审阅与缺陷复现")
     a = ap.parse_args()
     FIX = _fx.build(tempfile.mkdtemp(prefix="wechat-selftest-"))
     try:

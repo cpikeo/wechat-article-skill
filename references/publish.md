@@ -4,7 +4,7 @@
 
 ## 安全边界
 
-默认建草稿，正式发布要明确授权 `--submit`。`config.json` 也可设 submit=true，使用前核对；发布不等于群发。草稿箱开关的开启不可逆，仅显式 `--enable-draft-switch`；删除永久素材不可恢复，仅显式 `--delete-material`。
+默认建草稿。正式发布是**单次授权**：只有本次运行显式加 `--submit --confirm-title "标题"`（标题逐字一致）才会发布，config 写 `submit:true` 会被拒绝——一次设置不能影响以后的普通运行。发布不等于群发。草稿箱开关的开启不可逆，仅显式 `--enable-draft-switch`；删除永久素材不可恢复，仅显式 `--delete-material`。
 账号权限依后台与接口返回，不把历史个人／企业结论当当前实测。
 
 ## 配置与命令
@@ -14,12 +14,12 @@
 ```bash
 python3 scripts/publish.py --html 文章.html --meta 文章.meta.json --preflight
 python3 scripts/publish.py --html 文章.html --meta 文章.meta.json
-# 仅明确授权后
-python3 scripts/publish.py --html 文章.html --meta 文章.meta.json --submit
+# 仅明确授权后（单次生效；confirm-title 须逐字等于上行标题）
+python3 scripts/publish.py --html 文章.html --meta 文章.meta.json --submit --confirm-title "文章标题"
 python3 scripts/publish.py --check-publish-id 已返回的ID
 ```
 
-标题32字、作者16字、摘要120字；超限拒绝上行，不静默改标题。摘要未显式给定时 render 从导语／副题／首段生成，须人工确认。author、title是原生字段，date仅预览模拟。source进入content_source_url，与正文事实来源不同。
+标题32字、作者16字、摘要120字；超限拒绝上行，不静默改标题。摘要未显式给定时 render 从导语／副题／首段生成，句末收口，须人工确认。author、title是原生字段，date仅预览模拟。source进入content_source_url，与正文事实来源不同。
 留言默认为开、仅粉丝默认关，是本工具默认而非已验证的所有账号编辑器行为；`--no-open-comment` / `--fans-only-comment` 覆盖。原创声明须后台处理。
 
 正文／封面相对路径按输出HTML目录解析。预检检查本地资源、字段、待补位及同名meta中的正文哈希／render错误；没有记录的外部合规HTML只可静态核验与建草稿，不能直接正式提交。哈希仅防陈旧稿，不证明事实与艺术验收。
@@ -35,6 +35,10 @@ python3 scripts/publish.py --list-materials --material-type image
 python3 scripts/publish.py --delete-material 已核对的MediaID
 python3 scripts/publish.py --html 文章.html --meta 文章.meta.json --no-reuse-cover
 ```
+
+## 目标账号验收（没有账号就列为未验证）
+
+本地通过后，须在授权公众号完成并逐项记录：保存草稿 → 退出重新打开草稿 → 逐段核对正文样式与图片（粘贴清洗后是否变形、图片是否被替换为微信 URL）→ 手机预览长表／代码／图片裁切 → 核对封面两入口裁切与标题／作者／摘要／原文链接原生字段。任一项不符即回到 Markdown 改稿重渲，不修生成的 HTML。当前回归只 mock 接口契约；这些步骤不经真实账号走完，不得写「发布已验证」。
 
 ## 文档核对与限制
 

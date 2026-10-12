@@ -457,6 +457,11 @@ class R:
 NUMERIC = re.compile(r"[+\-−]?[\d.,，]+\s*(%|％|百分点|元|万|亿)?")
 
 
+def cell_min_px(s):
+    """nowrap 数值单元格的最小内容宽度：14px 字号下 ASCII≈0.5em、CJK≈1em、空格≈0.25em，加左右内距。"""
+    return sum(0.25 if ch == " " else 0.5 if ord(ch) < 128 else 1.0 for ch in s) * 14 + 12
+
+
 def col_widths(rows):
     """表格列宽按内容权重分配：中文字占 1，ASCII 占 0.5，每列至少 1 个字宽。
 
@@ -649,6 +654,14 @@ def compose_gate(meta, blocks, base="."):
             must.append("标题后缺少内容")
         if k == "table" and (not b or any(len(row) != len(b[0]) for row in b)):
             must.append("表格行列数不一致，不能对齐数据")
+        if k == "table" and b:
+            widths = col_widths(b)
+            for j, w in enumerate(widths):
+                # nowrap 数值单元格的最小宽（字宽模型与 col_widths 同源 + 内距）> 320px 配额=小屏必然溢出
+                need = max([cell_min_px(str(row[j]).strip()) for row in b
+                            if j < len(row) and NUMERIC.fullmatch(str(row[j]).strip())], default=0)
+                if need and need > w / 100 * 288 + 2:
+                    must.append(f"表格第 {j + 1} 列数值在 320px 小屏放不下（需约 {need:.0f}px，仅分到 {w / 100 * 288:.0f}px）：删低价值列或改结构，不要缩字号硬塞")
         if k == "table" and b and len(b[0]) >= 5:
             should.append(f"表格 {len(b[0])} 列：390px 下每列过窄，改成更少列或拆成两张表（不要缩小字号硬塞）")
     title = meta.get("title", "")

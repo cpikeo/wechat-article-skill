@@ -430,7 +430,10 @@ def preflight(html_path, s):
 def publish_html_article(appid, secret, html_path, cover_path, title, author=None, digest=None,
                          source_url=None, open_comment=True, fans_only=False,
                          material_cache=MATERIAL_CACHE_DEFAULT,
-                         do_submit=False, poll_timeout=600, auto_enable_switch=False):
+                         do_submit=False, submit_confirm=None, poll_timeout=600, auto_enable_switch=False):
+    if do_submit and api_title(submit_confirm or "") != api_title(title):
+        raise ValueError(f"正式发布需要本次运行的单次确认：--confirm-title 必须与本次标题逐字一致"
+                         f"（本次标题：{api_title(title)!r}）。没有持久授权这回事，每次发布都要重新确认")
     settings = {"title": title, "author": author, "digest": digest, "cover": cover_path,
                 "source": source_url, "open_comment": open_comment, "fans_only": fans_only, "submit": do_submit}
     if preflight(html_path, settings):
@@ -514,6 +517,10 @@ def load_config(explicit=None):
                 for key in ("submit", "need_open_comment", "only_fans_can_comment"):
                     if key in cfg and not isinstance(cfg[key], bool):
                         raise ValueError(f"{key} 必须是true/false，不能是字符串")
+                if cfg.get("submit"):
+                    raise ValueError(
+                        "config 不接受 submit:true——正式发布不允许持久授权，一次设置不能影响以后的普通运行。"
+                        "去掉该键；确要发布时在本次运行显式加 --submit --confirm-title \"标题\"（单次授权）")
                 return cfg
     if explicit:
         raise FileNotFoundError(f"配置文件不存在: {explicit}")
@@ -533,7 +540,7 @@ def resolve_settings(args, side, cfg):
         "source": args.source_url or side.get("source_url") or cfg.get("source_url") or None,
         "open_comment": (not args.no_open_comment) and bool(cfg.get("need_open_comment", True)),
         "fans_only": args.fans_only_comment or bool(cfg.get("only_fans_can_comment", False)),
-        "submit": args.submit or bool(cfg.get("submit", False)),
+        "submit": bool(args.submit),      # 只认本次命令行：config 不允许持久授权发布
     }
 
 
@@ -555,7 +562,10 @@ def main():
                     help="关闭留言。本工具默认开启，不代表所有账号编辑器默认")
     ap.add_argument("--fans-only-comment", action="store_true", help="仅粉丝可评论（默认所有人）")
     ap.add_argument("--submit", action="store_true",
-                    help="建草稿后继续提交发布（需账号具备发布权限）；默认只建草稿，config.json 可把 submit 设为 true")
+                    help="建草稿后继续提交发布（需账号具备发布权限）；单次授权，只对本次运行生效，"
+                         "还须 --confirm-title 逐字确认标题；默认只建草稿，config 不接受 submit:true")
+    ap.add_argument("--confirm-title", default=None,
+                    help="正式发布的单次确认：逐字等于本次上行标题（|/｜ 等价）；与 --submit 同时给出才发布")
     ap.add_argument("--poll-timeout", type=int, default=600, help="发布状态轮询超时秒数，默认 600")
     ap.add_argument("--check-publish-id", default=None, help="只查询某个 publish_id 的发布状态，不做其它任何操作")
     ap.add_argument("--preflight", action="store_true",
@@ -655,6 +665,7 @@ def main():
             fans_only=s["fans_only"],
             material_cache=None if args.no_reuse_cover else args.material_cache,
             do_submit=s["submit"],
+            submit_confirm=args.confirm_title,
             poll_timeout=args.poll_timeout,
             auto_enable_switch=args.enable_draft_switch,
         )

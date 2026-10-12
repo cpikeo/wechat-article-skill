@@ -28,7 +28,8 @@ cp config.example.json config.json
 # 填凭证；config.json不提交。预检无需凭证
 python3 scripts/publish.py --html 正文.html --meta 正文.meta.json --preflight
 python3 scripts/publish.py --html 正文.html --meta 正文.meta.json
-# 只有明确授权才加--submit；默认止于草稿
+# 只有明确授权才加 --submit --confirm-title "标题"（单次授权，逐字确认标题）；
+# config 不接受 submit:true——一次设置不能影响以后的普通运行。默认止于草稿
 ```
 
 命令行覆盖meta，meta覆盖config兜底。真实入口也强制预检。详见[接口与素材说明](references/publish.md)。

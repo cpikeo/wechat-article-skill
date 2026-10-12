@@ -7,13 +7,12 @@
     "source_url": "「阅读原文」链接兜底（官方字段 content_source_url）：文章末尾跳转入口；单篇可用 frontmatter 或 --source-url 覆盖。留空则无此入口。",
     "need_open_comment": "留言开关，本工具默认 true；未认证所有账号编辑器默认行为；false 关闭留言。单次关闭也可用 --no-open-comment。",
     "only_fans_can_comment": "仅粉丝可评论，默认 false（所有人可评）。",
-    "submit": "false=只建草稿；true=建完草稿继续正式发布，需账号具备权限与明确授权。单次发布也可不加配置、命令行加 --submit。"
+    "_发布授权": "正式发布不接受持久配置：这里写 submit:true 会被直接拒绝。发布只能在本次运行显式加 --submit --confirm-title \"标题\"（单次授权，不跨运行生效）。默认止于草稿；发布不等于群发。"
   },
   "appid": "",
   "secret": "",
   "author": "",
   "source_url": "",
   "need_open_comment": true,
-  "only_fans_can_comment": false,
-  "submit": false
+  "only_fans_can_comment": false
 }
