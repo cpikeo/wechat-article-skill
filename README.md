@@ -19,7 +19,7 @@ python3 scripts/selftest.py --shots
 ```
 
 render输出：正文HTML（无原生标题作者）、`*_预览.html`（封面裁切／资产表／模拟原生字段）、`.meta.json`（字段／正文哈希／渲染错误／待补资产）。`-o`跨目录会复制素材至交付目录（遇同名不同内容拒绝覆盖）；正文交付仍需素材，预览嵌图不能替代上传。
-退出码1表示必须改。todo可生成待补预览，但发布预检拒绝待补稿。Word抽取保留链接与普通表格；合并单元格、文本框、脚注、修订等会定位报错，停止输出；编号/嵌套归一会显式警告；进入编辑前核对原件并补图片职责。
+退出码1表示必须改。todo可生成待补预览，但发布预检拒绝待补稿。Word抽取保留链接与普通表格；合并单元格、单元格多段落或换行、行列不齐、文本框、脚注、修订等会定位报错，停止输出；编号/嵌套归一会显式警告；Markdown 嵌套、混合或不连续编号列表会停止转换；进入编辑前核对原件并补图片职责。
 
 ## 发布与可验证边界
 
@@ -63,7 +63,7 @@ python3 scripts/publish.py --html 正文.html --meta 正文.meta.json
 
 ## V2 设计与验证状态
 
-审计、变更、删除清单与验证边界统一见 [AUDIT.md](AUDIT.md)。设计决策可在源稿 frontmatter 写 `article_type`、`composition`、`asset_strategy`、`design_rationale`，随渲染记录在 meta。图片可写 `"解释 inset"`，八种表达的语义与限制见 SKILL。
+审计、变更与验证边界见 [AUDIT.md](AUDIT.md)。设计决策可在源稿 frontmatter 写 `article_type`、`composition`、`asset_strategy`、`design_rationale`，随渲染记录在 meta。图片可写 `"解释 inset"`，八种表达的语义与限制见 SKILL。
 
 图片及封面必须是源 Markdown 所在目录内相对路径，不允许 `..`、绝对路径或符号链接越界；输出素材也限制在 HTML 目录内。跨目录输出时 source 的绝对路径记录在 meta 用于回查，迁移后重新渲染；注意该文件的隐私。SHA-256 用于检测变化，不是签名或来源认证。预检不等于艺术或真机验收。
 

@@ -478,6 +478,34 @@ def shots(shoot=None):
                 made.append(png)
                 manifest.append((f"personality_{theme}.png", "同稿六人格", "字体/章节尺度/引文/留白的区别"))
             pg.close()
+        # Exercise grouped layouts in the browser, including a style-stripped reading-order fallback.
+        sample = os.path.join(FIX, "composition.md")
+        with open(sample, "w", encoding="utf-8") as f:
+            f.write('# 构图回归\n\n![甲对象](images/fig.jpg "对比 comparison")\n'
+                    '![乙对象](images/fig.jpg "对比 comparison")\n\n'
+                    '![第一步](images/fig.jpg "场景 sequence")\n'
+                    '![第二步](images/fig.jpg "场景 sequence")\n')
+        code, log = run([os.path.join(HERE, "render.py"), sample], FIX)
+        if code:
+            failed.append("构图样张渲染失败：" + log[-300:])
+        else:
+            pg = b.new_page(viewport={"width": 390, "height": 844}, device_scale_factor=2)
+            prev = os.path.join(FIX, "composition_paper_预览.html")
+            png, err = one_shot(pg, prev, "composition")
+            if err: failed.append(err)
+            else:
+                made.append(png)
+                manifest.append(("composition.png", "合成构图样张", "并列几何、顺序、图注与微信降级"))
+            pg.set_viewport_size({"width": 320, "height": 844})
+            geometry = pg.evaluate("""() => {let a=[...document.querySelectorAll('#c table td')];
+                let x=a.map(e=>e.getBoundingClientRect());
+                return x.length===2 && x[1].left>=x[0].right-1 && Math.abs(x[0].top-x[1].top)<2;}""")
+            if not geometry: failed.append("comparison 未实际并列")
+            text = pg.locator('#c').text_content()
+            pg.evaluate("() => document.querySelectorAll('#c [style]').forEach(e=>e.removeAttribute('style'))")
+            if pg.locator('#c').text_content() != text or not (text.index('甲对象') < text.index('乙对象') < text.index('第一步') < text.index('第二步')):
+                failed.append("清除样式后图注顺序丢失")
+            pg.close()
         for md in (shoot or []):
             md = os.path.abspath(md)
             stem = os.path.splitext(os.path.basename(md))[0]
@@ -846,6 +874,25 @@ def delivery_defects_ok():
 
 
 class DeliveryTests(unittest.TestCase):
+    def test_composition_and_lossy_lists(self):
+        pair = ('# 测试标题\n\n![甲对象](images/fig.jpg "对比 comparison")\n'
+                '![乙对象](images/fig.jpg "对比 comparison")\n')
+        _, meta, blocks, html = _r.render(pair)
+        self.assertEqual(html.count('<td style="width:50%'), 2)
+        self.assertLess(html.index('甲对象'), html.index('乙对象'))
+        self.assertFalse(_r.check(html)[0])
+        must, _ = _r.compose_gate(meta, blocks, FIX)
+        self.assertFalse(must, must)
+        _, meta, blocks, _ = _r.render(pair + '![丙](images/fig.jpg "对比 comparison")\n')
+        self.assertTrue(any('恰好两张' in x for x in _r.compose_gate(meta, blocks, FIX)[0]))
+        seq = pair.replace('comparison', 'sequence')
+        html = _r.render(seq)[3]
+        self.assertLess(html.index('顺序 1'), html.index('顺序 2'))
+        self.assertIn('甲对象', html)
+        for bad in ('- 一\n  - 二\n', '1. 一\n3. 三\n', '- 一\n1. 二\n', '- 一\n  续行\n'):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                _r.parse(bad)
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
@@ -862,6 +909,21 @@ class DeliveryTests(unittest.TestCase):
     def flight(self):
         with contextlib.redirect_stdout(io.StringIO()):
             return publish.preflight(str(self.html), self.settings)
+
+    def test_docx_complex_table_refused_before_output(self):
+        import zipfile
+        base = '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>{}</w:body></w:document>'
+        cells = ('<w:tbl><w:tr><w:tc><w:p/><w:p/></w:tc></w:tr></w:tbl>',
+                 '<w:tbl><w:tr><w:tc><w:p/></w:tc></w:tr><w:tr><w:tc><w:p/></w:tc><w:tc><w:p/></w:tc></w:tr></w:tbl>',
+                 '<w:tbl><w:tr><w:tc><w:p><w:r><w:br/></w:r></w:p></w:tc></w:tr></w:tbl>')
+        for n, table in enumerate(cells):
+            src, out = self.root / f'complex{n}.docx', self.root / f'complex{n}.md'
+            with zipfile.ZipFile(src, 'w') as z:
+                z.writestr('word/document.xml', base.format(table))
+            result = subprocess.run([sys.executable, str(Path(HERE)/'extract_docx.py'), str(src), '-o', str(out)], capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0, result.stdout)
+            self.assertFalse(out.exists())
+            self.assertIn('正文块', result.stderr)
 
     def test_integrity(self):
         self.assertEqual(self.flight(), 0)

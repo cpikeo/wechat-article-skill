@@ -129,6 +129,14 @@ def extract(docx_path, out_md):
             bad.append("表格内图片")
         if len(list(el.iter(f"{W}tbl"))) > (1 if el.tag == f"{W}tbl" else 0):
             bad.append("嵌套表格")
+        if el.tag == f"{W}tbl":
+            widths = [len(row.findall(f"{W}tc")) for row in el.findall(f"{W}tr")]
+            if widths and (not widths[0] or any(w != widths[0] for w in widths)):
+                bad.append("表格行列不齐")
+            if any(len(tc.findall(f"{W}p")) > 1 for tc in el.iter(f"{W}tc")):
+                bad.append("单元格多段落")
+            if any(node.tag in (f"{W}br", f"{W}tab") for tc in el.iter(f"{W}tc") for node in tc.iter()):
+                bad.append("单元格内换行或制表符")
         if bad:
             problems.append(f"正文块 {index}：{', '.join(bad)}")
         if el.tag not in {f"{W}p", f"{W}tbl", f"{W}sectPr"}:

@@ -137,10 +137,20 @@ def parse(md):
                 raise ValueError("图片语法错误：使用 ![说明](路径 \"职责\")，带空格路径请重命名")
             blocks.append(("img", mm.groups()))
         elif re.match(r"([-*]|\d+[.、])\s", s):
+            if ln != ln.lstrip():
+                raise ValueError(f"第 {i + 1} 行：嵌套或缩进列表不支持，请显式展平并核对层级")
             flush()
             ordered, items = bool(re.match(r"\d", s)), []
             while i < len(lines) and re.match(r"\s*([-*]|\d+[.、])\s", lines[i]):
-                items.append(re.sub(r"^\s*([-*]|\d+[.、])\s+", "", lines[i]))
+                raw = lines[i]
+                marker = re.match(r"\s*([-*]|\d+[.、])\s+", raw).group(1)
+                if raw != raw.lstrip():
+                    raise ValueError(f"第 {i + 1} 行：嵌套或缩进列表不支持，请显式展平并核对层级")
+                if bool(re.match(r"\d", marker)) != ordered:
+                    raise ValueError(f"第 {i + 1} 行：混合列表类型，请用空行分开")
+                if ordered and int(marker[:-1]) != len(items) + 1:
+                    raise ValueError(f"第 {i + 1} 行：有序列表必须从 1 连续编号，避免改变原顺序")
+                items.append(re.sub(r"^\s*([-*]|\d+[.、])\s+", "", raw))
                 i += 1
             i -= 1
             blocks.append(("list", (ordered, items)))
@@ -156,6 +166,8 @@ def parse(md):
             blocks.append(("table", rows))
         elif not s:
             flush()
+        elif ln != ln.lstrip() and blocks and blocks[-1][0] == "list":
+            raise ValueError(f"第 {i + 1} 行：列表续行或缩进块不支持，请显式改写后核对")
         elif re.match(r"#{4,6} ", s):
             raise ValueError(f"第 {i + 1} 行：仅支持三级标题；请显式重组层级")
         elif re.search(r"!\[.*?\]\(", s):
@@ -435,7 +447,10 @@ class R:
         elif treat == "mat":
             wrap = f"padding:12px 12px 10px;background:{t['field']};"   # 器物台纸：图与说明同在一整块底上
         # Mode affects display, never crops, combines or invents image content.
-        if mode in ("hero", "full-width"):
+        if mode == "hero":
+            extra += "width:100%;"
+            wrap += f"border-bottom:2px solid {t['accent']};padding-bottom:12px;"
+        elif mode == "full-width":
             extra += "width:100%;"
         elif mode == "inset":
             wrap += "margin-left:10%;margin-right:10%;"
@@ -602,17 +617,30 @@ def compose_gate(meta, blocks, base="."):
     kinds = [b[0] for b in blocks]
     imgs = [(i, b[1]) for i, b in enumerate(blocks) if b[0] == "img"]
     for idx, (alt, src, role) in imgs:
+        tokens0 = (role or "").split()
+        if len(tokens0) > 1 and tokens0[1].lower() == "comparison":
+            def is_comparison(j):
+                if not 0 <= j < len(blocks) or blocks[j][0] != "img":
+                    return False
+                parts = (blocks[j][1][2] or "").split()
+                return len(parts) > 1 and parts[1].lower() == "comparison"
+            if not is_comparison(idx - 1):
+                end = idx
+                while is_comparison(end):
+                    end += 1
+                if end - idx != 2:
+                    must.append("comparison 必须恰好两张相邻图片；多组之间用文字分隔")
         role = (role or "").strip()
         role0 = next(iter(role.split()), "")
         if not role0:
             must.append("图片没有声明职责")
         elif role0 not in ROLES:
             must.append(f"图片职责未识别：{role0}")
-        if len(role.split()) > 1 and role.split()[1] in ("sequence", "comparison"):
-            mode = role.split()[1]
+        if len(role.split()) > 1 and role.split()[1].lower() in ("sequence", "comparison"):
+            mode = role.split()[1].lower()
             neighbors = [blocks[j][1] for j in (idx - 1, idx + 1)
                          if 0 <= j < len(blocks) and blocks[j][0] == "img"]
-            if not any(mode in (b[2] or "").split()[1:] for b in neighbors):
+            if not any(mode in [x.lower() for x in (b[2] or "").split()[1:]] for b in neighbors):
                 must.append(f"图片 {src}：{mode} 需要相邻同组图片；单图请改表达方式")
             if not alt:
                 must.append(f"图片 {src}：{mode} 必须在图注写明顺序或比较对象与口径")
@@ -868,7 +896,10 @@ def render(md, theme=None):
     # 目录只在首段后，顺序由源稿决定。
     toc_after_p, seen_p = any(k == "p" for k, _ in blocks), False
     attach = ("bars", "data", "table", "img")     # 来源/口径紧贴其证据，不做悬空脚注
+    consumed = set()
     for i, (kind, b) in enumerate(blocks):
+        if i in consumed:
+            continue
         nxt = blocks[i + 1][0] if i + 1 < len(blocks) else ""
         below = 10 if nxt == "note" else None
         if not toc_done and kind != "lead" and (seen_p or not toc_after_p):
@@ -899,6 +930,33 @@ def render(md, theme=None):
         elif kind == "code":
             out.append(r.code(*b))
         elif kind == "img":
+            parts = (b[2] or "").split()
+            mode = parts[1].lower() if len(parts) > 1 else ""
+            if mode == "sequence":
+                end = i
+                group = []
+                while end < len(blocks) and blocks[end][0] == "img":
+                    image = blocks[end][1]
+                    op = (image[2] or "").split()
+                    if len(op) < 2 or op[1].lower() != "sequence":
+                        break
+                    group.append(image)
+                    end += 1
+                if len(group) >= 2:
+                    out.append('<section style="margin:24px 0;">' + ''.join(
+                        r.micro(f"顺序 {n}", extra="margin-top:12px;") + r.img(*image, below=8)
+                        for n, image in enumerate(group, 1)) + '</section>')
+                    consumed.update(range(i + 1, end))
+                    continue
+            if mode == "comparison" and i + 1 < len(blocks) and blocks[i + 1][0] == "img":
+                other = blocks[i + 1][1]
+                op = (other[2] or "").split()
+                if len(op) > 1 and op[1].lower() == "comparison":
+                    cells = [r.img(*image, below=0) for image in (b, other)]
+                    out.append('<table style="width:100%;table-layout:fixed;border-collapse:collapse;">'
+                               '<tr>' + ''.join('<td style="width:50%;vertical-align:top;padding:0 4px;overflow-wrap:anywhere;">' + cell + '</td>' for cell in cells) + '</tr></table>')
+                    consumed.add(i + 1)
+                    continue
             out.append(r.img(*b, below=below))
         elif kind == "hr":
             out.append(r.hr())
