@@ -1,10 +1,10 @@
 __pycache__/
 *.pyc
-assets/shots/
-.wechat_material_cache.json
 config.json
-
+assets/shots/
+evaluation/visual-review/
+.wechat_material_cache.json
 .wechat_publish_audit.jsonl
 
-# local review evidence
-wechat-v5-blind/
+# Local blind-review packets; keep answer keys outside shared review folders.
+wechat-blind/

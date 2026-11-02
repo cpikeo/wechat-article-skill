@@ -30,7 +30,7 @@ from editorial import (audit, compare_facts, doc_len,  # noqa: E402
                        plain, peak_text, render_report, strategy_notes)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-SKILL_VERSION = "5.0.0"
+SKILL_VERSION = "6.0.0"
 THEMES_PATH = os.path.join(HERE, "..", "assets", "themes.json")
 with open(THEMES_PATH, "rb") as _theme_file:
     THEME_CONFIG_BYTES = _theme_file.read()
@@ -1188,8 +1188,8 @@ background:#fff;border-bottom:1px solid #e5e5e5;font-size:12px;color:#888;}}
 button{{border:0;background:#1F1F1F;color:#fff;padding:8px 16px;border-radius:6px;font-size:13px;cursor:pointer;white-space:nowrap;flex-shrink:0}}
 .phone{{position:relative;max-width:430px;margin:24px auto 64px;background:#fff;padding:24px 16px 48px;box-sizing:border-box}}
 .nt{{padding:2px 2px 16px;margin-bottom:22px;border-bottom:1px solid #EDEDEB}}
-.nt h1{{margin:0 0 8px;font-size:22px;line-height:1.4;font-weight:700;color:#191919}}
-.nt .au{{margin:0;font-size:13px;color:#6B6762}}
+.nt h1{{margin:0 0 8px;font-size:22px;line-height:1.42;font-weight:700;color:#191919;letter-spacing:-.02em;font-family:-apple-system,BlinkMacSystemFont,'PingFang SC','Microsoft YaHei',sans-serif;line-break:strict;overflow-wrap:anywhere;word-break:normal}}
+.nt .au{{margin:0;font-size:13px;line-height:1.6;color:#6B6762}}
 .cv{{max-width:430px;margin:24px auto 0;background:#fff;padding:16px;box-sizing:border-box}}
 .cv h4{{margin:0 0 8px;font-size:12px;color:#746F66;font-weight:600}}
 .cv img{{display:block;width:100%;background:#F0EEE9}}

@@ -1,81 +1,90 @@
-# wechat-article · V5.0.0
+# WeChat Article Skill · V6.0.0
 
-把 Markdown／Word／纯文本编辑为公众号正文 HTML、独立嵌图预览、发布字段与可核验交付记录。它是 **AI Skill：Editorial Intelligence × Editorial Design × WeChat Publishing**，不是网页模板库、SaaS 或微信编辑器。
+把 Markdown、Word `.docx` 或纯文本编辑为可信、克制、适合手机阅读的微信公众号正文 HTML、独立预览与可核验交付记录。它是 AI 编辑与视觉排版 Skill，不是网页模板库、SaaS 或微信编辑器。
 
-V5 在 V4 的安全/DOCX/发布保护上做最小改造：编辑 must 真正进入退出码；六类型给出不同保护项与语义工作单；事实比对覆盖正负号、日期精度、限定和直接引语；小字对比双重检查；长数值/比较图在窄屏换形态；开发评估与运行时隔离。
+**工作顺序：THINK → EDIT → DESIGN → COMPOSE → RENDER → VERIFY。** 内容判断先于视觉；视觉概念先于装饰；删除 > 合并 > 简化 > 复用 > 新增。
 
-- 唯一判断入口：[SKILL.md](SKILL.md)
-- 审计、文件账、实测与未验证项：[AUDIT.md](AUDIT.md)
-- 六类真实来源编辑评估：[evaluation/RESULTS.md](evaluation/RESULTS.md)
-- 截图证据：`python3 tests/run.py --shots`；编辑前后对照：`python3 tests/visuals.py`
+- 唯一编辑与设计判断入口：[SKILL.md](SKILL.md)
+- 六类真实来源样稿、确定性评估与未验证状态：[evaluation/RESULTS.md](evaluation/RESULTS.md)
+- 测试语料许可与盲评方法：[evaluation/README.md](evaluation/README.md)
+- 公众号边界、素材方向与发布安全：[references/](references/)
 
-## 运行
+## 快速使用
 
-运行时仅需 Python 3 标准库。
+运行时只依赖 Python 3 标准库。其他截图/开发依赖仅用于评估，不进入 Skill 运行时。
 
 ```bash
+# Markdown / 纯文本 → 正文 HTML、浏览器预览、meta
 python3 scripts/render.py 文章.md
+
+# 指定六种主题之一
 python3 scripts/render.py 文章.md --theme frost -o 交付/正文.html
+
+# 对照原稿的事实字面变化并校验五列表格修改台账
 python3 scripts/render.py 文章.md --against 原稿.md --ledger 修改台账.md
-python3 scripts/render.py 文章.md --deliver 交付/
+
+# 一次交付源稿、HTML、预览、meta、记录、验收和本地素材
+python3 scripts/render.py 文章.md --deliver 交付目录/
+
+# Word 转换为 Markdown；转换后须对照原件核查
 python3 scripts/extract_docx.py 文章.docx -o 文章.md
 ```
 
-输出：正文 HTML（不重印原生标题/作者）、`*_预览.html`（模拟原生字段、嵌图、封面两裁切、资产表）、`.meta.json`（字段、审计、设计决策、网格、对比检查、完整性哈希、阻断项）。`--deliver` 另含源稿、修改记录、验收与素材。退出码 1 表示 Gate 1/2 有必须修；`todo` 可待补预览但发布预检拒绝。
+`render.py` 输出正文 HTML、独立浏览器预览和 `.meta.json`。预览中的工具栏、封面裁切、素材表及模拟标题/作者不会复制进正文。退出码 1 表示 Gate 1/2 有必须修事项；`todo` 允许预览但会被发布预检阻断。不要手改生成的 HTML。
 
-## 编辑智能
+## 六种主题
 
-六类型策略：新闻、分析、教程、人物、评论、长文。`argument_map` 定位主张/证据/边界候选，推导关系、反例回应、信息增量初始 `UNVERIFIED`，由编辑填写。标题承诺台账区分结构候选与语义兑现。`--against` 做事实字面保留检查，不做核真；`--ledger` 校验五列与位置。编辑 must 进入 Gate 2。
+`paper` 静纸、`letter` 暖信笺、`ink` 酌墨、`frost` 北霜、`bone` 素作、`folio` 特稿。主题差异来自网格、字体、章节、导语、重点、引文、数据、表格、列表、图片及阅读节奏，不只换颜色；推荐依据是内容关系与读者任务，可合理混合构图，不强制套用。参数唯一来源为 [`assets/themes.json`](assets/themes.json)。
 
-## 六种人格
+六类真实来源样稿与同稿六主题、去色后的结构对照由 `tests/visuals.py` 生成；截图只作审阅输入，不代表独立盲评或微信真机通过。
 
-paper 静纸／letter 暖信笺／ink 酌墨／frost 北霜／bone 素作／folio 特稿。差异落在网格、正文字体、导语、章节、引文、重点、数据、表格、列表、图片与图注，不只是颜色。参数唯一来源 `assets/themes.json`；概念与选择理由见 SKILL.md。开发样张在 `tests/fixtures.py::PERSONALITY_MD`，不进入运行时。
+## 编辑与交付边界
 
-## 移动端与证据
+六类策略覆盖新闻、分析、教程、人物、评论、长文。`--against` 比对数字、单位、日期精度、正负号、限定、链接与直接引语；它不是事实核真。新事实须回源，机器线索不代替语义判断。修改要留下位置、问题、动作、收益和保留检查。
 
-320／360／390／430px 四宽度截图、元素溢出、最小字号、中文每行字数、首屏可见字符、所有叶子文字对比、数值原子拆行检查。表格按320px判一次，放不下改记录卡；长数值data纵向降级；comparison默认纵向同宽，显式parallel才并列；sequence编号并入图注。浏览器通过不等于微信真机通过。
+四宽度检查覆盖 320/360/390/430px；确实放不下的表格降级为保留全部字段的记录卡，不缩字号。浏览器验证与微信真机验收分开记录。
 
-## 回归与评估
+## 测试与评估
 
 ```bash
 python3 tests/run.py
 python3 tests/editorial_eval.py --check-report evaluation/RESULTS.md
-pip install playwright pillow
+
+# 一次性安装截图评估依赖（另需系统安装 Noto CJK 字体）
+python3 -m pip install playwright pillow
 python3 -m playwright install --with-deps chromium
+
+# 运行浏览器评估
 python3 tests/run.py --shots --shoot examples/draft-handoff.md
 python3 tests/visuals.py
 ```
 
-当前回归：185 条打印断言 + 10 个 unittest 用例；V4 基线 163 条打印断言 + 10 个用例。六类真实来源评估覆盖商业分析、新闻、教程、人物、评论、长文；独立外部盲选、逐项第二来源核真、真实微信账号/真机仍为 `UNVERIFIED`。
+`tests/visuals.py` 对六篇真实来源样稿做四宽度浏览器截图，并把同一篇文章以六种主题渲染、去除颜色后比较结构/排版差异。评估输出位于被忽略的 `evaluation/visual-review/`。真实模型复跑、独立外部盲评、逐项第二来源核真和真实微信账号/真机未执行时，须标 `BLOCKED` 或 `UNVERIFIED`，不可伪造结果；当前状态见 [评估记录](evaluation/RESULTS.md)。
 
-## 发布与授权
+## 发布保护
 
 ```bash
 cp config.example.json config.json
 python3 scripts/publish.py --html 正文.html --meta 正文.meta.json --preflight
-python3 scripts/publish.py --html 正文.html --meta 正文.meta.json --evidence-dir 交付/微信证据
-# 仅本次明确授权：
-python3 scripts/publish.py --html 正文.html --meta 正文.meta.json --submit --confirm-title "逐字标题"
+python3 scripts/publish.py --html 正文.html --meta 正文.meta.json
+
+# 仅本次显式授权正式发布，标题必须逐字一致
+python3 scripts/publish.py --html 正文.html --meta 正文.meta.json \
+  --submit --confirm-title "逐字标题"
 ```
 
-默认止于草稿；config 不接受 `submit:true`。预检检查正文、源稿、素材、渲染版本、主题指纹与哈希。真实入口上传封面/正文图、建稿、严格回读核心字段；可选保存脱敏回读对照。后台退出重开、手机端样式/图片、封面裁切仍须单独验收。没有目标账号不得声称微信兼容或发布验证完成。详见 [references/publish.md](references/publish.md)。
+默认止于草稿。`config.json` 不接受持久发布授权；正式提交必须同时具有本次 `--submit` 和逐字匹配的 `--confirm-title`。凭证不进文章或仓库。预检、API 回读、后台重开、手机端样式与封面裁切是不同验收项；没有真实账号就不能声称微信兼容或发布已验证。详见 [`references/publish.md`](references/publish.md)。
 
-## 文件职责
+## V6 审计与处置摘要
 
-|路径|职责|
+| 发现（证据） | 处理 |
 |---|---|
-|`SKILL.md`|唯一编辑、视觉、事实与验收判断入口|
-|`assets/themes.json`|六人格参数单一来源|
-|`scripts/editorial.py`|类型策略、文本度量、承诺/论证工作单、事实字面、台账|
-|`scripts/render.py`|解析、组件、Gate 2、预览、meta、交付|
-|`scripts/check.py`|Gate 1 保守 HTML 检查|
-|`scripts/publish.py`|预检、素材、草稿回读、单次授权、脱敏证据|
-|`scripts/extract_docx.py`|Word 抽取与丢失阻断|
-|`scripts/safety.py`|路径边界、哈希、对比度|
-|`tests/`|合成回归、浏览器证据、开发评估工具|
-|`evaluation/`|六类真实来源原稿/优化稿、许可、台账、结果|
-|`references/`|素材、平台、发布边界（按需读取）|
-|`examples/`|可渲染交接示例|
-|`AUDIT.md`|V5 变更、删除/合并/保留账、实测与未验证项|
+| README 曾链接不存在的 `AUDIT.md`；文档与当前 V5 代码版本不一致 | 改为现有评估记录；统一版本为 V6 |
+| `evaluation/logs/` 存有旧运行日志和本机路径，不能复现当前状态 | 删除历史日志，不把截图/临时输出纳入运行时 |
+| 旧主题测试强制每个结构键都不同，容易奖励机械差异；主题截图未覆盖真实样稿和去色辨识 | 改为真实稿四宽度样张、同稿六主题与去色结构比较 |
+| `render.py` 较大，但解析、组件、安全检查和交付共享同一渲染契约；无清晰独立边界 | 保持单一运行时渲染器，不为拆分而加模块 |
+| 真实模型执行、独立盲评与微信真机无可调用环境 | 标为 `BLOCKED/UNVERIFIED`；不冒充测试结果 |
 
-[MIT](LICENSE.txt) © 2026 cpikeo。第三方评估摘录遵守各自许可，见 evaluation/README.md。
+运行时仅保留编辑规则、六主题参数、Markdown/Word 转换、渲染、安全与发布能力；回归/评估仍隔离在 `tests/`、`evaluation/`。详细机器结果在 [evaluation/RESULTS.md](evaluation/RESULTS.md)。
+
+[MIT](LICENSE.txt) © 2026 cpikeo。第三方评估摘录遵循各自许可，详见 [`evaluation/README.md`](evaluation/README.md)。

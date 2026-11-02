@@ -1,36 +1,36 @@
-# 真实来源编辑评估集
+# Evaluation data & visual review
 
-这套评估不训练渲染器，也不把审美换算成分数。它回答三个问题：改动能否追溯，事实／语气／限定是否保留，同一输入能否稳定复现。
+This directory separates development/evaluation assets from Skill runtime. The six paired Markdown cases are real-source excerpts, translations or public-domain text; they are not controlled outputs from this V6 model run.
 
-## 样本与权利
+## Sample provenance and rights
 
-|ID|类型|来源|文本权利与处理|
+| ID | Type | Source | Rights / treatment |
 |---|---|---|---|
-|business|商业分析|Our World in Data，*Do workers in richer countries work longer hours?*（2020-12-21，现已归档）|[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)；仓库保存评估用中文摘译|
-|news|新闻报道|中文维基新闻，微软裁员报道（2025-07-03）|[CC BY 4.0](https://zh.wikinews.org/wiki/Wikinews:版权信息)；保存评估摘录|
-|tutorial|技术教程|Python 3 教程，`range()`|[PSF License Version 2](https://docs.python.org/zh-cn/3/license.html)；保存评估摘录|
-|profile|人物故事|中文维基百科“屠呦呦”|[CC BY-SA 4.0](https://zh.wikipedia.org/wiki/Wikipedia:著作权信息)；摘录及其改编按同许可处理|
-|opinion|观点评论|梁启超《最苦与最乐》，维基文库校对文本|[公有领域标记](https://zh.wikisource.org/zh-hans/最苦與最樂)；保存评估摘录|
-|longform|深度长文|朱自清《背影》，维基文库校对文本|[公有领域标记](https://zh.wikisource.org/zh-hans/%E8%83%8C%E5%BD%B1)；仅分段不改字|
+| `business` | analysis | Our World in Data, *Do workers in richer countries work longer hours?* (2020-12-21; archived) | CC BY 4.0; Chinese evaluation excerpt/translation |
+| `news` | news | Chinese Wikinews, Microsoft layoffs (2025-07-03) | CC BY 4.0; evaluation excerpt |
+| `tutorial` | tutorial | Python 3 tutorial, `range()` | PSF License Version 2; documentation excerpt |
+| `profile` | profile | Chinese Wikipedia, Tu Youyou | CC BY-SA 4.0; adapted excerpt under same license |
+| `opinion` | opinion | Liang Qichao, “The Greatest Suffering and the Greatest Joy” | Public-domain-marked text; excerpt restructured without rewriting wording |
+| `longform` | longform | Zhu Ziqing, “背影” | Public-domain-marked text; paragraphs only resegmented |
 
-许可页于 2026-11-02 逐项复核；具体证据说明与精确来源 URL 写入 `cases.json`。仓库 MIT 许可不重新许可这些第三方摘录；引用或再发布时须遵守各自条款。
+Source URLs, publication status, adaptation and license evidence are recorded in `cases.json`. The repository's MIT license does not relicense these excerpts; follow each source's terms when reusing them. Metadata was last recorded as reviewed on 2026-11-02; this is not a claim of this turn's second-source fact-check.
 
-## 对照方法
+## What the deterministic evaluation proves
 
-1. `*.original.md` 是已发布来源的摘录或标明的中文摘译，不伪装成完整原文。
-2. `*.edited.md` 是面向公众号阅读场景的优化稿。每项改动在 `cases.json` 记录位置、问题、动作、可观察收益和保留条件；没有收益说明的改动会使评估失败。
-3. `preserve` 同时出现在原稿和优化稿；`edited_require` 必须在优化稿可见；`edited_forbid` 不得残留。
-4. 优化稿必须通过 Gate 1/2；相同输入重复渲染和编辑诊断必须得到相同结果。
-5. `RESULTS.md` 由脚本生成并以数据集 SHA-256 防止报告与样本漂移。
+`tests/editorial_eval.py` checks source/edited pairs, declared preservation tokens, edit ledgers, Gate 1/2, literal fact/qualifier/quote changes, repeated rendering and report freshness. It does **not** judge title promise semantically, argument quality, information gain, author voice, theme preference or factual truth.
+
+The current theme sample map is: `paper`–business analysis, `letter`–longform, `ink`–opinion, `frost`–news, `bone`–tutorial, `folio`–profile. `tests/visuals.py` renders these real-source samples at 320/360/390/430px and renders the *same business-analysis draft* under all six themes. A neutralized-color browser capture checks that typographic hierarchy, grid, component geometry and reading rhythm still differ; it is a structural regression signal, not an aesthetic score. The six article samples contain no embedded images, so browser image-load assertions are vacuous; asset paths, roles and upload safety are covered by separate synthetic regression fixtures, not editorial image-quality evaluation.
 
 ```bash
 python3 tests/editorial_eval.py --check-report evaluation/RESULTS.md
 python3 tests/visuals.py
 ```
 
-## 盲测
+Screenshot output is generated under the ignored `evaluation/visual-review/` directory and is not a runtime dependency or a committed test artifact.
 
-生成 A/B 稿时，答案 key 必须放在另一个目录：
+## Blind review and execution status
+
+Blind A/B packets can be created with the answer key in a separate directory:
 
 ```bash
 python3 tests/editorial_eval.py \
@@ -39,11 +39,9 @@ python3 tests/editorial_eval.py \
   --seed reviewer-01
 ```
 
-给读者的任务不是打“高级感分数”，而是逐项指出：
+The reviewer should identify which draft better fulfills its title, preserves facts and limits, improves logic and information gain, and reads more clearly; cite passages and allow “no preference.”
 
-- 哪一版更快兑现标题；证据在何处；限制是否还在。
-- 哪一版存在跳步、重复或事实／观点混写；引用具体段落。
-- 哪项改动损失了事实、作者语气或限定条件。
-- 两版都成立时可以判定“无需偏好”。
-
-**当前仓库没有独立外部读者盲选结果。** 脚本验证的是盲测包、改动台账和确定性不变量，不能把同一团队的自评冒充独立结论。逐项外部核真、真实账号草稿和手机端验收也单独标为未执行。
+- **Controlled real-model execution:** `BLOCKED` until a model runner and reproducible prompts/settings are available. Existing pairs are not represented as fresh model generations.
+- **Independent blind review:** `UNVERIFIED` until external readers submit results.
+- **Second-source fact-check:** `UNVERIFIED`; literal diff and stored provenance are not fact verification.
+- **Real WeChat account/device acceptance:** `UNVERIFIED` without authorized account and target devices.

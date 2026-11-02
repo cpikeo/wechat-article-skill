@@ -93,49 +93,32 @@ RENDER_CHECKS = (
 )
 
 
-# ---- 人格签名：决定一个主题是「编辑语言」还是「换色」----
-# 这些轴都由真实渲染器消费：导语 / 章节 / 小标题 / 引文 / 重点 / 转场 / 图片 / 数据 / 表格 / 列表。
-STRUCTURAL_AXES = ("lead", "heading", "h3", "quote", "peak", "divider", "image", "data", "table", "list")
-SIGNATURE = STRUCTURAL_AXES + ("display",)
-# V4：网格是人格的一部分（出入、段首缩进、行距、正文与图注字号），必须一起进入唯一性检查。
+# ---- 主题配置审计：验证可运行与可读性，不奖励无意义差异 ----
 GRID_KEYS = ("inset", "indent", "chapter_gap", "paragraph_gap", "body", "caption")
-COLOR_KEYS = ("text", "sub", "muted", "line", "field", "accent", "dark", "on_dark")
-TYPE_KEYS = ("heading_size", "heading_weight", "heading_leading", "lead_size", "lead_weight", "lead_leading", "quote_size", "h3_size", "data_size")
+TYPE_KEYS = ("heading_size", "heading_weight", "heading_leading", "lead_size", "lead_weight",
+             "lead_leading", "quote_size", "h3_size", "data_size")
+THEME_KEYS = ("name", "text", "sub", "muted", "line", "field", "accent", "dark", "on_dark",
+              "display", "leading", "radius", "toc_label", "grid", "lead", "heading", "h3",
+              "peak", "divider", "quote", "image", "data", "table", "list", "type", "body_font")
 
 
 def theme_audit():
-    """人格键必须完整且结构轴真实分开；不以配色差异代替构图差异。"""
-    from itertools import combinations
-    bad, sig = [], {}
-    if tuple(_r.THEMES) != ("paper", "letter", "ink", "frost", "bone", "folio"):
-        bad.append("主题必须固定为 paper / letter / ink / frost / bone / folio，不能增删或换序")
+    """六套配置应完整、可渲染、保证基本字号；不要求每个键都不同。"""
+    bad = []
+    expected = ("paper", "letter", "ink", "frost", "bone", "folio")
+    if tuple(_r.THEMES) != expected:
+        bad.append("主题必须固定为 paper / letter / ink / frost / bone / folio")
     for key, theme in _r.THEMES.items():
-        missing = [k for k in SIGNATURE + COLOR_KEYS
-                   + ("name", "leading", "radius", "toc_label", "type", "grid", "body_font") if k not in theme]
-        missing_grid = [k for k in GRID_KEYS if k not in theme.get("grid", {})]
-        if missing_grid:
-            bad.append(f"{key} 缺少网格键 {missing_grid}")
-        missing_type = [k for k in TYPE_KEYS if k not in theme.get("type", {})]
-        if missing or missing_type:
-            bad.append(f"{key} 缺少键 {missing + ['type.' + x for x in missing_type]}")
-        sig[key] = tuple(theme.get(axis) for axis in SIGNATURE)
-    # 每个结构轴都应有六个实际实现；否则至少有两人格在该维只剩颜色差。
-    for axis in STRUCTURAL_AXES:
-        values = [theme.get(axis) for theme in _r.THEMES.values()]
-        if len(set(values)) != len(values):
-            bad.append(f"结构轴 {axis} 存在重复：{values}")
-    # 网格：六套网格签名必须互不相同（否则只是换色），节奏轴要有真实的量级差异。
-    grids = [tuple(theme["grid"].get(k) for k in GRID_KEYS) for theme in _r.THEMES.values()]
-    if len(set(grids)) != len(grids):
-        bad.append(f"网格签名存在重复：{grids}")
-    for axis, least in (("body", 3), ("caption", 2), ("chapter_gap", 4), ("inset", 2)):
-        values = [theme["grid"].get(axis) for theme in _r.THEMES.values()]
-        if len(set(values)) < least:
-            bad.append(f"网格轴 {axis} 区分不足（{values}）")
-    for left, right in combinations(sorted(sig), 2):
-        differences = [axis for axis, a, b in zip(SIGNATURE, sig[left], sig[right]) if a != b]
-        if not differences:
-            bad.append(f"{left} 与 {right} 编辑语言参数完全重复")
+        missing = [name for name in THEME_KEYS if name not in theme]
+        missing_grid = [name for name in GRID_KEYS if name not in theme.get("grid", {})]
+        missing_type = [name for name in TYPE_KEYS if name not in theme.get("type", {})]
+        if missing or missing_grid or missing_type:
+            bad.append(f"{key} 配置不完整：{missing + ['grid.' + x for x in missing_grid] + ['type.' + x for x in missing_type]}")
+            continue
+        if theme["grid"]["body"] < 15 or theme["grid"]["caption"] < 12:
+            bad.append(f"{key} 正文/图注字号低于可读性底线 15/12px")
+        if theme["display"] not in ("sans", "serif") or theme["body_font"] not in ("sans", "serif"):
+            bad.append(f"{key} 字体角色必须为 sans 或 serif")
     return bad
 
 
@@ -1464,7 +1447,7 @@ def run_all(a):
         fails.append("质量基准")
 
     # themes.json 是所有人格共用的唯一来源：一个键写坏，选到它的人就整篇渲染不出来。
-    print("③ 人格系统（themes.json）：可渲染 · 不重复 · 键完整")
+    print("③ 人格系统（themes.json）：可渲染 · 配置完整 · 基础字号可读")
     sys.path.insert(0, SCRIPTS)
     import render as _r
     for key in _r.THEMES:
@@ -1481,7 +1464,7 @@ def run_all(a):
         for m in theme_bad:
             print(f"   FAIL · {m}")
     else:
-        print(f"   独立结构轴 · {len(_r.THEMES)} 套人格在导语/标题/引文/信息/图片/节奏键上完整且不重复")
+        print("   说明 · 结构辨识度由 tests/visuals.py 另行评估；本命令只验配置与渲染")
     ok, why = runtime_boundary_ok()
     print(f"   {'PASS' if ok else 'FAIL'} · {why}")
     if not ok:
@@ -1599,11 +1582,11 @@ def run_all(a):
         if not ok:
             fails.append("输入转换：" + label)
 
-    print("⑰ V5 真实缺陷回归（解析/事实限定/门禁/对比度/配置/回读/DOCX）")
-    for label, ok in v5_defect_checks():
+    print("⑰ V6 回归（解析/事实限定/门禁/对比度/配置/回读/DOCX）")
+    for label, ok in v6_defect_checks():
         print(f"   {'PASS' if ok else 'FAIL'} · {label}")
         if not ok:
-            fails.append("V5：" + label)
+            fails.append("V6：" + label)
 
     print("⑯ 交付包（--deliver 产物齐全且互相一致）")
     for label, ok in deliver_checks():
@@ -1622,7 +1605,7 @@ def run_all(a):
     return fails
 
 
-def v5_defect_checks():
+def v6_defect_checks():
     """只覆盖本轮实际复现的缺陷：解析、事实限定、门禁、对比度、DOCX、回读证据。"""
     import extract_docx, zipfile
     from editorial import compare_facts, facts, parse_ledger, locate, promise_ledger
