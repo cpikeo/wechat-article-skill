@@ -755,7 +755,7 @@ def delivery_defects_ok():
                 except ValueError:
                     test("真实入口预检阻断：" + label, token.call_count == 0)
         open(html, "w", encoding="utf-8").write(src)
-        with patch.object(pub, "get_stable_access_token", return_value="tok"), patch.object(pub, "check_draft_switch", return_value=True), patch.object(pub, "upload_thumb_material", return_value="THUMB"), patch.object(pub, "upload_content_image", return_value="https://mmbiz.qpic.cn/img"), patch.object(pub, "create_draft", return_value="DRAFT") as draft, patch.object(pub, "submit_publish") as submit:
+        with patch.object(pub, "get_stable_access_token", return_value="tok"), patch.object(pub, "check_draft_switch", return_value=True), patch.object(pub, "upload_thumb_material", return_value="THUMB"), patch.object(pub, "upload_content_image", return_value="https://mmbiz.qpic.cn/img"), patch.object(pub, "create_draft", return_value="DRAFT") as draft, patch.object(pub, "verify_draft", return_value=[]), patch.object(pub, "read_draft", return_value={}), patch.object(pub, "submit_publish") as submit:
             result = pub.publish_html_article("app", "secret", html, cover, "标题", material_cache=None)
             test("真实入口默认草稿且仅替换正文图", not submit.called and result["media_id"] == "DRAFT" and "https://mmbiz.qpic.cn/img" in draft.call_args.args[2])
         # 正式发布单次授权：config 不能持久授权；--submit 之外还须逐字确认标题；缺确认 0 网络。
@@ -778,7 +778,7 @@ def delivery_defects_ok():
                 test("确认标题不符被拦", False)
             except ValueError:
                 test("确认标题不符被拦", token.call_count == 0)
-        with patch.object(pub, "get_stable_access_token", return_value="tok"), patch.object(pub, "upload_thumb_material", return_value="THUMB"), patch.object(pub, "upload_content_image", return_value="https://mmbiz.qpic.cn/img"), patch.object(pub, "create_draft", return_value="DRAFT"), patch.object(pub, "submit_publish", return_value="PID") as submit, patch.object(pub, "poll_publish_status", return_value={"status": 0, "status_text": "ok", "article_urls": []}):
+        with patch.object(pub, "get_stable_access_token", return_value="tok"), patch.object(pub, "upload_thumb_material", return_value="THUMB"), patch.object(pub, "upload_content_image", return_value="https://mmbiz.qpic.cn/img"), patch.object(pub, "create_draft", return_value="DRAFT"), patch.object(pub, "verify_draft", return_value=[]), patch.object(pub, "read_draft", return_value={}), patch.object(pub, "submit_publish", return_value="PID") as submit, patch.object(pub, "poll_publish_status", return_value={"status": 0, "status_text": "ok", "article_urls": []}):
             pub.publish_html_article("app", "secret", html, cover, "标题", material_cache=None,
                                      do_submit=True, submit_confirm="标题")
             test("单次确认后才走到发布", submit.called)

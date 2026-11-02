@@ -9,7 +9,7 @@
 
 ## 配置与命令
 
-复制 `config.example.json` 为 config.json（已忽略），填写 AppID／AppSecret；不写进文章、不提交凭证。查找：`--config` > 当前目录 > Skill 根目录。文章字段：命令行 > meta > config兜底。预检无需凭证。
+复制 `config.example.json` 为 config.json（已忽略），填写 AppID／AppSecret；不写进文章、不提交凭证。推荐环境变量 `WECHAT_APPID` / `WECHAT_APPSECRET`，凭证优先级 CLI > 环境变量 > config；CLI 会暴露于进程列表或历史，避免使用。查找：`--config` > 当前目录 > Skill 根目录。文章字段：命令行 > meta > config兜底。预检无需凭证。
 
 ```bash
 python3 scripts/publish.py --html 文章.html --meta 文章.meta.json --preflight
@@ -22,8 +22,8 @@ python3 scripts/publish.py --check-publish-id 已返回的ID
 标题32字、作者16字、摘要120字；超限拒绝上行，不静默改标题。摘要未显式给定时 render 从导语／副题／首段生成，句末收口，须人工确认。author、title是原生字段，date仅预览模拟。source进入content_source_url，与正文事实来源不同。
 留言默认为开、仅粉丝默认关，是本工具默认而非已验证的所有账号编辑器行为；`--no-open-comment` / `--fans-only-comment` 覆盖。原创声明须后台处理。
 
-正文／封面相对路径按输出HTML目录解析。预检检查本地资源、字段、待补位及同名meta中的正文哈希／render错误；没有记录的外部合规HTML只可静态核验与建草稿，不能直接正式提交。哈希仅防陈旧稿，不证明事实与艺术验收。
-真实发布入口自动复用同一预检，然后获取token、传封面、传正文图、建草稿、可选提交并查询结果。失败或未完成不报告成功；查状态不重复建草稿。
+正文／封面必须位于输出 HTML 目录内；路径须为相对路径，不接受绝对路径、`..`、协议或符号链接越界。跨目录渲染时素材会复制，遇不同内容的同名文件拒绝覆盖。预检检查本地资源、字段、待补位及同名 meta 中的源稿、源/交付图片与封面和正文 SHA-256、render 错误；记录使用绝对源稿路径，迁移需重渲染，不要公开敏感路径。哈希不是签名；旧记录缺素材哈希时提示重渲染。没有记录的外部合规HTML只可静态核验与建草稿，不能直接正式提交。哈希仅防陈旧稿，不证明事实与艺术验收。
+真实发布入口自动复用同一预检，然后获取token、传封面、传正文图、建草稿、回读 title/content/thumb_media_id、可选提交并查询结果。严格回读不一致或回读失败时停止提交并显示已创建的 media_id，不自动重建。平台可能规范化 HTML，严格比较失败不一定是内容丢失，须后台核对；未比较的作者、摘要等字段及手机端仍需人工验收。CLI 本地 JSONL 记录操作阶段与 ID，不记录正文和凭证；妥善保管，避免泄漏运营信息。失败或未完成不报告成功；查状态不重复建草稿。
 
 ## 素材
 

@@ -21,12 +21,14 @@ import re
 import sys
 import time
 import uuid
+from datetime import datetime, timezone
 import urllib.request
 import urllib.error
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from render import api_title, img_size  # noqa: E402  标题断行标记的转换规则与图片尺寸读取单一来源在 render.py
 from check import check, image_sources  # noqa: E402
+from safety import local_path, sha256
 
 API_BASE = "https://api.weixin.qq.com/cgi-bin"
 
@@ -170,13 +172,12 @@ def rewrite_local_images(html, access_token, base_dir="."):
         src = H.unescape(next(v for v in (double, single, bare) if v is not None))
         if src.startswith("http://") or src.startswith("https://"):
             return match.group(0)
-        local_path = src if os.path.isabs(src) else os.path.join(base_dir, src)
-        if not os.path.isfile(local_path):
+        local_file = local_path(src, base_dir)
+        if not os.path.isfile(local_file):
             raise ValueError(f"正文图片不存在：{src}")
-        local_path = os.path.realpath(local_path)
-        if local_path not in uploaded:
-            uploaded[local_path] = upload_content_image(access_token, local_path)
-        wechat_url = uploaded[local_path]
+        if local_file not in uploaded:
+            uploaded[local_file] = upload_content_image(access_token, local_file)
+        wechat_url = uploaded[local_file]
         print(f"  已上传正文图片 {src} -> {wechat_url}")
         return f'{prefix}"{H.escape(wechat_url)}"'
 
@@ -306,6 +307,22 @@ def create_draft(access_token, title, content_html, thumb_media_id, author=None,
     return body["media_id"]
 
 
+def read_draft(access_token, media_id):
+    """Read an existing draft; never creates or retries a draft."""
+    return _post_json(f"{API_BASE}/draft/get?access_token={access_token}", {"media_id": media_id})
+
+
+def verify_draft(data, title, content, thumb_media_id):
+    items = data.get("news_item", []) if isinstance(data, dict) else []
+    if not items or not isinstance(items[0], dict):
+        raise ValueError("草稿回读缺少 news_item")
+    item = items[0]
+    mismatches = [name for name, expected in (("title", api_title(title)), ("content", content),
+                                               ("thumb_media_id", thumb_media_id))
+                  if item.get(name) != expected]
+    return mismatches
+
+
 # ---------- 5. 发布（须核对实际账号权限） ----------
 
 def submit_publish(access_token, media_id):
@@ -355,9 +372,9 @@ def resolve_cover(cover, html_path):
     meta.json 里的 cover 是 frontmatter 原值（相对 md），而发布命令常从仓库根执行——
     不解析就会 FileNotFoundError 崩在上传那一步。
     """
-    if not cover or os.path.isabs(cover):
+    if not cover:
         return cover
-    return os.path.join(os.path.dirname(os.path.abspath(html_path)), cover)
+    return local_path(cover, os.path.dirname(os.path.abspath(html_path)))
 
 
 def preflight(html_path, s):
@@ -365,13 +382,15 @@ def preflight(html_path, s):
 
     发布可靠性只能验到这一层——接口那边是否放行无法预演，但「发出去的东西对不对」必须能验。
     """
-    html = open(html_path, encoding="utf-8").read()
+    with open(html_path, encoding="utf-8") as f:
+        html = f.read()
     must, should = check(html)
     ok = not must
     # Consume the existing render sidecar: detect stale/failed generation, not factual truth.
     side_path = os.path.splitext(html_path)[0] + ".meta.json"
     if os.path.isfile(side_path):
-        side = json.load(open(side_path, encoding="utf-8"))
+        with open(side_path, encoding="utf-8") as f:
+            side = json.load(f)
         if not isinstance(side, dict):
             raise ValueError("meta 必须是JSON对象")
         if side.get("body_sha256") != hashlib.sha256(html.encode()).hexdigest() or side.get("render_errors") or side.get("pending_assets"):
@@ -386,7 +405,45 @@ def preflight(html_path, s):
         print("  必须改 · 正文仍有待补素材")
     base = os.path.dirname(os.path.abspath(html_path))
     local = image_sources(html)
-    miss = [u for u in local if not os.path.exists(u if os.path.isabs(u) else os.path.join(base, u))]
+    safe_local = []
+    for u in local:
+        try:
+            safe_local.append(local_path(u, base))
+        except ValueError as e:
+            ok = False
+            print("  必须改 ·", e)
+    miss = [u for u in safe_local if not os.path.isfile(u)]
+    if s["cover"]:
+        try:
+            # Callers pass the already resolved cover; it must stay within HTML root.
+            rel = os.path.relpath(s["cover"], base)
+            local_path(rel, base)
+        except ValueError as e:
+            ok = False
+            print("  必须改 · 封面路径越界", e)
+    if os.path.isfile(side_path) and side.get("integrity_version") == 1:
+        try:
+            source = side["source"]
+            if sha256(source["path"]) != source["sha256"]:
+                raise ValueError("源 Markdown 已变化")
+            assets = {item["path"]: item["sha256"] for item in side["assets"]}
+            cover_rel = os.path.relpath(s["cover"], base).replace(os.sep, "/") if s["cover"] else ""
+            required = set(local) | ({cover_rel} if cover_rel else set())
+            if set(assets) != required:
+                raise ValueError("素材清单与正文/封面不一致")
+            source_root = os.path.dirname(os.path.abspath(source["path"]))
+            for item in side["assets"]:
+                path, digest = item["path"], item["sha256"]
+                if sha256(local_path(path, base)) != digest or sha256(local_path(item["source_path"], source_root)) != item["source_sha256"] or digest != item["source_sha256"]:
+                    raise ValueError(f"素材已变化：{path}")
+        except (KeyError, TypeError, ValueError, OSError) as e:
+            ok = False
+            print("  必须改 · 一致性校验失败：", e)
+    elif os.path.isfile(side_path):
+        print("  注意 · 旧版记录缺少源稿和素材哈希，建议重渲染")
+        if s["submit"]:
+            ok = False
+            print("  必须改 · 正式提交前须用 V2 重渲染")
     print("预检（不调用接口）")
     for m in must:
         print("  必须改 ·", m)
@@ -417,7 +474,7 @@ def preflight(html_path, s):
             print("  必须改 · 封面不是可识别图片")
         print(f"  封面  {cover}" + (f" · {wh[0]}×{wh[1]}（{wh[0] / wh[1]:.2f}:1）· {kb}KB" if wh else f" · {kb}KB"))
     print(f"  正文图片  {len(local)} 张待上传" + (f" · ⚠ 缺失 {miss}" if miss else ""))
-    if miss or any(not img_size(os.path.join(base, u)) for u in local):
+    if miss or any(not img_size(u) for u in safe_local):
         ok = False
     print(f"  留言 {'开' if s['open_comment'] else '关'} · 仅粉丝 {'是' if s['fans_only'] else '否'}"
           f" · 建草稿后{'继续发布' if s['submit'] else '止步'}")
@@ -430,7 +487,8 @@ def preflight(html_path, s):
 def publish_html_article(appid, secret, html_path, cover_path, title, author=None, digest=None,
                          source_url=None, open_comment=True, fans_only=False,
                          material_cache=MATERIAL_CACHE_DEFAULT,
-                         do_submit=False, submit_confirm=None, poll_timeout=600, auto_enable_switch=False):
+                         do_submit=False, submit_confirm=None, poll_timeout=600, auto_enable_switch=False, audit=None):
+    audit = audit or (lambda event, **fields: None)
     if do_submit and api_title(submit_confirm or "") != api_title(title):
         raise ValueError(f"正式发布需要本次运行的单次确认：--confirm-title 必须与本次标题逐字一致"
                          f"（本次标题：{api_title(title)!r}）。没有持久授权这回事，每次发布都要重新确认")
@@ -438,6 +496,7 @@ def publish_html_article(appid, secret, html_path, cover_path, title, author=Non
                 "source": source_url, "open_comment": open_comment, "fans_only": fans_only, "submit": do_submit}
     if preflight(html_path, settings):
         raise ValueError("发布预检未通过：未调用微信接口")
+    audit("preflight_pass", body_sha256=sha256(html_path), submit=do_submit)
     print("[1/6] 获取 access_token …")
     token = get_stable_access_token(appid, secret)
 
@@ -470,8 +529,17 @@ def publish_html_article(appid, secret, html_path, cover_path, title, author=Non
                   "② token/appid/secret 无效；③ 账号缺草稿箱接口权限（后台「设置与开发 → 接口权限」）。"
                   "都排除仍报错，则该账号草稿箱路径走不通，回手动粘贴。", file=sys.stderr)
         raise
+    audit("draft_created", media_id=media_id)
     print(f"  草稿 media_id = {media_id}")
 
+    try:
+        differences = verify_draft(read_draft(token, media_id), title, html, thumb_media_id)
+    except Exception as e:
+        raise RuntimeError(f"草稿已创建 media_id={media_id}，回读失败；请先在后台核对，勿重复建稿：{type(e).__name__}") from None
+    if differences:
+        raise RuntimeError(f"草稿已创建 media_id={media_id}，回读字段不一致：{', '.join(differences)}；请检查，勿重复建稿")
+    audit("draft_readback_match", media_id=media_id)
+    print("  草稿 API 回读字段一致；仍需后台重新打开和手机验收。")
     if not do_submit:
         print("\n草稿已建好，未继续发布。请后台检查；不要为查询状态重新建稿。")
         return {"media_id": media_id, "publish_id": None, "article_urls": []}
@@ -485,6 +553,7 @@ def publish_html_article(appid, secret, html_path, cover_path, title, author=Non
                   "。请核对实际接口权限；草稿已保留，不要重复建稿。",
                   file=sys.stderr)
         raise
+    audit("publish_submitted", media_id=media_id, publish_id=publish_id)
     print(f"  publish_id = {publish_id}，开始轮询发布状态（这是异步任务，不会立刻返回文章链接）…")
 
     result = poll_publish_status(token, publish_id, timeout=poll_timeout)
@@ -531,8 +600,8 @@ def resolve_settings(args, side, cfg):
     """字段优先级：命令行 > --meta > config.json；开关类：命令行旗标 > config.json > 官方默认。
     空字符串视同未配置。凭证/开关的解析也只此一处，main 的早退分支复用。"""
     return {
-        "appid": args.appid or cfg.get("appid") or None,
-        "secret": args.secret or cfg.get("secret") or None,
+        "appid": args.appid or os.getenv("WECHAT_APPID") or cfg.get("appid") or None,
+        "secret": args.secret or os.getenv("WECHAT_APPSECRET") or cfg.get("secret") or None,
         "title": api_title(args.title or side.get("api_title") or side.get("title") or ""),
         "cover": args.cover or side.get("cover") or None,
         "author": args.author if args.author is not None else (side.get("author") or cfg.get("author") or None),
@@ -582,6 +651,7 @@ def main():
                     help="--list-materials 的素材类型，默认 image")
     ap.add_argument("--delete-material", default=None, metavar="MEDIA_ID",
                     help="只删除指定永久素材（不可恢复；先用 --list-materials 核对 media_id）")
+    ap.add_argument("--audit-log", default=".wechat_publish_audit.jsonl", help="本地操作审计 JSONL，不含凭证和正文；默认当前目录")
     ap.add_argument("--no-reuse-cover", action="store_true", help="不复用缓存的永久素材，封面强制重传")
     ap.add_argument("--material-cache", default=MATERIAL_CACHE_DEFAULT,
                     help=f"封面复用映射文件（sha256→media_id），默认 {MATERIAL_CACHE_DEFAULT}")
@@ -593,6 +663,8 @@ def main():
         ap.error(str(e))
     side = {}
     if args.meta:
+        if args.html and os.path.realpath(args.meta) != os.path.realpath(os.path.splitext(args.html)[0] + ".meta.json"):
+            ap.error("--meta 必须是正文对应的同名 sidecar，避免字段与验收记录错配")
         with open(args.meta, encoding="utf-8") as f:
             side = json.load(f)
         if not isinstance(side, dict):
@@ -651,7 +723,13 @@ def main():
     if missing:
         ap.error(f"缺少必填参数：{', '.join(missing)}（--cover/--title 可由 --meta 提供）")
 
+    def audit(event, **fields):
+        record = {"time": datetime.now(timezone.utc).isoformat(), "event": event, **fields}
+        fd = os.open(args.audit_log, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        with os.fdopen(fd, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
     try:
+        audit("attempt", submit=s["submit"])
         publish_html_article(
             appid,
             secret,
@@ -668,9 +746,17 @@ def main():
             submit_confirm=args.confirm_title,
             poll_timeout=args.poll_timeout,
             auto_enable_switch=args.enable_draft_switch,
+            audit=audit,
         )
+        audit("completed")
     except (WeChatAPIError, ValueError, OSError, RuntimeError) as e:
-        print(f"\n❌ {e}", file=sys.stderr)
+        try:
+            audit("failed", error_type=type(e).__name__)
+        except OSError:
+            pass
+        message = str(e).replace(secret, "[REDACTED]") if secret else str(e)
+        message = re.sub(r"(?i)(access_token=)[^&\s\"']+", r"\1[REDACTED]", message)
+        print(f"\n❌ {message}", file=sys.stderr)
         sys.exit(1)
 
 

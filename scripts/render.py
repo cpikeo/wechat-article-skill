@@ -18,10 +18,12 @@ import math
 import os
 import re
 import struct
+import shutil
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from check import check  # noqa: E402
+from safety import local_path, sha256, contrast
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 THEMES = json.load(open(os.path.join(HERE, "..", "assets", "themes.json"), encoding="utf-8"))
@@ -413,6 +415,8 @@ class R:
                     + self.p(self.leaf(alt or "此处插入图片"), SMALL, t["sub"], "margin-top:8px;")
                     + (self.p(self.leaf(f"职责：{role}"), MICRO, t["muted"], "margin-top:4px;") if role else "")
                     + "</section>")
+        parts = (role or "").split()
+        mode = parts[1].lower() if len(parts) > 1 else ""
         treat = t.get("image", "flush")
         extra, wrap = "", ""
         if treat == "soft":
@@ -421,6 +425,19 @@ class R:
             extra = f"border:1px solid {t['line']};"
         elif treat == "mat":
             wrap = f"padding:12px 12px 10px;background:{t['field']};"   # 器物台纸：图与说明同在一整块底上
+        # Mode affects display, never crops, combines or invents image content.
+        if mode in ("hero", "full-width"):
+            extra += "width:100%;"
+        elif mode == "inset":
+            wrap += "margin-left:10%;margin-right:10%;"
+        elif mode == "plate":
+            wrap += f"padding:12px;background:{t['field']};"
+        elif mode == "detail":
+            wrap += "margin-left:5%;margin-right:5%;"
+        elif mode in ("sequence", "comparison"):
+            wrap += f"border-top:1px solid {t['line']};padding-top:8px;"
+        elif mode == "evidence":
+            wrap += f"border-left:2px solid {t['accent']};padding-left:12px;"
         cap = ("GIF · " if src.lower().endswith(".gif") else "") + (alt or "")
         cap_size = SMALL if role0 in FACT else MICRO
         cap_color = t["sub"] if role0 in FACT else t["muted"]
@@ -557,7 +574,7 @@ def peak_text(b):
 
 
 def resolve(src, base):
-    return src if os.path.isabs(src) else os.path.join(base, src)
+    return local_path(src, base)
 
 
 def first_screen(meta, blocks):
@@ -580,6 +597,9 @@ def compose_gate(meta, blocks, base="."):
         role0 = next(iter(role.split()), "")
         if not role0:
             must.append("图片没有声明职责")
+        tokens = role.split()
+        if len(tokens) > 1 and tokens[1].lower() not in {"hero", "full-width", "inset", "plate", "sequence", "comparison", "detail", "evidence"}:
+            should.append(f"图片表达方式未识别：{tokens[1]}；按主题默认处理")
         if role0 in FACT and not (alt or "").strip():
             must.append("证据类图必须写清出处 / 口径 / 时间；解释图也需说明")
         if not src or TODO.match(src):
@@ -933,14 +953,28 @@ def main():
     if not a.md:
         ap.error("需要一个 markdown 文件，或使用 --specimen")
     base = os.path.dirname(os.path.abspath(a.md))
-    key, meta, blocks, body = render(open(a.md, encoding="utf-8").read(), a.theme)
+    with open(a.md, encoding="utf-8") as f:
+        source_text = f.read()
+    key, meta, blocks, body = render(source_text, a.theme)
+    # Reject escapes before any preview, copying or generated output is written.
+    for src in [meta.get("cover", "")] + [b[1] for k, b in blocks if k == "img"]:
+        if src and not TODO.match(src):
+            local_path(src, base)
     out = a.out or f"{os.path.splitext(a.md)[0]}_{key}.html"
     os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
     out_base = os.path.dirname(os.path.abspath(out))
     def output_src(src):
         if not src or TODO.match(src) or re.match(r"^(?:[a-z][a-z0-9+.-]*:|//)", src, re.I):
             return src
-        return os.path.relpath(resolve(src, base), out_base).replace(os.sep, "/")
+        original = resolve(src, base)
+        target = local_path(src, out_base)
+        if os.path.isfile(original) and os.path.realpath(original) != os.path.realpath(target):
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            if os.path.exists(target) and sha256(target) != sha256(original):
+                raise ValueError(f"输出素材冲突，拒绝覆盖：{src}")
+            if not os.path.exists(target):
+                shutil.copyfile(original, target)
+        return src
     body = re.sub(r'(<img\b[^>]*src=")([^"]+)(")',
                   lambda m: m[1] + H.escape(output_src(H.unescape(m[2]))) + m[3], body)
     open(out, "w", encoding="utf-8").write(body)
@@ -964,6 +998,11 @@ def main():
     cover = (meta.get("cover") or "").strip()
     m1, s1 = check(body)
     m2, s2 = compose_gate(meta, blocks, base)
+    palette = THEMES[key]
+    for fg, bg in (("text", "#FFFFFF"), ("sub", "#FFFFFF"), ("muted", "#FFFFFF"), ("text", palette["field"]), ("on_dark", palette["dark"])):
+        ratio = contrast(palette[fg], bg)
+        if ratio < 4.5:
+            s2.append(f"色彩对比提示：{fg} / {bg} 为 {ratio:.2f}:1；核对真实使用位置与背景")
     side = {
         "title": meta.get("title", ""),
         "api_title": api_title(meta.get("title", "")),
@@ -972,6 +1011,10 @@ def main():
         "cover": "" if (not cover or TODO.match(cover)) else output_src(cover),
         "source_url": meta.get("source", ""),
         "theme": key,
+        "decision": {"article_type": meta.get("article_type", ""), "composition": meta.get("composition", ""), "asset_strategy": meta.get("asset_strategy", ""), "rationale": meta.get("design_rationale", "")},
+        "integrity_version": 1,
+        "source": {"path": os.path.abspath(a.md), "sha256": sha256(a.md)},
+        "assets": [{"path": src, "sha256": sha256(local_path(src, out_base)), "source_path": src, "source_sha256": sha256(local_path(src, base))} for src in sorted(set([output_src(b[1]) for k, b in blocks if k == "img" and b[1] and not TODO.match(b[1])] + ([output_src(cover)] if cover and not TODO.match(cover) else []))) if os.path.isfile(local_path(src, out_base))],
         "body_sha256": hashlib.sha256(body.encode()).hexdigest(),
         "render_errors": m1 + m2,
         "pending_assets": any(not b[1] or TODO.match(b[1]) for k, b in blocks if k == "img"),

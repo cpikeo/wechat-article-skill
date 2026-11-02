@@ -3,3 +3,5 @@ __pycache__/
 assets/shots/
 .wechat_material_cache.json
 config.json
+
+.wechat_publish_audit.jsonl
