@@ -32,7 +32,7 @@ SERIF = "'Songti SC','STSong','SimSun','Noto Serif CJK SC',serif"
 MONO = "'SF Mono',Menlo,Consolas,monospace"
 CJK = "\u4e00-\u9fff\u3400-\u4dbf"
 # 默认阅读字号，非必须遵守的审美配额
-MICRO, SMALL, BODY, LEAD, DISPLAY, TITLE = 12, 14, 16, 18, 20, 24
+MICRO, SMALL, BODY, LEAD, DISPLAY, TITLE = 13, 14, 16, 18, 20, 24
 
 # 正文视觉职责（封面单独由 frontmatter 承担）。说不出职责 → 删。
 ROLES = {"锚点", "解释", "证据", "对比", "结构", "场景", "隐喻", "停顿", "数据",
@@ -156,6 +156,10 @@ def parse(md):
             blocks.append(("table", rows))
         elif not s:
             flush()
+        elif re.match(r"#{4,6} ", s):
+            raise ValueError(f"第 {i + 1} 行：仅支持三级标题；请显式重组层级")
+        elif re.search(r"!\[.*?\]\(", s):
+            raise ValueError(f"第 {i + 1} 行：图片必须独占一行，不能静默转为文字")
         else:
             para.append(s)
         i += 1
@@ -206,6 +210,7 @@ def img_size(path):
 class R:
     def __init__(self, t, density):
         self.t = t
+        self.type = t["type"]
         self.k = {"dense": 0.8, "airy": 1.2}.get(density, 1.0)
         self.font = SERIF if t["display"] == "serif" else SANS
 
@@ -233,8 +238,10 @@ class R:
             elif strike:
                 out.append(f'<span style="text-decoration:line-through;color:{t["muted"]};">{self.leaf(strike)}</span>')
             else:
-                # [短名](地址) 只显示短名：来源短写到可核对为止，长地址不进正文（要地址可见就写裸地址）。
-                out.append(f'<span style="border-bottom:1px solid {t["line"]};">{self.leaf(ltext)}</span>')
+                # Preserve semantic links; client clickability is a separate acceptance gate.
+                if not re.match(r"^https?://[^\s]+$", url, re.I):
+                    raise ValueError(f"链接协议不支持：{url}；仅允许 http/https")
+                out.append(f'<a href="{H.escape(url, quote=True)}" style="color:{t["text"]};text-decoration:underline;">{self.leaf(ltext)}</a>')
             pos = m.end()
         if pos < len(s):
             out.append(self.leaf(s[pos:]))
@@ -267,15 +274,15 @@ class R:
             mark = f'<span style="font-size:{SMALL}px;color:{t["muted"]};font-weight:500;">{self.leaf(f"{n:02d}　")}</span>'
         else:
             mark = ""
-        return f'<section style="margin:{self.g(32)}px 0 {self.g(14)}px;">' + self.p(
-            mark + self.inline(text), DISPLAY, extra=f"font-weight:600;line-height:1.5;font-family:{self.font};") + "</section>"
+        return f'<section style="margin:{self.g(self.type["chapter_gap"])}px 0 {self.g(14)}px;">' + self.p(
+            mark + self.inline(text), self.type["heading_size"], extra=f"font-weight:{self.type['heading_weight']};line-height:{self.type['heading_leading']};font-family:{self.font};") + "</section>"
 
     def h3(self, text):
         return f'<section style="margin:{self.g(24)}px 0 {self.g(10)}px;">' + \
             self.p(self.inline(text), BODY, self.t["text"], f"font-weight:700;font-family:{self.font};") + "</section>"
 
     def para(self, text):
-        return f'<section style="margin:0 0 {self.g(20)}px;">' + \
+        return f'<section style="margin:0 0 {self.g(self.type["paragraph_gap"])}px;">' + \
             self.p(self.inline(text), extra="text-align:left;") + "</section>"
 
     def quote(self, text, src, weight):
@@ -372,12 +379,14 @@ class R:
 
     def table(self, rows, below=None):
         t, out = self.t, []
+        if not rows or any(len(row) != len(rows[0]) for row in rows):
+            raise ValueError("表格行列数不一致，不能对齐数据")
         widths = col_widths(rows)
         for i, cells in enumerate(rows):
             tag = "th" if i == 0 else "td"
             out.append("<tr>" + "".join(
                 f'<{tag} style="width:{widths[j]:.6g}%;padding:10px 6px;vertical-align:top;'
-                f'text-align:left;border-bottom:1px solid {t["muted"] if i == 0 else t["line"]};font-weight:{600 if i == 0 else 400};">'
+                f'overflow-wrap:anywhere;word-break:normal;text-align:left;border-bottom:1px solid {t["muted"] if i == 0 else t["line"]};font-weight:{600 if i == 0 else 400};">'
                 + self.p(self.inline(c), SMALL, t["sub"] if i == 0 else t["text"], "line-height:1.75;"
                          + ("white-space:nowrap;" if NUMERIC.fullmatch(c) else ""))
                 + f'</{tag}>' for j, c in enumerate(cells)) + "</tr>")
@@ -436,7 +445,7 @@ class R:
             wrap += "margin-left:5%;margin-right:5%;"
         elif mode in ("sequence", "comparison"):
             wrap += f"border-top:1px solid {t['line']};padding-top:8px;"
-        elif mode == "evidence":
+        elif mode in ("evidence", "explainer", "data"):
             wrap += f"border-left:2px solid {t['accent']};padding-left:12px;"
         cap = ("GIF · " if src.lower().endswith(".gif") else "") + (alt or "")
         cap_size = SMALL if role0 in FACT else MICRO
@@ -597,8 +606,18 @@ def compose_gate(meta, blocks, base="."):
         role0 = next(iter(role.split()), "")
         if not role0:
             must.append("图片没有声明职责")
+        elif role0 not in ROLES:
+            must.append(f"图片职责未识别：{role0}")
+        if len(role.split()) > 1 and role.split()[1] in ("sequence", "comparison"):
+            mode = role.split()[1]
+            neighbors = [blocks[j][1] for j in (idx - 1, idx + 1)
+                         if 0 <= j < len(blocks) and blocks[j][0] == "img"]
+            if not any(mode in (b[2] or "").split()[1:] for b in neighbors):
+                must.append(f"图片 {src}：{mode} 需要相邻同组图片；单图请改表达方式")
+            if not alt:
+                must.append(f"图片 {src}：{mode} 必须在图注写明顺序或比较对象与口径")
         tokens = role.split()
-        if len(tokens) > 1 and tokens[1].lower() not in {"hero", "full-width", "inset", "plate", "sequence", "comparison", "detail", "evidence"}:
+        if len(tokens) > 1 and tokens[1].lower() not in {"hero", "full-width", "inset", "plate", "sequence", "comparison", "detail", "evidence", "editorial", "explainer", "data"}:
             should.append(f"图片表达方式未识别：{tokens[1]}；按主题默认处理")
         if role0 in FACT and not (alt or "").strip():
             must.append("证据类图必须写清出处 / 口径 / 时间；解释图也需说明")
@@ -713,6 +732,29 @@ def compose_gate(meta, blocks, base="."):
     return must, should
 
 
+def editorial_review(meta, blocks):
+    """Traceable editorial prompts, not truth or aesthetic scores; never rewrite source."""
+    issues, seen = [], {}
+    for index, (kind, value) in enumerate(blocks, 1):
+        text = value if kind in ("p", "h2", "h3") else ""
+        if not text:
+            continue
+        normalized = re.sub(r"\s+", "", plain(text))
+        if normalized in seen:
+            issues.append({"block": index, "action": "合并或删除", "reason": f"与块 {seen[normalized]} 完全重复"})
+        seen[normalized] = index
+        if kind == "p" and len(normalized) > 260:
+            issues.append({"block": index, "action": "检查语义断点", "reason": "长段可能压低移动端阅读节奏；不按字数机械拆分"})
+        if kind == "p" and re.search(r"\d+(?:\.\d+)?(?:%|％|亿元|万人|倍)", text):
+            nearby = blocks[max(0, index-2):index+1]
+            if not any(k == "note" for k, _ in nearby) and not re.search(r"https?://", text):
+                issues.append({"block": index, "action": "核查数字", "reason": "附近未见来源 note 或链接；补原始依据、口径与日期，或标明估算/预测"})
+    return {"brief": {k: meta.get(k, "") for k in ("audience", "reading_context", "purpose", "thesis")},
+            "missing_brief": [k for k in ("audience", "reading_context", "purpose", "thesis") if not meta.get(k)],
+            "issues": issues, "fact_verification": "not_performed",
+            "visual_acceptance": "pending", "wechat_acceptance": "not_tested"}
+
+
 def evidence(meta, blocks, base="."):
     """只报告需对照的结构/资产与数据状态，不推测阅读质量。"""
     kinds = [k for k, _ in blocks]
@@ -744,7 +786,7 @@ button{{border:0;background:#1F1F1F;color:#fff;padding:8px 16px;border-radius:6p
 .as{{margin-top:14px;padding-top:12px;border-top:1px solid #EFEDE9}}
 .as img{{display:block;width:100%;background:#F0EEE9}}
 .hint{{margin:16px 0 0;font-size:12px;line-height:1.7;color:#746F66}}</style></head>
-<body><div class="bar"><span>{theme} · 390px</span><button onclick="cp(this)">复制正文（图片另传）</button></div>
+<body><div class="bar"><span>{theme} · 移动预览</span><button onclick="cp(this)">复制正文（图片另传）</button></div>
 <div class="phone">{native}<div id="c">{body}</div></div>{cover}{assets}
 <script>function cp(b){{var c=document.getElementById('c'), r=document.createRange();r.selectNodeContents(c);
 var s=getSelection();s.removeAllRanges();s.addRange(r);
@@ -952,6 +994,8 @@ def main():
         return
     if not a.md:
         ap.error("需要一个 markdown 文件，或使用 --specimen")
+    if os.path.splitext(a.md)[1].lower() not in (".md", ".markdown", ".txt"):
+        ap.error("仅支持 UTF-8 Markdown/纯文本；DOCX 请先用 extract_docx.py 转换")
     base = os.path.dirname(os.path.abspath(a.md))
     with open(a.md, encoding="utf-8") as f:
         source_text = f.read()
@@ -1012,6 +1056,7 @@ def main():
         "source_url": meta.get("source", ""),
         "theme": key,
         "decision": {"article_type": meta.get("article_type", ""), "composition": meta.get("composition", ""), "asset_strategy": meta.get("asset_strategy", ""), "rationale": meta.get("design_rationale", "")},
+        "editorial_review": editorial_review(meta, blocks),
         "integrity_version": 1,
         "source": {"path": os.path.abspath(a.md), "sha256": sha256(a.md)},
         "assets": [{"path": src, "sha256": sha256(local_path(src, out_base)), "source_path": src, "source_sha256": sha256(local_path(src, base))} for src in sorted(set([output_src(b[1]) for k, b in blocks if k == "img" and b[1] and not TODO.match(b[1])] + ([output_src(cover)] if cover and not TODO.match(cover) else []))) if os.path.isfile(local_path(src, out_base))],
@@ -1022,6 +1067,9 @@ def main():
     meta_path = os.path.splitext(out)[0] + ".meta.json"
     with open(meta_path, "w", encoding="utf-8") as f:
         json.dump(side, f, ensure_ascii=False, indent=2)
+    review = side["editorial_review"]
+    for issue in review["issues"]:
+        print(f"编辑提示 · 块 {issue['block']} · {issue['action']}：{issue['reason']}")
     print(f"{THEMES[key]['name']} → {out}\n预览 → {prev}\n发布字段 → {meta_path}（publish.py --meta 直接消费）\n")
     print("\nGate 3 证据（可核对的都摆在这里；结论与艺术判断由通读的人 / 视觉模型给）")
     for line in evidence(meta, blocks, base):

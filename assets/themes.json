@@ -18,7 +18,14 @@
     "divider": "dots",
     "quote": "plain",
     "image": "flush",
-    "seal": ""
+    "seal": "",
+    "type": {
+      "heading_size": 20,
+      "heading_weight": 600,
+      "heading_leading": 1.5,
+      "chapter_gap": 32,
+      "paragraph_gap": 20
+    }
   },
   "letter": {
     "name": "暖信笺 Warm Letter",
@@ -39,7 +46,14 @@
     "divider": "rule",
     "quote": "voice",
     "image": "soft",
-    "seal": ""
+    "seal": "",
+    "type": {
+      "heading_size": 21,
+      "heading_weight": 500,
+      "heading_leading": 1.6,
+      "chapter_gap": 38,
+      "paragraph_gap": 22
+    }
   },
   "ink": {
     "name": "酌墨 Wine Ink",
@@ -60,7 +74,14 @@
     "divider": "seal",
     "quote": "serif",
     "image": "line",
-    "seal": "酌"
+    "seal": "酌",
+    "type": {
+      "heading_size": 22,
+      "heading_weight": 700,
+      "heading_leading": 1.5,
+      "chapter_gap": 40,
+      "paragraph_gap": 22
+    }
   },
   "frost": {
     "name": "北霜 North Frost",
@@ -81,7 +102,14 @@
     "divider": "hairline",
     "quote": "plain",
     "image": "flush",
-    "seal": ""
+    "seal": "",
+    "type": {
+      "heading_size": 19,
+      "heading_weight": 700,
+      "heading_leading": 1.45,
+      "chapter_gap": 28,
+      "paragraph_gap": 18
+    }
   },
   "bone": {
     "name": "素作 Atelier Bone",
@@ -102,7 +130,14 @@
     "divider": "rule",
     "quote": "serif",
     "image": "mat",
-    "seal": ""
+    "seal": "",
+    "type": {
+      "heading_size": 22,
+      "heading_weight": 500,
+      "heading_leading": 1.65,
+      "chapter_gap": 44,
+      "paragraph_gap": 24
+    }
   },
   "folio": {
     "name": "特稿 Feature Folio",
@@ -123,6 +158,13 @@
     "divider": "dots",
     "quote": "plain",
     "image": "line",
-    "seal": ""
+    "seal": "",
+    "type": {
+      "heading_size": 24,
+      "heading_weight": 700,
+      "heading_leading": 1.35,
+      "chapter_gap": 36,
+      "paragraph_gap": 20
+    }
   }
 }

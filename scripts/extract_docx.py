@@ -9,7 +9,7 @@
     # 内嵌图片解包到 输出.md 同目录的 images/ 下，md 里用相对路径引用
 
 退出码：0 成功；1 失败（文件不存在 / 不是合法 docx）。
-表格转成 Markdown 表格（合并单元格按普通格处理）；文本框等取不到的结构被跳过。
+普通表格转成 Markdown；合并单元格、文本框等不能保真的结构定位报错，不静默跳过。
 抽完只是素材，不是成稿：图片必须补职责（![说明](路径 "职责")），文字还要走一遍 EDIT。
 """
 
@@ -57,9 +57,13 @@ def load_rels(z):
     return rels
 
 
-def para_text(p):
+def para_text(p, links=None):
     """段内 run → 行内 Markdown（粗体→**、下划线→<u>）。"""
+    links = links or {}
     out = []
+    # Map runs to enclosing hyperlink; preserve target without flattening semantics.
+    run_links = {id(run): links.get(h.get(f"{R}id"), "")
+                 for h in p.iter(f"{W}hyperlink") for run in h.iter(f"{W}r")}
     for r_el in p.iter(f"{W}r"):
         rpr = r_el.find(f"{W}rPr")
         bold = rpr is not None and rpr.find(f"{W}b") is not None \
@@ -72,6 +76,9 @@ def para_text(p):
             text = f"**{text}**"
         if ul:
             text = f"<u>{text}</u>"
+        url = run_links.get(id(r_el))
+        if url:
+            text = f"[{text}]({url})"
         out.append(text)
     s = "".join(out)
     return re.sub(r"\*\*\*\*", "", s)  # 相邻粗体 run 合并的空标记
@@ -80,15 +87,25 @@ def para_text(p):
 def extract(docx_path, out_md):
     try:
         z = zipfile.ZipFile(docx_path)
+        if len(z.infolist()) > 10000 or sum(i.file_size for i in z.infolist()) > 100 * 1024 * 1024:
+            raise ValueError("DOCX 解压内容超过 100MB 或 10000 项限制")
         doc = ET.fromstring(z.read("word/document.xml"))
-    except (OSError, zipfile.BadZipFile, KeyError, ET.ParseError) as e:
+    except (OSError, ValueError, zipfile.BadZipFile, KeyError, ET.ParseError) as e:
         print(f"✗ 不是合法 docx：{e}", file=sys.stderr)
         return 1
 
     try:
         heading_of = load_styles(z)
         media_of = load_rels(z)
-    except ET.ParseError as e:
+        links = {}
+        if "word/_rels/document.xml.rels" in z.namelist():
+            for rel in ET.fromstring(z.read("word/_rels/document.xml.rels")):
+                if rel.get("Type", "").endswith("/hyperlink"):
+                    target = rel.get("Target", "")
+                    if not re.match(r"^https?://[^\s]+$", target):
+                        raise ValueError(f"不支持的超链接：{target}")
+                    links[rel.get("Id")] = target.replace("(", "%28").replace(")", "%29")
+    except (ET.ParseError, ValueError) as e:
         z.close()
         print(f"✗ docx XML无效：{e}", file=sys.stderr)
         return 1
@@ -101,14 +118,43 @@ def extract(docx_path, out_md):
         print("✗ docx 缺少正文body", file=sys.stderr)
         z.close()
         return 1
+    # Reject lossy structures before writing any output; paragraph index locates the problem.
+    problems = []
+    unsupported = {"txbxContent", "altChunk", "footnoteReference", "endnoteReference",
+                   "gridSpan", "vMerge", "ins", "del", "fldChar", "chart", "diagram", "pict", "object", "oMath", "sdt"}
+    for index, el in enumerate(body, 1):
+        tags = {node.tag.split("}")[-1] for node in el.iter()}
+        bad = sorted(tags & unsupported)
+        if el.tag == f"{W}tbl" and any(True for tc in el.iter(f"{W}tc") for _ in tc.iter(f"{A}blip")):
+            bad.append("表格内图片")
+        if len(list(el.iter(f"{W}tbl"))) > (1 if el.tag == f"{W}tbl" else 0):
+            bad.append("嵌套表格")
+        if bad:
+            problems.append(f"正文块 {index}：{', '.join(bad)}")
+        if el.tag not in {f"{W}p", f"{W}tbl", f"{W}sectPr"}:
+            problems.append(f"正文块 {index}：不支持的顶层结构 {el.tag}")
+        # Tables may also contain hyperlinks; validate all descendants.
+        for h in el.iter(f"{W}hyperlink"):
+            if h.get(f"{R}id") not in links:
+                problems.append(f"正文块 {index}：内部锚点或缺失的链接关系")
+        for blip in el.iter(f"{A}blip"):
+            if blip.get(f"{R}embed") not in media_of or media_of.get(blip.get(f"{R}embed")) not in z.namelist():
+                problems.append(f"正文块 {index}：外链图片或缺失素材关系")
+    if problems:
+        z.close()
+        print("✗ 转换会丢失语义，未写出成稿；请先在 Word 展平或另附材料：\n" + "\n".join(problems), file=sys.stderr)
+        return 1
+    auxiliary = [name for name in z.namelist() if re.match(r"word/(?:header|footer|comments|footnotes|endnotes).*\.xml$", name)]
+    if auxiliary:
+        print("  注意：仅提取正文；以下附件内容须人工核对：" + ", ".join(auxiliary), file=sys.stderr)
     os.makedirs(out_dir, exist_ok=True)
     for el in body:
         tag = el.tag
         if tag == f"{W}tbl":
-            # 表格 → Markdown 表格，保住行列结构（合并单元格按普通格处理）
+            # 普通表格保住行列；复杂表格已在写出前拦截
             rows = []
             for tr in el.findall(f"{W}tr"):
-                cells = ["".join(t.text or "" for t in tc.iter(f"{W}t"))
+                cells = [" / ".join(para_text(p, links) for p in tc.findall(f"{W}p"))
                          .strip().replace("|", "\\|") or " "
                          for tc in tr.findall(f"{W}tc")]
                 rows.append("| " + " | ".join(cells) + " |")
@@ -124,6 +170,8 @@ def extract(docx_path, out_md):
             continue
         p = el
         # 图片
+        if any(True for _ in p.iter(f"{A}blip")) and para_text(p, links).strip():
+            print("  注意：图文混排段归一为图片后接文字，请核对位置", file=sys.stderr)
         for blip in p.iter(f"{A}blip"):
             rid = blip.get(f"{R}embed")
             src = media_of.get(rid)
@@ -136,7 +184,7 @@ def extract(docx_path, out_md):
                 f.write(z.read(src))
             lines.append(f"![](images/{fname})")
             lines.append("")
-        text = para_text(p).strip()
+        text = para_text(p, links).strip()
         if not text:
             continue
         ppr = p.find(f"{W}pPr")
@@ -152,6 +200,7 @@ def extract(docx_path, out_md):
             if lvl > 3:
                 print(f"  注意：标题{lvl}归一化为三级，请核对层级", file=sys.stderr)
         elif is_list:
+            print("  注意：列表编号/嵌套归一为无序列表，请核对顺序语义", file=sys.stderr)
             lines.append("- " + text)
         else:
             lines.append(text)
@@ -177,6 +226,8 @@ def main():
     ap.add_argument("docx")
     ap.add_argument("-o", "--out", help="输出 md 路径（默认同名 .md）")
     args = ap.parse_args()
+    if not args.docx.lower().endswith(".docx"):
+        ap.error("仅支持 .docx，不支持旧版 .doc / PDF")
     if not os.path.isfile(args.docx):
         print(f"✗ 文件不存在: {args.docx}", file=sys.stderr)
         sys.exit(1)

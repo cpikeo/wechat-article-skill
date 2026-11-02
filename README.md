@@ -12,7 +12,6 @@ python3 scripts/render.py 文章.md --theme frost -o 交付/正文.html
 python3 scripts/extract_docx.py 文章.docx -o 文章.md
 python3 scripts/render.py --specimen
 python3 scripts/selftest.py
-python3 scripts/test_v2.py
 # 显式要求像素验收时，浏览器缺失必须失败
 pip install playwright
 python3 -m playwright install --with-deps chromium
@@ -20,7 +19,7 @@ python3 scripts/selftest.py --shots
 ```
 
 render输出：正文HTML（无原生标题作者）、`*_预览.html`（封面裁切／资产表／模拟原生字段）、`.meta.json`（字段／正文哈希／渲染错误／待补资产）。`-o`跨目录会复制素材至交付目录（遇同名不同内容拒绝覆盖）；正文交付仍需素材，预览嵌图不能替代上传。
-退出码1表示必须改。todo可生成待补预览，但发布预检拒绝待补稿。Word抽取是素材转换，不保证编号、合并单元格、文本框等完全保真；进入编辑前核对原件并补图片职责。
+退出码1表示必须改。todo可生成待补预览，但发布预检拒绝待补稿。Word抽取保留链接与普通表格；合并单元格、文本框、脚注、修订等会定位报错，停止输出；编号/嵌套归一会显式警告；进入编辑前核对原件并补图片职责。
 
 ## 发布与可验证边界
 
@@ -45,7 +44,7 @@ python3 scripts/publish.py --html 正文.html --meta 正文.meta.json
 |references/platform.md|按需HTML与粘贴边界|
 |references/publish.md|按需接口／配置／素材知识|
 |assets/themes.json|六种可复用编辑语言参数，无独立判断权|
-|assets/themes.html、previews/|真实渲染器生成的对照板与缩图|
+|assets/themes.html|真实渲染器生成的对照板；不再保存过期缩图|
 |scripts/render.py、check.py|渲染、确定性检查、预览、meta|
 |scripts/publish.py|统一预检、草稿、可选发布、素材管理|
 |scripts/extract_docx.py|标准库Word抽取|
@@ -57,14 +56,14 @@ python3 scripts/publish.py --html 正文.html --meta 正文.meta.json
 
 ## 回归与验证边界
 
-`python3 scripts/selftest.py` 跑完整回归：语料与素材由 `scripts/fixtures.py` 在临时目录现生成，仓库不再保存语料、审计产物或二进制素材。加 `--shots` 会把每篇预览截成 390px PNG 作为 Gate 3 通读输入（需 playwright）。
+`python3 scripts/selftest.py` 跑完整回归：语料与素材由 `scripts/fixtures.py` 在临时目录现生成，仓库不再保存语料、审计产物或二进制素材。加 `--shots` 会把每篇预览截成 320/360/390/430px PNG，并包含六人格同稿对照 作为 Gate 3 通读输入（需 playwright 与 fonts-noto-cjk）。
 回归只覆盖可确定的缺陷；CI 通过不等于事实核真，也不等于微信端效果，仍须在目标账号核验。
 
 [MIT](LICENSE.txt) © 2026 cpikeo
 
 ## V2 设计与验证状态
 
-[审计与剩余风险](AUDIT.md) · [真实盲评计划](EVALUATION.md) · [变更记录](CHANGELOG.md)。设计决策可在源稿 frontmatter 写 `article_type`、`composition`、`asset_strategy`、`design_rationale`，随渲染记录在 meta。图片可写 `"解释 inset"`，八种表达的语义与限制见 SKILL。
+审计、变更、删除清单与验证边界统一见 [AUDIT.md](AUDIT.md)。设计决策可在源稿 frontmatter 写 `article_type`、`composition`、`asset_strategy`、`design_rationale`，随渲染记录在 meta。图片可写 `"解释 inset"`，八种表达的语义与限制见 SKILL。
 
 图片及封面必须是源 Markdown 所在目录内相对路径，不允许 `..`、绝对路径或符号链接越界；输出素材也限制在 HTML 目录内。跨目录输出时 source 的绝对路径记录在 meta 用于回查，迁移后重新渲染；注意该文件的隐私。SHA-256 用于检测变化，不是签名或来源认证。预检不等于艺术或真机验收。
 

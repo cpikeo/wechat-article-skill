@@ -8,6 +8,13 @@
 三条铁律：用例必须过；护栏必须仍会在该失败的地方失败；测试只冻结可确定缺陷，不冻结审美配额。
 """
 import argparse
+import contextlib
+import io
+from pathlib import Path
+import unittest
+from unittest.mock import patch
+import publish
+from safety import local_path
 import json
 import os
 import re
@@ -328,6 +335,8 @@ def docx_ok():
         with zipfile.ZipFile(deep, "w") as z:
             z.writestr("word/document.xml", DOC_XML.replace("Heading2", "Heading4"))
             z.writestr("word/styles.xml", STYLES_XML.replace("Heading2", "Heading4").replace("heading 2", "heading 4"))
+            z.writestr("word/_rels/document.xml.rels", RELS_XML)
+            z.write(os.path.join(FIX, "fixtures", "tiny.png"), "word/media/fig1.png")
         import extract_docx, io, contextlib
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             rc = extract_docx.extract(deep, os.path.join(d, "deep.md"))
@@ -363,6 +372,10 @@ def shots(shoot=None):
         print("\n截图失败：未安装 playwright"
               "（pip install playwright && python3 -m playwright install chromium）")
         return False
+    font = subprocess.run(["fc-match", "-f", "%{family}", "Noto Sans CJK SC"], capture_output=True, text=True)
+    if font.returncode or "Noto Sans CJK" not in font.stdout:
+        print("截图失败：须安装 fonts-noto-cjk，不能用缺字截图通过")
+        return False
     out_dir = os.path.join(ROOT, "assets", "shots")
     os.makedirs(out_dir, exist_ok=True)
     made, failed, manifest = [], [], []
@@ -378,6 +391,20 @@ def shots(shoot=None):
         """截全页 + 首屏，并跑元素级溢出检查。返回 (png路径, 失败原因或 None)。"""
         pg.goto("file://" + prev)
         pg.wait_for_function("() => [...document.images].every(i => i.complete)")
+        pg.evaluate("() => document.fonts.ready")
+        # Verify the browser actually uses a CJK font, not only a fontconfig alias.
+        pg.evaluate("""() => { const p=document.createElement('p'); p.id='font-probe'; p.textContent='中文排版验证'; p.style.fontFamily="Noto Sans CJK SC";document.body.append(p); }""")
+        pg.evaluate("""() => document.fonts.load('16px "Noto Sans CJK SC"', '中文排版验证')""")
+        pg.locator("#font-probe").screenshot()  # force layout/paint before querying platform glyphs
+        cdp = pg.context.new_cdp_session(pg)
+        cdp.send("DOM.enable"); cdp.send("CSS.enable")
+        root = cdp.send("DOM.getDocument")["root"]["nodeId"]
+        node = cdp.send("DOM.querySelector", {"nodeId": root, "selector": "#font-probe"})["nodeId"]
+        fonts = cdp.send("CSS.getPlatformFontsForNode", {"nodeId": node})["fonts"]
+        pg.evaluate("document.querySelector('#font-probe').remove()")
+        cdp.detach()
+        if not any("Noto Sans CJK" in f["familyName"] and f["glyphCount"] >= 6 for f in fonts):
+            return "", f"{stem}（浏览器中文字体未实际生效：{fonts}）"
         pg.evaluate("scrollTo(0, 0)")
         png = os.path.join(out_dir, stem + ".png")
         pg.screenshot(path=png, full_page=True)
@@ -388,6 +415,7 @@ def shots(shoot=None):
             return png, f"{stem}（图片未加载）"
         for width in (320, 360, 390, 430):
             pg.set_viewport_size({"width": width, "height": 844})
+            pg.screenshot(path=os.path.join(out_dir, f"{stem}_{width}.png"), full_page=True)
             if pg.evaluate("document.documentElement.scrollWidth > innerWidth || [...document.querySelectorAll('#c p,#c img,#c table,#c th,#c td')].some(e=>e.scrollWidth>e.clientWidth+1 || e.getBoundingClientRect().right>document.querySelector('#c').getBoundingClientRect().right+1)"):
                 return png, f"{stem}（{width}px横向溢出）"
         pg.set_viewport_size({"width": 390, "height": 844})
@@ -433,6 +461,23 @@ def shots(shoot=None):
             made.append(png)
             manifest.append((name + ".png", f"fixtures 合成语料 {name}", look.get(name, "")))
             pg.close()
+        from render import THEMES, SPECIMEN_MD
+        for theme in THEMES:
+            source = os.path.join(FIX, f"personality_{theme}.md")
+            with open(source, "w", encoding="utf-8") as f:
+                f.write(SPECIMEN_MD.replace("author: 甲木", f"author: 甲木\ntheme: {theme}"))
+            code, log = run([os.path.join(HERE, "render.py"), source], FIX)
+            if code:
+                failed.append(f"{theme}（人格渲染失败）{log[-200:]}")
+                continue
+            prev = os.path.join(FIX, f"personality_{theme}_{theme}_预览.html")
+            pg = b.new_page(viewport={"width": 390, "height": 844}, device_scale_factor=2)
+            png, err = one_shot(pg, prev, f"personality_{theme}")
+            if err: failed.append(err)
+            else:
+                made.append(png)
+                manifest.append((f"personality_{theme}.png", "同稿六人格", "字体/章节尺度/引文/留白的区别"))
+            pg.close()
         for md in (shoot or []):
             md = os.path.abspath(md)
             stem = os.path.splitext(os.path.basename(md))[0]
@@ -454,7 +499,7 @@ def shots(shoot=None):
         b.close()
     review = os.path.join(out_dir, "REVIEW.md")
     with open(review, "w", encoding="utf-8") as f:
-        f.write("# Gate 3 截图证据包（390px · 2x）\n\n"
+        f.write("# Gate 3 截图证据包（320/360/390/430px · 2x）\n\n"
                 "**截图通过 ≠ 视觉通过。** 本目录只证明渲染与截图流程顺利完成；构图、层级、密度、"
                 "小字清晰度、封面裁切由通读的人（视觉总监）判定，结论写回验收记录，可无需修改。\n\n"
                 "复现：`python3 scripts/selftest.py --shots [--shoot 文章.md ...]`；"
@@ -468,7 +513,7 @@ def shots(shoot=None):
                 "- 每个问题给 保留／修改／删除 + 理由\n\n"
                 "## 证据清单\n\n| 文件 | 来源 | 审阅重点 |\n|---|---|---|\n")
         for png_name, src, w in manifest:
-            f.write(f"| {png_name} + {png_name[:-4]}_首屏.png | {src} | {w or '按稿件实际'} |\n")
+            f.write(f"| {png_name} + {png_name[:-4]}_首屏.png + {png_name[:-4]}_{{320,360,390,430}}.png | {src} | {w or '按稿件实际'} |\n")
     print(f"\nGate 3 截图证据（390px · 2x · 4宽度元素级与复制样式检查）：{out_dir}")
     for m in made:
         print("   " + os.path.basename(m))
@@ -586,7 +631,7 @@ def delivery_defects_ok():
     test("来源仅主体无日期无地址被拦",
           any("缺少紧邻来源" in m for m in _r.compose_gate(*_r.parse(_bars_md.format("来源：网友说的。")))[0]))
     _link = r.inline("[短名](https://example.com/a/very/long/path?x=1)")
-    test("链接不再追加长地址，短名即显示", "短名" in _link and "example.com" not in _link)
+    test("链接保留href而不追加长地址", "短名" in _link and 'href="https://example.com' in _link)
     test("裸地址仍原样可见（要就整行写）", "https://example.com/x" in r.inline("https://example.com/x"))
     test("来源/口径行过长被提醒",
           any("过长" in m for m in _r.compose_gate(*_r.parse(HEAD + "---\n::: note 口径\n" + "长句" * 50 + "\n:::\n"))[1]))
@@ -799,6 +844,124 @@ def delivery_defects_ok():
     return all(ok for _, ok in results), "；".join(label for label, ok in results if not ok)
 
 
+
+class DeliveryTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        _fx.build(str(self.root))
+        self.md = self.root / 'v2.md'
+        self.md.write_text('---\ntitle: 测试\ncover: images/cover.jpg\ncomposition: explainer\n---\n正文。\n\n![说明](images/fig.jpg "解释 inset")\n', encoding='utf-8')
+        self.html = self.root / 'delivery' / 'body.html'
+        run = subprocess.run([sys.executable, str(Path(HERE)/'render.py'), str(self.md), '-o', str(self.html)], capture_output=True, text=True)
+        self.assertEqual(run.returncode, 0, run.stderr + run.stdout)
+        self.side = json.loads(self.html.with_suffix('.meta.json').read_text())
+        self.settings = dict(title=self.side['api_title'], author=None, digest=self.side['digest'], source=None, cover=publish.resolve_cover(self.side['cover'], str(self.html)), open_comment=True, fans_only=False, submit=False)
+
+    def flight(self):
+        with contextlib.redirect_stdout(io.StringIO()):
+            return publish.preflight(str(self.html), self.settings)
+
+    def test_integrity(self):
+        self.assertEqual(self.flight(), 0)
+        for file in [self.md, self.html, self.html.parent/'images/cover.jpg', self.html.parent/'images/fig.jpg', self.root/'images/fig.jpg', self.root/'images/cover.jpg']:
+            old = file.read_bytes()
+            file.write_bytes(old + b'x')
+            self.assertEqual(self.flight(), 1, str(file))
+            file.write_bytes(old)
+        self.assertEqual(self.side['decision']['composition'], 'explainer')
+
+    def test_boundaries(self):
+        outside = self.root/'outside.jpg'; outside.write_bytes(b'private')
+        link = self.html.parent/'link.jpg'; link.symlink_to(outside)
+        for path in ('../outside.jpg', str(outside), 'link.jpg', 'C:/file.jpg', 'https://example.com/x', 'x\\y'):
+            with self.assertRaises(ValueError, msg=path): local_path(path, str(self.html.parent))
+            with patch.object(publish, 'upload_content_image') as upload:
+                with self.assertRaises(ValueError):
+                    publish.rewrite_local_images('<img src="'+path+'">', 'token', str(self.html.parent)) if not path.startswith('https:') else local_path(path, str(self.html.parent))
+                upload.assert_not_called()
+
+    def test_render_rejects_escaping_cover(self):
+        self.md.write_text('---\ntitle: 测试\ncover: ../outside.jpg\n---\n正文。\n', encoding='utf-8')
+        output = self.root/'bad.html'
+        result = subprocess.run([sys.executable, str(Path(HERE)/'render.py'), str(self.md), '-o', str(output)], capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(output.exists())
+
+    def test_readback_blocks_submission(self):
+        with contextlib.redirect_stdout(io.StringIO()), \
+             patch.object(publish, 'get_stable_access_token', return_value='token'), \
+             patch.object(publish, 'upload_thumb_material', return_value='thumb'), \
+             patch.object(publish, 'upload_content_image', return_value='https://img.example/test'), \
+             patch.object(publish, 'create_draft', return_value='existing-draft'), \
+             patch.object(publish, 'read_draft', side_effect=OSError('network')), \
+             patch.object(publish, 'submit_publish') as submit:
+            with self.assertRaisesRegex(RuntimeError, 'existing-draft'):
+                publish.publish_html_article('app', 'secret', str(self.html), self.settings['cover'], self.settings['title'], material_cache=None, do_submit=True, submit_confirm=self.settings['title'])
+            submit.assert_not_called()
+
+    def test_readback(self):
+        self.assertEqual(publish.verify_draft({'news_item':[{'title':'题','content':'文','thumb_media_id':'x'}]}, '题','文','x'), [])
+        self.assertEqual(publish.verify_draft({'news_item':[{'title':'错','content':'文','thumb_media_id':'x'}]}, '题','文','x'), ['title'])
+        with self.assertRaises(ValueError): publish.verify_draft({}, '题','文','x')
+
+
+    def test_editorial_and_input(self):
+        import render
+        meta, blocks = render.parse('---\ntitle: 标题\n---\n重复段落。\n\n重复段落。\n\n增长20%。')
+        review = render.editorial_review(meta, blocks)
+        self.assertTrue(any(x['action'] == '合并或删除' for x in review['issues']))
+        self.assertTrue(any(x['action'] == '核查数字' for x in review['issues']))
+        self.assertEqual(review['fact_verification'], 'not_performed')
+        for text in ('#### 深层标题', '正文 ![图](x.jpg)'):
+            with self.assertRaises(ValueError): render.parse(text)
+        with self.assertRaises(ValueError): render.render('# 标题\n\n|甲|乙|\n|---|---|\n|只有一列|')
+        with self.assertRaises(ValueError): render.R(render.THEMES['paper'], 'standard').inline('[危险](javascript:alert)')
+        must, _ = render.compose_gate({'title':'标题'}, [('img', ('第一步', 'todo', '解释 sequence'))])
+        self.assertTrue(any('相邻同组' in x for x in must))
+
+    def test_plaintext_and_personality(self):
+        import render
+        signatures = set()
+        for key in render.THEMES:
+            theme = render.THEMES[key]
+            signature = tuple(theme['type'].values()) + (theme['display'], theme['heading'], theme['peak'])
+            signatures.add(signature)
+            body = render.render(render.SPECIMEN_MD, key)[3]
+            self.assertIn(f"font-size:{theme['type']['heading_size']}px", body)
+            self.assertFalse(render.check(body)[0])
+        self.assertEqual(len(signatures), 6)
+        txt = self.root/'source.txt'
+        txt.write_text('# 纯文本测试\n\n正文和English 2026。', encoding='utf-8')
+        result = subprocess.run([sys.executable, str(Path(HERE)/'render.py'), str(txt)], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('正文和English 2026。', (self.root/'source_paper.html').read_text())
+        pdf = self.root/'wrong.pdf'; pdf.write_text('not a PDF')
+        result = subprocess.run([sys.executable, str(Path(HERE)/'render.py'), str(pdf)], capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('仅支持', result.stderr)
+
+    def test_docx_link_and_loss(self):
+        import extract_docx, zipfile
+        xml = '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:body><w:p><w:hyperlink r:id="r1"><w:r><w:t>原文</w:t></w:r></w:hyperlink></w:p></w:body></w:document>'
+        rels = '<Relationships><Relationship Id="r1" Type="x/hyperlink" Target="https://example.org/report" TargetMode="External"/></Relationships>'
+        src, out = self.root/'links.docx', self.root/'links.md'
+        with zipfile.ZipFile(src, 'w') as z:
+            z.writestr('word/document.xml', xml)
+            z.writestr('word/_rels/document.xml.rels', rels)
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(extract_docx.extract(src, out), 0)
+        self.assertIn('[原文](https://example.org/report)', out.read_text())
+        out.unlink()
+        with zipfile.ZipFile(src, 'w') as z:
+            z.writestr('word/document.xml', xml.replace('<w:p>', '<w:p><w:txbxContent/>'))
+            z.writestr('word/_rels/document.xml.rels', rels)
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(extract_docx.extract(src, out), 1)
+        self.assertFalse(out.exists())
+
+
 def run_all(a):
     """跑完全部回归，返回失败项。语料目录 FIX 由 main() 生成并回收。"""
     fails = []
@@ -931,6 +1094,9 @@ def run_all(a):
     if not ok:
         fails.append("真实缺陷：" + why)
 
+    result = unittest.TextTestRunner(verbosity=2).run(unittest.defaultTestLoader.loadTestsFromTestCase(DeliveryTests))
+    if not result.wasSuccessful():
+        fails.append("交付完整性与输入回归")
     if a.shots:
         shot_ok = shots(a.shoot)
         if not shot_ok:
