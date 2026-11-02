@@ -5,8 +5,12 @@ import re
 
 
 def local_path(src, root):
-    if not isinstance(src, str) or not src or '\x00' in src or '\\' in src:
+    if not isinstance(src, str) or not src or src != src.strip() or '\\' in src:
         raise ValueError('非法本地资源路径')
+    if any(ord(c) < 0x20 or ord(c) == 0x7f for c in src):
+        raise ValueError('本地资源路径不得含控制字符')
+    if any(c in src for c in '?#%'):
+        raise ValueError('本地资源路径不得含 URL 查询、片段或百分号编码')
     if os.path.isabs(src) or re.match(r'^[a-zA-Z]:|^[a-zA-Z][a-zA-Z0-9+.-]*:|^//', src):
         raise ValueError(f'资源路径必须相对文章目录：{src}')
     if any(part == '..' for part in src.split('/')):

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Browser evidence: six licensed real-source samples, four widths, and one same-draft theme study.
+"""Browser evidence: six editorial samples, one source-traceable image fixture, four widths, six themes.
 
 Requires optional development tools: playwright, Pillow, Chromium and Noto CJK fonts.
 Generated screenshots are review inputs, not an aesthetic score or proof of WeChat compatibility.
@@ -15,8 +15,8 @@ ROOT = Path(__file__).resolve().parents[1]
 EVAL = ROOT / "evaluation"
 RENDER = ROOT / "scripts" / "render.py"
 WIDTHS = (320, 360, 390, 430)
-# One real-source case per retained theme. The same business-analysis draft is also rendered
-# under every theme so the visual language can be compared without changing the words.
+# One deterministic editorial case per retained theme, plus a human-authored CC0 image fixture.
+# The image fixture is rendered unchanged under every theme for visual comparison.
 THEME_SAMPLES = {
     "paper": "business",
     "letter": "longform",
@@ -25,11 +25,12 @@ THEME_SAMPLES = {
     "bone": "tutorial",
     "folio": "profile",
 }
-SAME_DRAFT = "business"
+SAME_DRAFT = "visual-sample"
+VISUAL_SAMPLE = EVAL / "visual-sample.md"
 
 NEUTRALIZE_COLOR = """
-#c { background:#fff !important; color:#111 !important; }
-#c, #c * {
+#c, .cv { background:#fff !important; color:#111 !important; }
+#c *, .cv * {
   color:#111 !important;
   background-color:transparent !important;
   background-image:none !important;
@@ -38,7 +39,7 @@ NEUTRALIZE_COLOR = """
   text-shadow:none !important;
   outline-color:#666 !important;
 }
-#c img { filter:grayscale(1) !important; }
+#c img, .cv img { filter:grayscale(1) !important; }
 """
 
 
@@ -107,6 +108,7 @@ def inspect_page(page, width):
         minTableSize: minSize(tablePs),
         minNoteSize: minSize(notePs),
         contentWidth: Math.round(content.getBoundingClientRect().width),
+        bodyImageCount: content.querySelectorAll('img').length,
         imagesLoaded: [...document.images].every(img => img.complete && (!img.currentSrc || img.naturalWidth > 0))
       };
     }""", width)
@@ -136,10 +138,13 @@ def main():
     out = Path(args.out).resolve()
     out.mkdir(parents=True, exist_ok=True)
     cases_dir = EVAL / "cases"
-    for case_id in set(THEME_SAMPLES.values()) | {SAME_DRAFT}:
+    for case_id in set(THEME_SAMPLES.values()):
         if not (cases_dir / f"{case_id}.edited.md").is_file():
             print(f"FAIL: missing evaluation case {case_id}")
             return 1
+    if not VISUAL_SAMPLE.is_file():
+        print(f"FAIL: missing real-image visual fixture {VISUAL_SAMPLE}")
+        return 1
 
     failures, neutral_paths = [], {}
     with tempfile.TemporaryDirectory(prefix="wechat-theme-study-") as temp_dir, sync_playwright() as p:
@@ -178,27 +183,34 @@ def main():
                     failures.append(f"{theme}/{case_id}/{width}px: {', '.join(issues)}")
                 page.close()
 
-        # Same words under all six themes. Check all widths; save a neutralized 390px viewport
-        # capture for structural comparison, after removing foreground/background color cues.
+        # The same source-traceable image article under all six themes. Check four widths,
+        # preserve colored full-page captures, and neutralize all themed content for comparison.
         for theme in THEME_SAMPLES:
-            source = cases_dir / f"{SAME_DRAFT}.edited.md"
-            preview = build_preview(source, temp / f"same_{SAME_DRAFT}_{theme}.html", theme)
+            preview = build_preview(VISUAL_SAMPLE, temp / f"same_{SAME_DRAFT}_{theme}.html", theme)
             for width in WIDTHS:
                 page = open_page(browser, preview, width)
                 metrics = inspect_page(page, width)
                 if metrics["viewportOverflow"] or metrics["elementOverflow"] or metrics["splitAtoms"]:
-                    failures.append(f"same draft/{theme}/{width}px: overflow or split nowrap atom")
+                    failures.append(f"image fixture/{theme}/{width}px: overflow or split nowrap atom")
                 if metrics["minBodySize"] is not None and metrics["minBodySize"] < 15:
-                    failures.append(f"same draft/{theme}/{width}px: body below 15px")
+                    failures.append(f"image fixture/{theme}/{width}px: body below 15px")
                 if metrics["minTableSize"] is not None and metrics["minTableSize"] < 12:
-                    failures.append(f"same draft/{theme}/{width}px: table text below 12px")
+                    failures.append(f"image fixture/{theme}/{width}px: table text below 12px")
                 if metrics["minNoteSize"] is not None and metrics["minNoteSize"] < 12:
-                    failures.append(f"same draft/{theme}/{width}px: note/caption below 12px")
+                    failures.append(f"image fixture/{theme}/{width}px: note/caption below 12px")
+                if not metrics["imagesLoaded"]:
+                    failures.append(f"image fixture/{theme}/{width}px: image failed to load")
+                if metrics["bodyImageCount"] != 4:
+                    failures.append(f"image fixture/{theme}/{width}px: expected 4 body image instances, found {metrics['bodyImageCount']}")
+                page.screenshot(path=str(out / f"same-draft_{theme}_{width}.jpg"),
+                                full_page=True, type="jpeg", quality=90)
                 if width == 390:
+                    # The toolbar contains a theme name, which is not a design difference.
+                    page.evaluate("() => { const label=document.querySelector('.bar span'); if(label) label.textContent='同稿同题'; }")
                     page.add_style_tag(content=NEUTRALIZE_COLOR)
                     page.evaluate("() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))")
                     shot = out / f"same-draft_{theme}_390_neutral.png"
-                    page.screenshot(path=str(shot), clip={"x": 0, "y": 0, "width": width, "height": 844})
+                    page.screenshot(path=str(shot), full_page=True)
                     neutral_paths[theme] = shot
                 page.close()
 
@@ -210,12 +222,14 @@ def main():
     for left, right in itertools.combinations(THEME_SAMPLES, 2):
         a = Image.open(neutral_paths[left]).convert("L")
         b = Image.open(neutral_paths[right]).convert("L")
-        if a.size != b.size:
-            failures.append(f"neutralized captures have different sizes: {left}/{right}")
-            continue
-        difference = ImageChops.difference(a, b)
+        canvas_size = (max(a.width, b.width), max(a.height, b.height))
+        # Align full-page captures at the top-left; pad the shorter page with preview gray.
+        pa, pb = Image.new("L", canvas_size, 237), Image.new("L", canvas_size, 237)
+        pa.paste(a, (0, 0))
+        pb.paste(b, (0, 0))
+        difference = ImageChops.difference(pa, pb)
         mean_delta = ImageStat.Stat(difference).mean[0] / 255
-        changed = sum(1 for px in difference.tobytes() if px > 8) / (a.width * a.height)
+        changed = sum(1 for px in difference.tobytes() if px > 8) / (pa.width * pa.height)
         pair_rows.append((left, right, mean_delta, changed))
         if mean_delta < 0.001:
             failures.append(f"{left}/{right}: near-identical after color neutralization ({mean_delta:.5f})")
@@ -225,7 +239,7 @@ def main():
         "",
         "Screenshots are browser evidence and review inputs, not a design score or proof of WeChat compatibility.",
         "",
-        "## Real-source samples at four widths",
+        "## Editorial source samples at four widths",
         "",
         "| Theme | Source sample | Widths | Status |",
         "|---|---|---|---|",
@@ -233,16 +247,22 @@ def main():
     for theme, case_id in THEME_SAMPLES.items():
         issue = any(row.startswith(f"{theme}/{case_id}/") for row in failures)
         report.append(f"| {theme} | `{case_id}` | 320 / 360 / 390 / 430px | {'FAIL' if issue else 'PASS'} |")
-    report += ["", "## Same draft under six themes, color neutralized", "",
-               "| Pair | Mean pixel delta (0–1) | Changed pixels |", "|---|---:|---:|"]
+    image_failures = [row for row in failures if row.startswith("image fixture/")]
+    report += ["", "## Source-traceable image fixture", "",
+               "- `evaluation/visual-sample.md`: a human-authored reading sample using The Met's public-domain *Under the Wave off Kanagawa*; the museum API marks the image `isPublicDomain=true`, and the Open Access policy applies CC0.",
+               "- Six themes × 320 / 360 / 390 / 430px. Four body image placements (full scan, explanatory detail, adjacent comparison pair) and a declared cover crop are checked for successful local loading.",
+               f"- Browser/image-load status: {'FAIL' if image_failures else 'PASS'}; interpretive quality, asset-role suitability and crop preference still require human editorial judgment.",
+               "- The original six editorial cases contain no body images; their image-load checks are intentionally not counted as image evidence.",
+               "", "## Same image article under six themes, color neutralized", "",
+               "The theme-name label is replaced with a common label; article and cover colors are neutralized and images are grayscale. Pairwise pixel deltas detect collapse to near-identical structure only; they do not rank aesthetics.",
+               "", "| Pair | Mean pixel delta (0–1) | Changed pixels |", "|---|---:|---:|"]
     for left, right, mean_delta, changed in pair_rows:
         report.append(f"| {left} / {right} | {mean_delta:.5f} | {changed:.1%} |")
-    report += ["", "## Issues", ""] + ([f"- {item}" for item in failures] or ["- No browser-geometry or minimum-text issues."])
+    report += ["", "## Issues", ""] + ([f"- {item}" for item in failures] or ["- No browser-geometry, image-load or minimum-text issues."])
     report += ["", "## Not tested", "",
-               "- All six evaluation samples contain no body images; image-load assertions were vacuous. Asset path/upload regressions are covered separately.",
                "- Semantic title promise, editorial logic, factual truth and author-voice preference require model/editor review.",
                "- Independent external blind review is UNVERIFIED.",
-               "- Real WeChat account, editor sanitization, iOS/Android reading and cover entry-point crops are UNVERIFIED.",
+               "- Real WeChat account, editor sanitization, iOS/Android reading and in-client cover crops are UNVERIFIED.",
                "", "## Reproduction", "", "```bash", "python3 tests/visuals.py", "```", ""]
     (out / "REPORT.md").write_text("\n".join(report), encoding="utf-8")
     print(f"Browser visual review: {'PASS' if not failures else 'FAIL'}")

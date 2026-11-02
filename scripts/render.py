@@ -71,6 +71,19 @@ def typo(s):
         re.split(r"(`[^`]+`|\[[^\]]+\]\([^)\s]+\)|https?://[^\s<>\u3000，；。！？）\"]+)", s)))
 
 
+def unique_style(style):
+    """Merge renderer-owned CSS declarations; later values replace earlier ones."""
+    props = {}
+    for declaration in style.split(";"):
+        if not declaration.strip():
+            continue
+        name, sep, value = declaration.partition(":")
+        if not sep:
+            raise ValueError(f"内部 CSS 声明无效：{declaration}")
+        props[name.strip()] = value.strip()
+    return "".join(f"{name}:{value};" for name, value in props.items())
+
+
 FRONTMATTER_FIELDS = {
     "title", "theme", "density", "article_type", "audience", "reading_context", "purpose", "thesis",
     "composition", "visual_concept", "information_shape", "asset_strategy", "mobile_risk", "design_rationale",
@@ -325,8 +338,8 @@ class R:
         size = self.body if size is None else size
         lh = "" if "line-height" in extra else f'line-height:{self.t["leading"] if size == self.body else 1.75};'
         ls = "" if "letter-spacing" in extra else "letter-spacing:normal;"
-        return (f'<p style="margin:0;font-size:{size:g}px;{lh}color:{color or self.t["text"]};'
-                f'{ls}{extra}">{inner}</p>')
+        style = unique_style(f'margin:0;font-size:{size:g}px;{lh}color:{color or self.t["text"]};{ls}{extra}')
+        return f'<p style="{style}">{inner}</p>'
 
     def micro(self, s, color=None, extra="", size=None):
         return self.p(self.leaf(s), size or self.cap, color or self.t["muted"], f"font-weight:500;{extra}")
@@ -694,7 +707,8 @@ class R:
             # 行线画在 tr 上：一 px 的线只出现一次，不会因为单元格内距变成双线。
             row_border = "" if i == len(rows) - 1 and mode in ("ink", "atelier", "feature", "report", "warm") else (
                 f"border-bottom:1px solid {border if i == 0 else t['line']};")
-            out.append(f'<tr style="{row_border}">' + "".join(rendered) + "</tr>")
+            row_attr = f' style="{row_border}"' if row_border else ""
+            out.append(f'<tr{row_attr}>' + "".join(rendered) + "</tr>")
         return (f'<table style="width:100%;table-layout:fixed;border-collapse:collapse;{table_extra}'
                 f'margin:{self.g(24)}px 0 {below if below is not None else self.g(24)}px;">'
                 + "".join(out) + "</table>")
@@ -806,7 +820,7 @@ class R:
         elif mode in ("evidence", "explainer", "data"):
             pad = ["0 0 0 12px"]
             outer.append(f"border-left:2px solid {t['accent']}")
-        wrap = ";".join(outer) + ";" if outer else ""
+        wrap = unique_style(";".join(outer) + ";") if outer else ""
         if pad:
             wrap += f"padding:{' '.join(pad)};"
         if rule:

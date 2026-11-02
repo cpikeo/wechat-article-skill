@@ -391,7 +391,7 @@ def shots(shoot=None):
     if font.returncode or "Noto Sans CJK" not in font.stdout:
         print("截图失败：须安装 fonts-noto-cjk，不能用缺字截图通过")
         return False
-    out_dir = os.path.join(ROOT, "assets", "shots")
+    out_dir = os.path.join(ROOT, "evaluation", "visual-review", "regression")
     os.makedirs(out_dir, exist_ok=True)
     made, failed, manifest = [], [], []
     look = {  # 语料的视觉审阅重点：给通读的人的指引，不是自动判定项
@@ -1107,12 +1107,56 @@ class DeliveryTests(unittest.TestCase):
     def test_boundaries(self):
         outside = self.root/'outside.jpg'; outside.write_bytes(b'private')
         link = self.html.parent/'link.jpg'; link.symlink_to(outside)
-        for path in ('../outside.jpg', str(outside), 'link.jpg', 'C:/file.jpg', 'https://example.com/x', 'x\\y'):
+        for path in ('../outside.jpg', str(outside), 'link.jpg', 'C:/file.jpg', 'https://example.com/x', 'images/a.jpg?x=1', 'images/a.jpg#part', 'images/a%20b.jpg', 'images/../outside.jpg', ' images/a.jpg', 'images/a.jpg\n', 'x\\y'):
             with self.assertRaises(ValueError, msg=path): local_path(path, str(self.html.parent))
             with patch.object(publish, 'upload_content_image') as upload:
                 with self.assertRaises(ValueError):
                     publish.rewrite_local_images('<img src="'+path+'">', 'token', str(self.html.parent)) if not path.startswith('https:') else local_path(path, str(self.html.parent))
                 upload.assert_not_called()
+
+    def test_html_css_url_allowlists(self):
+        import check
+        samples = [case["md"] for case in _fx.CORPUS.values()] + [_fx.PERSONALITY_MD]
+        for theme in _r.THEMES:
+            for sample in samples:
+                body = _r.render(sample, theme)[3]
+                errors, _ = check.check(body)
+                self.assertEqual(errors, [], f"generated output rejected for {theme}: {errors}")
+            todo = _r.R(_r.THEMES[theme], "standard").img("待补示意", "todo", "场景")
+            self.assertEqual(check.check(todo)[0], [], f"todo placeholder rejected for {theme}")
+
+        safe_img = ('<section style="margin:0;"><img src="images/a.jpg" alt="本地图片" '
+                    'style="max-width:100%;height:auto;display:block;margin:0 auto;"></section>')
+        self.assertEqual(check.check(safe_img)[0], [])
+        safe_link = ('<section style="margin:0;"><p style="margin:0;font-size:16px;line-height:1.7;color:#111111;">'
+                     '<a href="https://example.com/path" style="color:#111111;text-decoration:underline;">'
+                     '<span leaf="">原文</span></a></p></section>')
+        self.assertEqual(check.check(safe_link)[0], [])
+        bad_html = [
+            safe_img.replace('src="images/a.jpg"', 'src="https://example.com/a.jpg"'),
+            safe_img.replace('src="images/a.jpg"', 'src="data:image/png;base64,AAAA"'),
+            safe_img.replace('src="images/a.jpg"', 'src="images/a.jpg?x=1"'),
+            safe_img.replace('src="images/a.jpg"', 'src="images/a.jpg#fragment"'),
+            safe_img.replace('src="images/a.jpg"', 'src="images/a%20b.jpg"'),
+            safe_img.replace('src="images/a.jpg"', 'src="../outside.jpg"'),
+            safe_img.replace('<img ', '<img onerror="alert(1)" '),
+            safe_img.replace('alt="本地图片"', 'alt="本地图片" class="unsafe"'),
+            safe_img.replace('alt="本地图片"', 'alt=""'),
+            safe_img.replace('style="max-width:100%;', 'style="position:fixed;max-width:100%;'),
+            safe_img.replace('style="max-width:100%;', 'style="background-image:url(https://x);max-width:100%;'),
+            safe_img.replace('style="max-width:100%;', 'style="font-size:11px;max-width:100%;'),
+            safe_img.replace('style="max-width:100%;', 'style="width:1px;width:100%;max-width:100%;'),
+            safe_link.replace('https://example.com/path', 'vbscript:alert(1)'),
+            safe_link.replace('https://example.com/path', '//example.com/path'),
+            safe_link.replace('https://example.com/path', 'https://user:pass@example.com/path'),
+            safe_link.replace('https://example.com/path', 'http://example.com:0'),
+            safe_link.replace('https://example.com/path', 'http://example.com:bad'),
+            safe_link.replace('https://example.com/path', 'http://example.com:'),
+            '<section style="margin:0;"><marquee style="margin:0;">滚动文字</marquee></section>',
+        ]
+        for html in bad_html:
+            with self.subTest(html=html[:100]):
+                self.assertTrue(check.check(html)[0], html)
 
     def test_render_rejects_escaping_cover(self):
         self.md.write_text('---\ntitle: 测试\ncover: ../outside.jpg\n---\n正文。\n', encoding='utf-8')

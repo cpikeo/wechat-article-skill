@@ -1,7 +1,6 @@
 __pycache__/
 *.pyc
 config.json
-assets/shots/
 evaluation/visual-review/
 .wechat_material_cache.json
 .wechat_publish_audit.jsonl

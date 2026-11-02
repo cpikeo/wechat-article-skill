@@ -3,47 +3,259 @@
 import re
 import sys
 from html.parser import HTMLParser
+from urllib.parse import urlsplit
 
 CJK = re.compile(r"[\u4e00-\u9fff\u3400-\u4dbf]")
-HALF = re.compile(r'[\u4e00-\u9fff][,;!?:]|"|[\u4e00-\u9fff]\'|\'[\u4e00-\u9fff]')
-VOID = {"img", "br", "hr", "meta", "link", "input", "source", "wbr"}
-FORBIDDEN = {"style", "script", "link", "svg", "div", "iframe", "form", "button", "video", "audio", "canvas", "object", "embed"}
-CSS_RISKS = (
-    (r"position\s*:\s*(fixed|absolute|sticky)", "定位"),
-    (r"float\s*:|display\s*:\s*grid", "float/grid"),
-    (r"@(media|keyframes|import|font-face)|var\s*\(\s*--", "@规则/CSS变量"),
-    (r"white-space\s*:\s*pre(?:\s*;|\s*$)", "white-space:pre"),
-    (r"(radial|conic)-gradient|url\s*\(|expression\s*\(", "外部或不支持的CSS资源"),
-)
+HALF = re.compile(r"[\u4e00-\u9fff][,;!?:]|\"|[\u4e00-\u9fff]'|'[\u4e00-\u9fff]")
+TAGS = {"a", "br", "img", "p", "section", "span", "strong", "table", "td", "th", "tr"}
+VOID = {"img", "br"}
+ATTRS = {
+    "a": {"href", "style"},
+    "br": set(),
+    "img": {"alt", "src", "style"},
+    "p": {"style"},
+    "section": {"style"},
+    "span": {"leaf", "style"},
+    "strong": {"style"},
+    "table": {"style"},
+    "td": {"style"},
+    "th": {"style"},
+    "tr": {"style"},
+}
+REQUIRED = {
+    "a": {"href", "style"}, "img": {"alt", "src", "style"},
+    "p": {"style"}, "section": {"style"}, "strong": {"style"},
+    "table": {"style"}, "td": {"style"}, "th": {"style"},
+}
+PARENTS = {
+    "a": {"p", "span", "strong", "td", "th"},
+    "br": {"", "section", "p", "span", "strong", "a", "td", "th"},
+    "img": {"section"},
+    "p": {"", "section", "td", "th"},
+    "section": {"", "section"},
+    "span": {"", "section", "p", "span", "strong", "a", "td", "th"},
+    "strong": {"p", "span", "strong", "a", "td", "th"},
+    "table": {"", "section"},
+    "td": {"tr"},
+    "th": {"tr"},
+    "tr": {"table"},
+}
+
+HEX = r"#[0-9a-fA-F]{6}"
+FONT_FAMILIES = {
+    "-apple-system,BlinkMacSystemFont,'PingFang SC','Hiragino Sans GB','Microsoft YaHei','Noto Sans CJK SC',sans-serif",
+    "'Songti SC','STSong','SimSun','Noto Serif CJK SC',serif",
+    "'SF Mono',Menlo,Consolas,monospace",
+}
+
+
+def _length(value, units=("px", "em", "%"), *, negative=False, auto=False,
+            max_px=300, max_em=4, max_pct=100):
+    if auto and value == "auto":
+        return True
+    if value == "0":
+        return True
+    m = re.fullmatch(r"(-?)(\d+(?:\.\d+)?)(px|em|%)", value)
+    if not m:
+        return False
+    sign, number, unit = m.groups()
+    n = float(number)
+    if sign and not negative:
+        return False
+    limit = {"px": max_px, "em": max_em, "%": max_pct}.get(unit)
+    return unit in units and n <= limit
+
+
+def _length_list(value, *, auto=False, max_px=300, max_em=4, max_pct=100):
+    parts = value.split()
+    return (1 <= len(parts) <= 4 and all(
+        _length(part, auto=auto, max_px=max_px, max_em=max_em, max_pct=max_pct)
+        for part in parts))
+
+
+def _border(value):
+    m = re.fullmatch(r"(\d+(?:\.\d+)?)px\s+(solid|dashed)\s+(" + HEX + r")", value, re.I)
+    return bool(m and 0 < float(m.group(1)) <= 8)
+
+
+def _font_size(value):
+    m = re.fullmatch(r"(\d+(?:\.\d+)?)px", value)
+    if not m:
+        return False
+    size = float(m.group(1))
+    return 12 <= size <= 64
+
+
+def _line_height(value):
+    m = re.fullmatch(r"(\d+(?:\.\d+)?)(px)?", value)
+    if not m:
+        return False
+    number = float(m.group(1))
+    return (12 <= number <= 100) if m.group(2) else (.8 <= number <= 3)
+
+
+def _letter_spacing(value):
+    if value == "normal":
+        return True
+    m = re.fullmatch(r"-?(\d+(?:\.\d+)?)(px|em)", value)
+    return bool(m and float(m.group(1)) <= (10 if m.group(2) == "px" else 1))
+
+
+CSS_RULES = {
+    "align-items": lambda v: v in {"baseline", "center", "flex-end"},
+    "background": lambda v: bool(re.fullmatch(HEX, v)),
+    "border": _border,
+    "border-bottom": _border,
+    "border-collapse": lambda v: v == "collapse",
+    "border-left": _border,
+    "border-radius": lambda v: _length(v, ("px", "%"), max_px=100, max_pct=100),
+    "border-top": _border,
+    "box-sizing": lambda v: v == "border-box",
+    "color": lambda v: bool(re.fullmatch(HEX, v)) or v == "inherit",
+    "display": lambda v: v in {"block", "flex", "inline-block"},
+    "flex": lambda v: v == "1",
+    "flex-shrink": lambda v: v == "0",
+    "font-family": lambda v: v in FONT_FAMILIES,
+    "font-size": _font_size,
+    "font-variant-numeric": lambda v: v == "tabular-nums",
+    "font-weight": lambda v: v in {"400", "500", "600", "700"},
+    "gap": lambda v: bool(re.fullmatch(r"\d+(?:\.\d+)?px", v)) and float(v[:-2]) <= 100,
+    "height": lambda v: _length(v, ("px",), auto=True, max_px=1000),
+    "letter-spacing": _letter_spacing,
+    "line-break": lambda v: v == "strict",
+    "line-height": _line_height,
+    "margin": lambda v: _length_list(v, auto=True),
+    "margin-bottom": lambda v: _length(v),
+    "margin-left": lambda v: _length(v),
+    "margin-right": lambda v: _length(v),
+    "margin-top": lambda v: _length(v),
+    "max-width": lambda v: v == "100%",
+    "min-width": lambda v: v == "0",
+    "overflow": lambda v: v == "hidden",
+    "overflow-wrap": lambda v: v == "anywhere",
+    "padding": lambda v: _length_list(v, max_px=100, max_em=2),
+    "padding-bottom": lambda v: _length(v, max_px=100, max_em=2),
+    "padding-left": lambda v: _length(v, max_px=100, max_em=2),
+    "padding-right": lambda v: _length(v, max_px=100, max_em=2),
+    "padding-top": lambda v: _length(v, max_px=100, max_em=2),
+    "tab-size": lambda v: bool(re.fullmatch(r"[1-8]", v)),
+    "table-layout": lambda v: v == "fixed",
+    "text-align": lambda v: v in {"left", "center"},
+    "text-decoration": lambda v: v in {"line-through", "underline"},
+    "text-indent": lambda v: _length(v, ("px", "em"), negative=True, max_px=100, max_em=3),
+    "vertical-align": lambda v: v in {"top", "middle", "bottom", "baseline"} or
+        _length(v, ("px", "em"), negative=True, max_px=100, max_em=2),
+    "white-space": lambda v: v in {"nowrap", "pre-wrap"},
+    "width": lambda v: _length(v, ("px", "%"), max_px=1000, max_pct=100),
+    "word-break": lambda v: v == "normal",
+}
+
+
+def _parse_style(style):
+    props, issues = {}, []
+    if not isinstance(style, str) or not style.strip():
+        return props, ["style 为空"]
+    declarations = style.split(";")
+    for i, declaration in enumerate(declarations):
+        if not declaration.strip():
+            if i != len(declarations) - 1:
+                issues.append("style 含空声明")
+            continue
+        if ":" not in declaration:
+            issues.append(f"style 声明格式错误：{declaration[:24]}")
+            continue
+        name, value = (part.strip() for part in declaration.split(":", 1))
+        name, value = name.lower(), value.strip()
+        if name not in CSS_RULES:
+            issues.append(f"CSS 属性不在允许列表：{name}")
+        elif name in props:
+            issues.append(f"CSS 属性重复：{name}")
+        elif not value or not CSS_RULES[name](value):
+            issues.append(f"CSS 值不在允许范围：{name}: {value[:32]}")
+        props[name] = value
+    return props, issues
+
+
+def _safe_http_url(value):
+    if not isinstance(value, str) or not value or value != value.strip():
+        return False
+    if any(ord(c) < 0x20 for c in value) or any(c.isspace() for c in value) or "\\" in value:
+        return False
+    if any(c in value for c in '<>"`'):
+        return False
+    try:
+        parts = urlsplit(value)
+        port = parts.port  # Access rejects malformed ports and malformed IPv6 authorities.
+        authority = parts.netloc.rsplit("@", 1)[-1]
+        return (parts.scheme.lower() in {"http", "https"} and bool(parts.hostname)
+                and parts.username is None and parts.password is None
+                and not authority.endswith(":") and (port is None or 1 <= port <= 65535))
+    except ValueError:
+        return False
+
+
+def _safe_local_src(value):
+    if not isinstance(value, str) or not value or value != value.strip():
+        return False
+    if any(ord(c) < 0x20 or ord(c) == 0x7f for c in value):
+        return False
+    if any(c in value for c in "\\?#%") or value.startswith("/"):
+        return False
+    if re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*:", value):
+        return False
+    if any(part == ".." for part in value.split("/")):
+        return False
+    return True
 
 
 class Leaf(HTMLParser):
     def __init__(self):
         super().__init__(convert_charrefs=True)
-        self.stack, self.must, self.half, self.images, self.sizes = [], [], [], [], set()
+        self.stack, self.must, self.half, self.images = [], [], [], []
 
     def handle_starttag(self, tag, attrs):
+        names = [name for name, _ in attrs]
+        if len(names) != len(set(names)):
+            self.must.append(f"{tag} 含重复属性")
         a = dict(attrs)
-        style = a.get("style") or ""
-        if tag in FORBIDDEN:
-            self.must.append(f"禁用标签：{tag}")
-        if any(k in ("class", "id", "srcset") or k.startswith("on") for k in a):
-            self.must.append(f"{tag} 含 class/id/srcset 或事件属性")
-        if any((a.get(k) or "").strip().lower().startswith(("javascript:", "data:", "file:")) for k in ("href", "src")):
-            self.must.append(f"{tag} 含不允许的资源协议")
-        for rx, msg in CSS_RISKS:
-            if re.search(rx, style, re.I):
-                self.must.append(msg)
-        self.sizes.update(re.findall(r"font-size\s*:\s*(\d+)px", style, re.I))
+        if tag not in TAGS:
+            self.must.append(f"标签不在允许列表：{tag}")
+        unknown = set(a) - ATTRS.get(tag, set())
+        if unknown:
+            self.must.append(f"{tag} 属性不在允许列表：{'、'.join(sorted(unknown))}")
+        missing = REQUIRED.get(tag, set()) - set(a)
+        if missing:
+            self.must.append(f"{tag} 缺少必需属性：{'、'.join(sorted(missing))}")
+        parent = self.stack[-1][0] if self.stack else ""
+        if tag in PARENTS and parent not in PARENTS[tag]:
+            self.must.append(f"标签嵌套不在允许结构：{parent or '正文根'} > {tag}")
+
+        if tag == "span" and "leaf" in a and a["leaf"] not in (None, ""):
+            self.must.append("span[leaf] 只能为空标记")
+        if tag == "span" and not ("leaf" in a or "style" in a):
+            self.must.append("span 缺少 leaf 或 style")
+
+        props = {}
+        if "style" in a:
+            props, problems = _parse_style(a.get("style"))
+            self.must.extend(problems)
+        if tag == "a" and not _safe_http_url(a.get("href")):
+            self.must.append("a href 只允许带有效主机名的 HTTP(S) URL")
         if tag == "img":
             src = a.get("src") or ""
+            alt = a.get("alt") or ""
             self.images.append(src)
-            if not src or src.startswith("//") or re.match(r"^[a-z][a-z0-9+.-]*:", src, re.I):
-                self.must.append(f"图片必须是本地路径：{src}")
-            if not re.search(r"max-width\s*:\s*100%", style, re.I):
+            if not _safe_local_src(src):
+                self.must.append(f"图片必须是安全的相对本地路径：{src}")
+            if not alt.strip():
+                self.must.append("图片必须有非空 alt 描述")
+            if props.get("max-width") != "100%":
                 self.must.append("图片缺少 max-width:100%")
+            if props.get("height") != "auto":
+                self.must.append("图片必须保持 height:auto")
         if tag not in VOID:
-            self.stack.append((tag, tag == "span" and "leaf" in a, bool(re.search("monospace", style, re.I))))
+            self.stack.append((tag, tag == "span" and "leaf" in a,
+                               bool(re.search("monospace", props.get("font-family", ""), re.I))))
 
     def handle_startendtag(self, tag, attrs):
         self.handle_starttag(tag, attrs)
@@ -71,10 +283,20 @@ class Leaf(HTMLParser):
         if not any(x[2] for x in self.stack) and CJK.search(t) and HALF.search(re.sub(r'https?://[^\s<>，；。！？）"]+', "", t)):
             self.half.append(t[:20])
 
+    def handle_comment(self, data):
+        self.must.append("正文不允许 HTML 注释")
+
+    def handle_decl(self, decl):
+        self.must.append("正文不允许 HTML 声明")
+
+    def handle_pi(self, data):
+        self.must.append("正文不允许处理指令")
+
 
 def image_sources(html):
     p = Leaf()
     p.feed(html)
+    p.close()
     return p.images
 
 

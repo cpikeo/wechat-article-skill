@@ -36,7 +36,7 @@ python3 scripts/extract_docx.py 文章.docx -o 文章.md
 
 `paper` 静纸、`letter` 暖信笺、`ink` 酌墨、`frost` 北霜、`bone` 素作、`folio` 特稿。主题差异来自网格、字体、章节、导语、重点、引文、数据、表格、列表、图片及阅读节奏，不只换颜色；推荐依据是内容关系与读者任务，可合理混合构图，不强制套用。参数唯一来源为 [`assets/themes.json`](assets/themes.json)。
 
-六类真实来源样稿与同稿六主题、去色后的结构对照由 `tests/visuals.py` 生成；截图只作审阅输入，不代表独立盲评或微信真机通过。
+六类真实来源样稿在四种手机宽度回归；同一篇含真实 Met CC0 馆藏图像的视觉样稿再覆盖六主题 × 四宽度，并做去色后的结构对照。截图只作审阅输入，不代表独立盲评或微信真机通过。
 
 ## 编辑与交付边界
 
@@ -59,7 +59,7 @@ python3 tests/run.py --shots --shoot examples/draft-handoff.md
 python3 tests/visuals.py
 ```
 
-`tests/visuals.py` 对六篇真实来源样稿做四宽度浏览器截图，并把同一篇文章以六种主题渲染、去除颜色后比较结构/排版差异。评估输出位于被忽略的 `evaluation/visual-review/`。真实模型复跑、独立外部盲评、逐项第二来源核真和真实微信账号/真机未执行时，须标 `BLOCKED` 或 `UNVERIFIED`，不可伪造结果；当前状态见 [评估记录](evaluation/RESULTS.md)。
+`tests/visuals.py` 对六篇真实来源样稿做四宽度浏览器截图，并把同一篇含 Met CC0 真实馆藏图像的视觉样稿以六种主题渲染；去色全页截图只检测结构是否趋同，不是美学排名。回归与评估截图统一落在被忽略的 `evaluation/visual-review/`，不再写入 `assets/`。真实模型复跑、独立外部盲评、逐项第二来源核真和真实微信账号/真机未执行时，须标 `BLOCKED` 或 `UNVERIFIED`，不可伪造结果；当前状态见 [评估记录](evaluation/RESULTS.md)。
 
 ## 发布保护
 
@@ -82,6 +82,7 @@ python3 scripts/publish.py --html 正文.html --meta 正文.meta.json \
 | README 曾链接不存在的 `AUDIT.md`；文档与当前 V5 代码版本不一致 | 改为现有评估记录；统一版本为 V6 |
 | `evaluation/logs/` 存有旧运行日志和本机路径，不能复现当前状态 | 删除历史日志，不把截图/临时输出纳入运行时 |
 | 旧主题测试强制每个结构键都不同，容易奖励机械差异；主题截图未覆盖真实样稿和去色辨识 | 改为真实稿四宽度样张、同稿六主题与去色结构比较 |
+| `assets/shots/` 是约 30MB 的忽略生成输出目录，`tests/run.py` 与 CI 使用，误放在运行时资产区 | 将回归截图移到 `evaluation/visual-review/regression/`，同步 CI artifact 与 ignore；删除本机生成物，保留 clipboard/style/payload 断言 |
 | `render.py` 较大，但解析、组件、安全检查和交付共享同一渲染契约；无清晰独立边界 | 保持单一运行时渲染器，不为拆分而加模块 |
 | 真实模型执行、独立盲评与微信真机无可调用环境 | 标为 `BLOCKED/UNVERIFIED`；不冒充测试结果 |
 

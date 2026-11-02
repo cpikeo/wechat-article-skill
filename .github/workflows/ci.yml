@@ -31,7 +31,7 @@ jobs:
         with:
           name: gate3-visual-review
           path: |
-            assets/shots/*.png
-            assets/shots/REVIEW.md
-            evaluation/visual-review/*.png
+            evaluation/visual-review/**/*.png
+            evaluation/visual-review/**/*.jpg
+            evaluation/visual-review/**/REVIEW.md
             evaluation/visual-review/REPORT.md
