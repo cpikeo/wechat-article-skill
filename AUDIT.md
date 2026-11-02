@@ -1,195 +1,133 @@
-# V3.0.0 Release Audit
+# V4.0 审计：优化前后、文件账与未验证项
 
-审计日期：2026-11-02（Asia/Shanghai）
+基线 commit `09bbf40`（V3.0.0），V4.0.0 的主体提交是 `7f7cb60`。本文件记录实际改动与可核对结果；**2026-11-02 按要求删除了 `evaluation/` 与 `assets/shots/`**，因此文中部分数字无法再从本仓库重跑，见 §7。
 
-基线：`07ed833592b3028bd5ef21b8b5a2fa8846f53a9a`
+## 0. 摘要
 
-发布版本：`3.0.0`
+| 维度 | V3.0.0 | V4.0.0 | 现在怎么核对 |
+|---|---|---|---|
+| 编辑判断 | 渲染器内嵌少量文本检查，无类型策略、无承诺台账、无事实单元 | 独立 `editorial.py`：6 类型策略、31 处检查（18 mechanical／13 judgment）、承诺台账、事实单元、台账五列 | 回归 ⑬；`render.py --against`、`--ledger` |
+| 视觉语言 | 配置有 6 套轴值，渲染层把网格差异塌成一套 | 新增 `grid` 轴并落到渲染层：正文 15/16/17px、段首缩进 0/32px、行距 1.72–1.95、导语 17–24px、图注 12–14px | 回归 ③⑩；`--shots` 的六人格截图 |
+| 构图素材 | 图片职责已解析，人格层缺默认处理 | 六种人格默认处理 + 九种表达覆盖；每条边只声明一次 | 回归 ⑭、⑯ |
+| 移动端 | 表格靠 16px 字号与折行硬排，无排版测量 | 320px 单次判定 + 记录卡降级 + 短标签下限；`--shots` 实测最小字号／每行字数／首屏字数 | 回归 ⑭；`assets/shots/REVIEW.md`（需自己生成） |
+| 输入转换 | 脚注／尾注／批注只给警告，正文会被静默丢弃 | 含 `<w:t>` 即阻断、不产文件；页眉页脚单独提示 | 回归 ⑮ |
+| 测试 | 124 条断言 | **16 组、163 条断言** | `python3 tests/run.py` |
+| 架构 | 判读混在渲染器里 | 判读独立成模块；`SKILL.md` 23,003 → 18,494 B 且覆盖更多内容 | §6 文件账 |
 
-人格集合：**恰好六个**——`paper`、`letter`、`ink`、`frost`、`bone`、`folio`
+结论：V4 的增益在**判断可追溯**与**窄屏不靠硬塞**两件事上，不在主题或组件数量。自动化通过不构成内容或审美合格的证明（§8）。
 
-## 1. 结论
+## 1. 方法
 
-V3 把仓库从“Markdown 转内联样式 HTML”提升为一条仍保持单体、零运行时第三方依赖的 **Editorial Intelligence × Visual Design × WeChat Publishing** 流水线：先判断读者、场景、目标、主张、证据与限制，再决定构图、人格、素材和移动端节奏，最后才渲染与发布。
+- 基线：`git worktree add /tmp/v3 09bbf40`，V3、V4 用同一份稿子渲染后再比。
+- 渲染：`python3 scripts/render.py <稿> --theme <人格> -o <文件>`；截图用 Chromium（Playwright，deviceScaleFactor=2）。
+- 实测口径：`getComputedStyle` 取字号／行距／缩进；`scrollWidth > clientWidth` 判溢出；表格单行宽用同字体隐藏 span 量，不做字符数估算。
+- 回归：`python3 tests/run.py`；截图：`python3 tests/run.py --shots --shoot <稿>`。
 
-成熟能力没有被删减：Markdown／DOCX、资源路径安全、Gate 1／2／3、草稿默认、单次发布授权、素材复用、正文／来源／资源哈希与发布前完整性检查仍在。新增能力集中在可观察的编辑诊断、六套真实组件系统、中文移动排版、真实来源评估和配置—渲染器—样张一致性，没有引入框架或运行时依赖。
+## 2. 编辑质量
 
-**发布判断：代码与本地浏览器证据通过；真实微信账号链路仍未验证，因此不能宣称“微信真机已通过”。**
-
-## 2. 实际编辑评估
-
-五组样本均为已发布来源的摘录／标明摘译；每项改动都记录位置、问题、动作、收益与保留条件。结果由 `tests/editorial_eval.py` 生成，完整证据见 [`evaluation/RESULTS.md`](evaluation/RESULTS.md)。
-
-| 样本 | 类型 | 修改台账 | 保留不变量 | 正文字数（原→优化） | Gate 1/2 | 重复渲染／诊断 |
-|---|---|---:|---:|---:|---|---|
-| business | 商业分析 | 2 | 6 | 428→535 | PASS | 一致 |
-| news | 新闻报道 | 2 | 6 | 421→461 | PASS | 一致 |
-| tutorial | 技术教程 | 2 | 5 | 397→511 | PASS | 一致 |
-| profile | 人物故事 | 2 | 7 | 302→437 | PASS | 一致 |
-| opinion | 观点评论 | 2 | 4 | 683→722 | PASS | 一致 |
-
-可分离答案 key 的 A/B 包已由自动化测试实际生成并检查；**独立外部读者尚未执行盲选**，所以没有伪造“优化版胜率”或主观分数。逐项外部事实核真同样未执行。
-
-### 来源许可复核
-
-2026-11-02 逐页复核并把证据 URL 与说明写入 `evaluation/cases.json`：
-
-- Our World in Data：CC BY 4.0；原页明确已归档、停止更新。
-- 中文维基新闻：2025-01-30 后文字为 CC BY 4.0；本样本发布于 2025-07-03。审计时纠正了早先写成 CC BY 2.5 的元数据。
-- Python 文档：PSF License Version 2；3.8.6 起文档代码示例另可用 BSD-0。
-- 中文维基百科：摘录改编按 CC BY-SA 4.0 处理。
-- 维基文库《最苦与最乐》：作品页标记其在美国及作者终身加 80 年或更短期限地区属于公有领域。
-
-许可复核只确认再利用条件，不等于对每条事实做了第二来源核真。
-
-## 3. 六人格不是换色
-
-同一篇商业分析优化稿的 390px 对照基线保存在 [`evaluation/visual/`](evaluation/visual/README.md)。完整四宽度证据由 Gate 3 生成并由 CI 上传。
-
-| 人格 | 标题／章标 | 引文／重点 | 表格／信息 | 图片处理 | 空间节奏 |
-|---|---|---|---|---|---|
-| `paper` 静纸 | 小号索引章标、理性无衬线 | 短线与开放引文 | 开放表格、列式数据 | flush | 中等、基线清楚 |
-| `letter` 暖信笺 | 无编号人声标题、较轻字重 | 无侧线 voice 引文、暖底重点 | 暖色表头、堆叠数据 | soft | 段间更松、转场柔和 |
-| `ink` 酌墨 | 衬线标题、圆章编号 | 收束的深色反白重点 | 墨线表格、ledger 数据 | inkline | 书卷式、章节留白大 |
-| `frost` 北霜 | `01 /` 报表章标、紧凑粗体 | 侧线报告式重点 | 冷色表头、ticker 数据 | report | 六套中最紧凑 |
-| `bone` 素作 | 衬线 atelier 标题、无显式编号 | 台纸 lead、上下细线重点 | 规格线表格、specimen 数据 | mat | 六套中最舒展 |
-| `folio` 特稿 | 大号红色编号、强标题 | 紧凑黑底反白 | 黑色表头、feature 数据 | folio | 强重心、特稿张力 |
-
-配置中的 `lead/heading/h3/peak/divider/quote/image/data/table/list/type` 都进入真实组件分支；测试先去除颜色，再验证六套组件输出仍各不相同。`assets/themes.html` 带配置 SHA-256，必须可由当前 `themes.json + render.py` 精确再生成。
-
-## 4. 四宽度视觉审阅
-
-同稿六人格的 **320／360／390／430px 共 24 张全文图已逐张打开通读**；六张 390px 发布基线被保留。浏览器同时逐元素检查正文、图片、表格、表头和单元格边界，并验证复制后的正文与内联样式没有混入预览工具栏、脚本、base64 或本地标记。
-
-结论：
-
-- 四个宽度均无横向溢出；标题、正文、来源、章节转场和表格保持可读。
-- 320px 初次通读发现四字表头出现“三字＋孤字”，近似数值“约2500小时／不足1600小时”会拆开单位。已改为先兑现短表头与数值单位的最小宽度，再把余量给长文本列；确实放不下的多列数值表由 Gate 2 阻断。修复后六人格四宽度全部重跑通过。
-- `letter` 与 `bone` 较大的单元格内距曾暴露 2–3px 数值溢出；宽度模型现按六人格最大内距和真实 CJK 字体度量留余量，修复后通过。
-- `paper` 层级克制清楚；`letter` 的人声和暖色场明显；`ink` 的衬线、圆章和墨色重点成立；`frost` 的报告节奏最紧；`bone` 的台纸与留白最舒展；`folio` 的红章标与黑色信息块最强。差异来自信息结构与字重／构件，不只是色彩。
-- 真实商业稿判断为“无需插图”，所以六人格同稿图不伪造装饰图。六套图片处理在可再生主题样张中验证；comparison／sequence 的阅读顺序和去样式降级另有浏览器回归。
-- 样稿未配置封面，预览明确显示缺口；没有把占位区当作真实封面裁切通过。
-
-这些结论来自本地 Chromium + Noto Sans CJK 的模拟证据；微信客户端字体回退、后台清洗和真机截图仍是未验证项。
-
-## 5. 测试账本
-
-| 检查 | 结果 | 证据／边界 |
+| | V3 | V4 |
 |---|---|---|
-| `python3 -m py_compile scripts/*.py tests/*.py` | PASS | Python 语法 |
-| `python3 tests/run.py` | PASS | 13 个回归章节；10 个 unittest；含安全、DOCX、平台、素材、配置、预检与发布保护 |
-| `python3 tests/editorial_eval.py --check-report evaluation/RESULTS.md` | PASS | 五类真实来源、台账、不变量、重复任务、报告指纹 |
-| `python3 tests/run.py --shots --shoot examples/draft-handoff.md` | PASS | 320／360／390／430px、六人格同稿、组合构图、复制样式 |
-| 配置—渲染器—样张一致性 | PASS | 六人格结构轴唯一；`themes.html` 精确可再生且摘要一致 |
-| HTML 结构反例 | PASS | 错误嵌套、多余闭合、未闭合标签均会失败 |
-| 发布完整性与授权 | PASS（模拟） | 旧渲染器、旧主题配置、改写正文／来源／资源、待补资源、持久发布授权、确认标题不符均被拒绝 |
-| 页面级来源许可 | PASS（人工复核） | 许可 URL 与证据写入 `cases.json`；CI 不联网 |
-| 独立外部读者 A/B | **UNVERIFIED** | 包与 key 机制已验证，尚未邀请独立读者 |
-| 逐项第二来源事实核真 | **UNVERIFIED** | 保留来源和限制，不冒充外部核真 |
-| 微信草稿 API 回读／后台重开 | **UNVERIFIED** | 无真实账号凭证与权限 |
-| 微信 iOS／Android 真机、封面 2.35:1／1:1 | **UNVERIFIED** | Chromium 模拟不能替代真机 |
+| 类型策略 | 无（所有文章一套检查） | 6 种：新闻／分析／教程／人物／评论／长文，各给入口、结构、证据要求、常见失败 |
+| 标题承诺 | 只查数量承诺 | 数量承诺 + 书名号对象 + 问题型标题，输出「期望／可见／状态／位置」 |
+| 事实保留 | 无跨稿比对 | `--against` 比对数字+单位／日期／链接；消失须在 `removed_facts` 声明，新增须就近可核 |
+| 修改台账 | 自由格式 | 五列强制（位置／问题／动作／收益／保留检查），位置必须回得到正文 |
+| 判断边界 | 未区分 | 每条问题带 `class`（mechanical/judgment）与 `needs`（none/editor/fact-check） |
 
-本地最终回归没有已知失败项。未验证项不计作通过。
+V4 交付时曾用 6 个真实来源样本（新闻／分析／教程／人物／评论／长文，三档复杂度）跑通全部确定性检查，当时结论是 6/6 通过、事实单元 0 未声明丢失。**这套样本与结果报告已按要求删除**，现在只能用你自己的稿子复跑同一套规则：
 
-## 6. 文件审计与简化
-
-### 移动／删除旧路径
-
-| 旧路径 | 新路径 | 原因 |
-|---|---|---|
-| `scripts/selftest.py` | `tests/run.py` | 开发回归不属于用户运行时；保留并扩展全部安全／发布保护，不以减文件为由删测试 |
-| `scripts/fixtures.py` | `tests/fixtures.py` | 合成语料只服务开发测试；运行时目录不再混入 fixture 生成器 |
-
-旧路径随重命名删除，没有保留转发壳或重复实现。
-
-### 修改／新增
-
-| 路径 | 处理与理由 |
-|---|---|
-| `SKILL.md` | V3 唯一判断入口：编辑 brief、论证审计、事实边界、改动台账、视觉概念、移动验收与发布边界 |
-| `README.md` | 收敛为实际工作流、命令、目录和已验证／未验证边界 |
-| `assets/themes.json` | 保持恰好六人格，增加真实组件与类型／节奏轴 |
-| `assets/themes.html` | 由当前配置和渲染器重建的可展示样张；因可再生且有比较价值而保留 |
-| `scripts/render.py` | 编辑诊断、六套组件、中文表格宽度、组合构图、决策侧车与配置摘要；复用 `safety.py` 的路径／哈希／对比度逻辑 |
-| `scripts/check.py` | 增加错误嵌套、多余闭合和未闭合标签检查 |
-| `scripts/publish.py` | 发布前校验渲染器版本、主题配置、来源、正文和资源；继续默认草稿与单次授权 |
-| `tests/run.py` | 统一开发回归、四宽度浏览器证据、同稿六人格和真实评估入口 |
-| `tests/editorial_eval.py` | 五类真实来源、元数据、台账、不变量、重复性、A/B key 分离与报告一致性 |
-| `evaluation/` | 原稿／优化稿、来源许可、结果报告和六人格发布基线 |
-| `.github/workflows/ci.yml` | 分开运行非浏览器回归与 Gate 3，并上传完整截图 artifact |
-| `examples/draft-handoff.md` | 增加视觉概念、信息形态和移动风险交接字段 |
-| `references/publish.md` | 记录 V3 完整性预检边界 |
-| `AUDIT.md` | 本次发布的树、改动理由、证据和未验证项 |
-
-### 重复逻辑结论
-
-- `render.py` 与 `publish.py` 共用 `safety.py` 的 `local_path/sha256`；发布端直接读取渲染端导出的版本与主题摘要，不另造第二套主题解析。
-- `tests/run.py` 复用真实 `render/publish/check` 入口；`tests/fixtures.py` 只生成语料和资源，不复制生产逻辑。
-- 完整截图工作目录 `assets/shots/` 可重建且体积大，继续忽略；只保留六张有发布展示价值的 390px 基线。缓存与 `__pycache__` 不入库。
-- 没有新增框架、包管理层或运行时第三方依赖；Playwright 只用于显式开发截图和 CI。
-
-## 7. 完整发布树
-
-```text
-.
-├── .github/
-│   └── workflows/
-│       └── ci.yml
-├── .gitignore
-├── AUDIT.md
-├── LICENSE.txt
-├── README.md
-├── SKILL.md
-├── assets/
-│   ├── themes.html
-│   └── themes.json
-├── config.example.json
-├── evaluation/
-│   ├── README.md
-│   ├── RESULTS.md
-│   ├── cases.json
-│   ├── cases/
-│   │   ├── business.edited.md
-│   │   ├── business.original.md
-│   │   ├── news.edited.md
-│   │   ├── news.original.md
-│   │   ├── opinion.edited.md
-│   │   ├── opinion.original.md
-│   │   ├── profile.edited.md
-│   │   ├── profile.original.md
-│   │   ├── tutorial.edited.md
-│   │   └── tutorial.original.md
-│   └── visual/
-│       ├── README.md
-│       ├── personality_bone.png
-│       ├── personality_folio.png
-│       ├── personality_frost.png
-│       ├── personality_ink.png
-│       ├── personality_letter.png
-│       └── personality_paper.png
-├── examples/
-│   └── draft-handoff.md
-├── references/
-│   ├── direction.md
-│   ├── platform.md
-│   └── publish.md
-├── scripts/
-│   ├── check.py
-│   ├── extract_docx.py
-│   ├── publish.py
-│   ├── render.py
-│   └── safety.py
-└── tests/
-    ├── editorial_eval.py
-    ├── fixtures.py
-    └── run.py
+```bash
+python3 scripts/render.py 稿.md --against 原稿.md --ledger 台账.md --deliver 交付/
 ```
 
-`assets/shots/`、`config.json`、素材缓存、发布审计日志与 Python 缓存是本地／CI 运行产物，不属于发布树。
+## 3. 视觉语言
 
-## 8. 发布与回滚
+### 3.1 结构轴
 
-- 版本号已在 `SKILL.md` 与运行时统一为 `3.0.0`。
-- 发布提交应打注释标签 `v3.0.0`；提交与标签是否成功推送，以本次交付末尾的 Git 结果为准。
-- 回滚基线是 `07ed833592b3028bd5ef21b8b5a2fa8846f53a9a`。
-- 在真实账号验证前，不修改“微信真机未验证”的结论；首次账号验收应另存草稿回读、后台重开、iOS／Android、封面双裁切和正式发布授权记录。
+`assets/themes.json` 在 V3 已有 heading/lead/quote/peak/data/table/list/image/divider/type/h3 各 6 个取值，但**网格轴只有 1 个取值**，渲染层也没有把差异落到正文。V4 拆出 `grid`（`inset`／`paragraph`／`indent`／`body`／`caption`／`chapter_gap`／`paragraph_gap`），V3 1 → V4 6 个取值。
+
+### 3.2 同稿实测（商业分析优化稿，390px，Chromium；稿件已随 evaluation 删除）
+
+| 量 | V3 六人格取值 | V4 六人格取值 |
+|---|---|---|
+| 正文字号 | 16 / 16 / 16 / 16 / 16 / 16 | 16 / 16 / 16 / **15** / **17** / 16 |
+| 段首缩进 | 0 / 0 / 0 / 0 / 0 / 0 | 0 / **32px** / 0 / 0 / 0 / 0 |
+| 行距 | 1.75 / 1.80 / 1.80 / 1.72 / 1.85 / 1.75 | 1.75 / **1.90** / **1.90** / 1.72 / **1.95** / 1.75 |
+| 导语字号 | 18 / 18 / 19 / 17 / 18 / 22 | **22** / 19 / 19 / 17 / 18 / **24** |
+| 导语字重 | 400 / 400 / 400 / 500 / 400 / 700 | **700** / 500 / 400 / 500 / 400 / 700 |
+| 320px 每行字数 | 16 ×6 | 16 / 16 / 16 / **20** / 16 / 16 |
+
+15 个在该页可测的结构属性里，随人格变化的从 3 个增至 7 个。回归用**网格签名唯一性**（7 个网格键组成的元组不得重复）与四轴阈值（body ≥3 种、caption ≥2 种、chapter_gap ≥4 种、inset ≥2 种）把差异钉住，避免退回「只换颜色」。上表是删除前的测量，现可用任意稿件 + `--shots` 复现同样的量法。
+
+### 3.3 导语与组件
+
+- 导语按 `[。！？；]` 拆成 `span{display:block}`，folio 24px 导语不再从句子中间折行；行高 1.55。
+- 表格行线从单元格挪到 `tr`，边线只出现一次，不再因单元格内距叠成双线。
+- `img()` 重写：人格默认（soft/inkline/report/mat/folio/flush）+ 表达覆盖（hero/full-width/inset/plate/detail/sequence/comparison/evidence/explainer/data）；每条边只声明一次（hero 用强调色底线**替换**人格底线）；`detail` 保持原比例仅内缩 5%；图注按职责取字号；GIF 前缀；无职责图片渲染为「待补素材」占位而不是崩溃。
+- V3 的图片职责解析本来就存在（同一页 7 张图 5 种 wrapper），所以不宣称「V3 没有职责」；V4 的差别在人格默认处理与单边一线。
+
+## 4. 移动端：一次自我回归与校准
+
+V4 最初的表格宽度模型按「ASCII 0.5em + 每列 20px 内距」估算，把一张 4 列 8 位数的表判成放不下，在 320 与 390 都降级成记录卡。用 Chromium 量真实字宽后（Noto Sans CJK：数字 7.78px／汉字 14px／字号 14px；内距实测 2×6 或 2×7px），发现该表真实需要 270px、可用 288px，**本来放得下**。这是 V4 自己引入的回归，已修：
+
+1. 拆出 `text_px()`（纯字宽）与 `cell_min_px(text, pad)`（加该人格真实内距），`table_pad()` 给出 12/14px。
+2. `table_fits` / `col_widths` 同步接受 `pad`；列宽下限加 2px（`TABLE_SLACK`），消除 `table-layout:fixed` 小数取整造成的「一季／度」孤字。
+3. 短标签下限从「仅表头」扩到任何 ≤4 字且无空格的单元格——正文的「一季度」和表头的「观察对象」是同一种断行风险。
+4. 数字 `nowrap` 改为**先算可用像素再决定**：够就不断行，不够允许折行，不再撑破单元格。
+
+当时核查范围：4 篇稿 × 6 人格 × 320/360/390/430 = 96 次渲染，0 处元素溢出、0 处短标签或数字折行。现在这条结论可用你的稿件重跑（`--shots` 会在四宽度做元素级溢出检查），或直接用上面的量法自测。
+
+**不做响应式断点**：微信剥离媒体查询，所以窄屏形态按 320px 一次判定，同一 HTML 各宽度同形；`bone` 因 6px 内衬在 320px 更早改用记录卡。
+
+## 5. 输入转换与交付
+
+- V3 对 `footnotes/endnotes/comments` 只打印一条「须人工核对」，正文内容会被**静默丢弃**；V4 改为：这些 XML 里出现 `<w:t>` 就阻断转换、不写任何输出并列出文件。页眉页脚仍不阻断，但单独提示。
+- `--deliver` 一次产出源稿、正文、预览、meta、修改记录、验收与素材；回归 ⑯ 校验产物齐全且互相一致。
+- 发布侧未改协议：默认只建草稿，正式发布须本次 `--submit --confirm-title`，配置不能保存授权；预检比对渲染器版本、主题配置指纹与文件哈希。
+
+## 6. 文件账
+
+四类分法：**运行时**（`scripts/`、`assets/themes.json`）、**开发测试**（`tests/`）、**交付资产**（`assets/themes.html`、`examples/`、`references/`）；原「评估证据」类（`evaluation/`）已按 §7 删除。
+
+| 动作 | 文件 | 理由 |
+|---|---|---|
+| 新增 | `scripts/editorial.py` | 编辑判读与排版执行分离；`render.py` 只调用，不再内嵌 31 处判读 |
+| 合并 | `render.py` 的 `locate_row()` → `editorial.locate()` | 台账位置回查在 CLI 与审计里是同一件事，两处实现会漂移 |
+| 删除 | `render.py` 未使用的 `difflib`／`visible_len`／`TYPES` 导入 | 死导入；`TYPES` 已由 `editorial.resolve_type` 承担 |
+| 压缩 | `SKILL.md` 23,003 B → 18,494 B（-20%） | 首版 V4 有整段重复（流程表与正文、语法表与分节）；合并成一张语法表，判断条目不减 |
+| 保留 | `references/*.md` | 素材工艺、平台边界、发布接口按需读取，从 SKILL 正文剥离才让单文件入口成立 |
+| 保留 | `assets/themes.html` | 生成物但入库：六人格对照的可视基线，回归校验它能被 `--specimen` 精确再生成 |
+| 删除 | `tests/editorial_eval.py`、`evaluation/` | 见 §7：样本集与评估报告按用户要求移除 |
+| 删除 | `tests/visuals.py` | 它的唯一职责是重出 `evaluation/visual/` 的对照图，目录不存在后无用 |
+
+没有删除运行时脚本：`scripts/{render,editorial,check,publish,extract_docx,safety}.py` 逐个核对过调用方与回归覆盖，均有实际职责。
+
+## 7. 交付物移除记录（2026-11-02）
+
+按用户明确要求删除：
+
+| 删除 | 体积 | 直接后果 |
+|---|---|---|
+| `assets/shots/`（git 忽略的产物） | 43 MB | 本机不再保留上一轮截图包；`python3 tests/run.py --shots` 一条命令重出 |
+| `evaluation/`（样本、`RESULTS.md`、视觉对照图） | 5.3 MB | 6 样本评估与 V3/V4 视觉对照无法从仓库重跑；`tests/run.py` 的 ⑬、六人格截图源、`tests/visuals.py` 依赖随之调整 |
+
+同步改动：删 ⑬（真实来源评估），六人格截图改用回归内置的合成对照稿（`tests/run.py` 里生成，覆盖导语／引文／章节／peak／列表／表格／data），删 `tests/editorial_eval.py` 与 `tests/visuals.py`，CI 的 `--against` 改为对 `examples/draft-handoff.md` 自比对冒烟。回归从 17 组 169 条变为 **16 组 163 条**，仍全绿。
+
+**代价要说清楚**：仓库现在不能自证「编辑改写前后」与「六人格视觉前后」这两类证据，只能自证规则、渲染与发布保护。要恢复，需要重新准备带许可与来源的样本稿，并按 `--against`／`--shots` 重跑；`git show 7f7cb60` 仍可取回被删内容。
+
+## 8. 未验证（UNVERIFIED）
+
+1. **独立外部读者 A/B 盲测**：随 `editorial_eval.py` 一起删除，当前没有任何盲测结果，也没有生成工具。现有检查是同团队规则核对。
+2. **逐项第二来源核真**：事实单元比对只认字面，未逐条回查第二个独立来源。
+3. **微信草稿 API 回读**：`publish.py` 的接口路径只有 mock 契约测试，没有真实 AppID 下的建稿、回读、字段核对与后台重开检查。
+4. **iOS／Android 真机与封面双裁切**：浏览器四宽度截图不等于真机；2.35:1 与 1:1 裁切只在预览里模拟。
+
+另两项属于**推断**：WebView 对 `table-layout:fixed` 小数百分比的取整、微信编辑器对 `display:flex` 记录卡的清洗。
+
+## 9. 复跑
+
+```bash
+python3 tests/run.py
+python3 scripts/render.py 稿.md --against 原稿.md --ledger 台账.md --deliver 交付/
+pip install playwright && python3 -m playwright install --with-deps chromium
+python3 tests/run.py --shots --shoot examples/draft-handoff.md
+```

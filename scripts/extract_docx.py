@@ -152,9 +152,22 @@ def extract(docx_path, out_md):
         z.close()
         print("✗ 转换会丢失语义，未写出成稿；请先在 Word 展平或另附材料：\n" + "\n".join(problems), file=sys.stderr)
         return 1
-    auxiliary = [name for name in z.namelist() if re.match(r"word/(?:header|footer|comments|footnotes|endnotes).*\.xml$", name)]
-    if auxiliary:
-        print("  注意：仅提取正文；以下附件内容须人工核对：" + ", ".join(auxiliary), file=sys.stderr)
+    # 脚注／尾注／批注是正文内容的一部分：静默丢掉就是改稿。必须阻断，让作者先展平。
+    content_parts = {name: z.read(name).decode("utf-8", "ignore")
+                     for name in z.namelist()
+                     if re.match(r"word/(?:footnotes|endnotes|comments).*\.xml$", name)}
+    with_text = [name for name, xml in content_parts.items() if "<w:t" in xml]
+    if with_text:
+        z.close()
+        print("✗ 文档含脚注／尾注／批注正文，转换会丢失内容；请先在 Word 中把它们并入正文：\n  "
+              + "\n  ".join(with_text), file=sys.stderr)
+        return 1
+    # 页眉页脚通常是页码等页面家具：不阻断，但必须显式列出让人核对。
+    furniture = [name for name in z.namelist()
+                 if re.match(r"word/(?:header|footer).*\.xml$", name)]
+    if furniture:
+        print("  注意：仅提取正文；页眉页脚未转换，请人工核对是否含正文信息："
+              + ", ".join(furniture), file=sys.stderr)
     os.makedirs(out_dir, exist_ok=True)
     for el in body:
         tag = el.tag

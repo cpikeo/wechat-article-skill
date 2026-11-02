@@ -43,6 +43,41 @@ def png(w, h, rgb=TINY_RGB):
 # 改渲染器不该动这张表；这张表动了，说明解析或首屏推导变了——那必须是有意的。
 # 注意：语料由本文件合成，所以这张表锁的是解析与推导，不再声称锁住某批真实文章的编辑判断。
 CORPUS = {
+    # 构图矩阵：无图版在 skills；这里覆盖首图/收藏/对比/序列/细节/长图六种职责。
+    "composition": {
+        "baseline": {"theme": "folio", "imgs": 7, "peak": False, "toc": False, "layers": 2},
+        "md": """---
+title: 合成用例|六种图片职责
+theme: folio
+density: standard
+author: 回归作者
+bio: 合成回归语料，不含事实主张
+cta: 合成文本，请勿引用。
+---
+
+> 【合成回归语料】本页只验证图片职责与版式降级，不主张任何事实。
+
+## 入口与细节
+
+![合成首图：抽象版式示意](images/fig.jpg "场景 hero")
+
+正文一段，说明首图承担入口职责，不承担证据职责。
+
+![合成细节：纯色块示意](images/fig_square.png "结构 detail")
+
+## 对比与序列
+
+![对比甲：左示意](images/fig.jpg "对比 comparison")
+![对比乙：右示意](images/fig.jpg "对比 comparison")
+
+![第一步示意](images/fig_wide.png "场景 sequence")
+![第二步示意](images/fig_wide.png "场景 sequence")
+
+## 长图与收束
+
+![合成长图：整页示意](images/fig_long.png "结构")
+""",
+    },
     # 纯文字：无图、无封面，验证只有文字与列表时结构仍成立。
     "skills": {
         "baseline": {"theme": "paper", "imgs": 0, "peak": True, "toc": False, "layers": 1},
@@ -253,6 +288,11 @@ def build(dest):
             f.write(spec["md"])
     for rel, blob in (("images/cover.jpg", jpeg("cover.jpg")),
                       ("images/fig.jpg", jpeg("fig.jpg")),
+                      # 构图回归需要不同形状：方形细节、长图、超宽全景。纯色 PNG 体积很小，
+                      # 只用于验证版式与可读性，不冒充内容。
+                      ("images/fig_square.png", png(900, 900, (168, 158, 140))),
+                      ("images/fig_long.png", png(900, 2400, (208, 200, 186))),
+                      ("images/fig_wide.png", png(1600, 520, (150, 160, 152))),
                       ("fixtures/tiny.png", png(*TINY))):
         with open(os.path.join(dest, rel.replace("/", os.sep)), "wb") as f:
             f.write(blob)

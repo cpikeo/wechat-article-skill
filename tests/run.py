@@ -4,7 +4,7 @@
     python3 tests/run.py            退出码 1 = 回归失败
     python3 tests/run.py --shots   截取 320/360/390/430px 证据（需 playwright，未装则失败）
 
-合成语料与素材不入库：tests/fixtures.py 每次在临时目录生成；真实来源对照保留在 evaluation/。
+合成语料与素材不入库：tests/fixtures.py 每次在临时目录生成，回归不依赖仓库里的案例稿。
 三条铁律：用例必须过；护栏必须仍会在该失败的地方失败；测试只冻结可确定缺陷，不冻结审美配额。
 """
 import argparse
@@ -97,6 +97,8 @@ RENDER_CHECKS = (
 # 这些轴都由真实渲染器消费：导语 / 章节 / 小标题 / 引文 / 重点 / 转场 / 图片 / 数据 / 表格 / 列表。
 STRUCTURAL_AXES = ("lead", "heading", "h3", "quote", "peak", "divider", "image", "data", "table", "list")
 SIGNATURE = STRUCTURAL_AXES + ("display",)
+# V4：网格是人格的一部分（出入、段首缩进、行距、正文与图注字号），必须一起进入唯一性检查。
+GRID_KEYS = ("inset", "paragraph", "indent", "chapter_gap", "paragraph_gap", "body", "caption")
 COLOR_KEYS = ("text", "sub", "muted", "line", "field", "accent", "dark", "on_dark")
 TYPE_KEYS = ("heading_size", "heading_weight", "heading_leading", "chapter_gap", "paragraph_gap")
 
@@ -109,7 +111,10 @@ def theme_audit():
         bad.append("主题必须固定为 paper / letter / ink / frost / bone / folio，不能增删或换序")
     for key, theme in _r.THEMES.items():
         missing = [k for k in SIGNATURE + COLOR_KEYS
-                   + ("name", "intent", "leading", "radius", "seal", "toc_label", "type") if k not in theme]
+                   + ("name", "intent", "leading", "radius", "seal", "toc_label", "type", "grid", "concept") if k not in theme]
+        missing_grid = [k for k in GRID_KEYS if k not in theme.get("grid", {})]
+        if missing_grid:
+            bad.append(f"{key} 缺少网格键 {missing_grid}")
         missing_type = [k for k in TYPE_KEYS if k not in theme.get("type", {})]
         if missing or missing_type:
             bad.append(f"{key} 缺少键 {missing + ['type.' + x for x in missing_type]}")
@@ -119,6 +124,14 @@ def theme_audit():
         values = [theme.get(axis) for theme in _r.THEMES.values()]
         if len(set(values)) != len(values):
             bad.append(f"结构轴 {axis} 存在重复：{values}")
+    # 网格：六套网格签名必须互不相同（否则只是换色），节奏轴要有真实的量级差异。
+    grids = [tuple(theme["grid"].get(k) for k in GRID_KEYS) for theme in _r.THEMES.values()]
+    if len(set(grids)) != len(grids):
+        bad.append(f"网格签名存在重复：{grids}")
+    for axis, least in (("body", 3), ("caption", 2), ("chapter_gap", 4), ("inset", 2)):
+        values = [theme["grid"].get(axis) for theme in _r.THEMES.values()]
+        if len(set(values)) < least:
+            bad.append(f"网格轴 {axis} 区分不足（{values}）")
     for left, right in combinations(sorted(sig), 2):
         differences = [axis for axis, a, b in zip(SIGNATURE, sig[left], sig[right]) if a != b]
         if not differences:
@@ -381,6 +394,9 @@ def docx_ok():
         return (not missing and code2 == 1), f"缺 {missing} · 非 docx 退出码 {code2}"
 
 
+METRICS = {}
+
+
 def shots(shoot=None):
     """把每篇预览截成 320/360/390/430px PNG —— Gate 3 通读（人眼或视觉模型）的**证据**，不是视觉合格证。
 
@@ -441,6 +457,27 @@ def shots(shoot=None):
             pg.screenshot(path=os.path.join(out_dir, f"{stem}_{width}.png"), full_page=True)
             if pg.evaluate("document.documentElement.scrollWidth > innerWidth || [...document.querySelectorAll('#c p,#c img,#c table,#c th,#c td')].some(e=>e.scrollWidth>e.clientWidth+1 || e.getBoundingClientRect().right>document.querySelector('#c').getBoundingClientRect().right+1)"):
                 return png, f"{stem}（{width}px横向溢出）"
+            METRICS[(stem, width)] = pg.evaluate("""() => {
+                const ps=[...document.querySelectorAll('#c p')].filter(p=>p.textContent.trim());
+                const sizes=ps.map(p=>parseFloat(getComputedStyle(p).fontSize));
+                const body=ps.filter(p=>parseFloat(getComputedStyle(p).fontSize)>=15);
+                // 中文每行字数：用 Range 量一行的宽度，除以正文单字宽度
+                // 中文每行字数：取所有正文段中最宽的一行，除以单字宽度（不取首行，首行常因断句偏短）
+                let perLine=0;
+                for (const p of body){
+                  const r=document.createRange(); r.selectNodeContents(p);
+                  const rects=[...r.getClientRects()].filter(x=>x.width>1);
+                  const one=parseFloat(getComputedStyle(p).fontSize);
+                  const widest=Math.max(0,...rects.map(x=>x.width));
+                  if (one) perLine=Math.max(perLine, Math.round(widest/one));
+                }
+                const c=document.querySelector('#c').getBoundingClientRect();
+                let visible=0;
+                for (const p of ps){const b=p.getBoundingClientRect();
+                   if (b.top < 844) visible += p.textContent.length;}
+                return {minSize: Math.min(...sizes), bodyLines: perLine, firstScreenChars: visible,
+                        cWidth: Math.round(c.width)};
+            }""")
         pg.set_viewport_size({"width": 390, "height": 844})
         return png, None
 
@@ -485,11 +522,56 @@ def shots(shoot=None):
             manifest.append((name + ".png", f"fixtures 合成语料 {name}", look.get(name, "")))
             pg.close()
         from render import THEMES
-        personality_source = os.path.join(ROOT, "evaluation", "cases", "business.edited.md")
+        # 六人格对照稿自带全部关键原语：回归不依赖仓库里的任何案例稿。
+        personality_source = os.path.join(FIX, "personality.md")
+        with open(personality_source, "w", encoding="utf-8") as f:
+            f.write("""---
+title: 合成对照|六人格语法
+theme: paper
+density: standard
+author: 合成
+date: 2026年11月2日
+---
+
+一句话导语，用来说明这份稿子只比较版式：同样的文字，六种编辑语言；不比较内容好坏。
+
+> 引文用来观察侧线、底色与字体的差别。
+
+## 先看层级
+
+正文段落拿来观察字号、行距、段距与缩进。这里再补一句，让段落跨过两行，才能看出节奏。
+
+::: peak
+核心主张：差异要落在层级、网格与组件形态上。
+:::
+
+### 小节标题
+
+- 列表中文字
+- 列表第二项
+
+| 观察对象 | 年工时 | 位置 |
+|---|---|---|
+| 甲 | 2500小时 | 高工时 |
+| 乙 | 1600小时 | 低工时 |
+
+::: data 单位：小时
+1642｜法国四来源低估
+1558｜国民账户口径
+:::
+
+::: note 来源与口径
+合成示意（2026-11-02）；数字仅用于版式对照，不是真实统计。
+:::
+
+## 再看构图
+
+正文继续。这一段用来观察章节之间的留白是否大于段距。
+""")
         for theme in THEMES:
             output = os.path.join(FIX, f"personality_{theme}.html")
             code, log = run([os.path.join(SCRIPTS, "render.py"), personality_source,
-                             "--theme", theme, "-o", output], os.path.dirname(personality_source))
+                             "--theme", theme, "-o", output], FIX)
             if code:
                 failed.append(f"{theme}（人格渲染失败）{log[-300:]}")
                 continue
@@ -500,7 +582,7 @@ def shots(shoot=None):
                 failed.append(err)
             else:
                 made.append(png)
-                manifest.append((f"personality_{theme}.png", "真实来源商业分析优化稿 · 同稿六人格",
+                manifest.append((f"personality_{theme}.png", "合成对照稿 · 同稿六人格",
                                  "导语/章节/引文/数据/表格/空间节奏的区别"))
             pg.close()
         # Exercise grouped layouts in the browser, including a style-stripped reading-order fallback.
@@ -516,11 +598,13 @@ def shots(shoot=None):
         else:
             pg = b.new_page(viewport={"width": 390, "height": 844}, device_scale_factor=2)
             prev = os.path.join(FIX, "composition_paper_预览.html")
-            png, err = one_shot(pg, prev, "composition")
+            # 文件名不能和 fixtures 里的 composition 语料重名：两份内容不同，
+            # 同名会互相覆盖，证据清单里也会出现两行指向同一张图。
+            png, err = one_shot(pg, prev, "compose_matrix")
             if err: failed.append(err)
             else:
                 made.append(png)
-                manifest.append(("composition.png", "合成构图样张", "并列几何、顺序、图注与微信降级"))
+                manifest.append(("compose_matrix.png", "合成构图样张", "并列几何、顺序、图注与微信降级"))
             pg.set_viewport_size({"width": 320, "height": 844})
             geometry = pg.evaluate("""() => {let a=[...document.querySelectorAll('#c table td')];
                 let x=a.map(e=>e.getBoundingClientRect());
@@ -550,6 +634,26 @@ def shots(shoot=None):
                                  "按稿件实际：断行/小字来源/层级/密度/图表/中英混排"))
             pg.close()
         b.close()
+    # 每套人格的四宽度对照条：横向并排，便于一眼比较断行与密度（缩放到可读的宽度）。
+    try:
+        from PIL import Image
+        from render import THEMES as _THEMES
+        for theme in _THEMES:
+            paths = [os.path.join(out_dir, f"personality_{theme}_{w}.png") for w in (320, 360, 390, 430)]
+            if not all(os.path.isfile(x) for x in paths):
+                continue
+            ims = [Image.open(x) for x in paths]
+            top = max(900, min(im.height for im in ims))
+            ims = [im.crop((0, 0, im.width, min(top, im.height))) for im in ims]
+            sheet = Image.new("RGB", (sum(im.width for im in ims), top), "white")
+            x = 0
+            for im in ims:
+                sheet.paste(im, (x, 0))
+                x += im.width
+            sheet.save(os.path.join(out_dir, f"widths_{theme}.png"))
+    except ImportError:
+        pass
+
     review = os.path.join(out_dir, "REVIEW.md")
     with open(review, "w", encoding="utf-8") as f:
         f.write("# Gate 3 截图证据包（320/360/390/430px · 2x）\n\n"
@@ -567,6 +671,14 @@ def shots(shoot=None):
                 "## 证据清单\n\n| 文件 | 来源 | 审阅重点 |\n|---|---|---|\n")
         for png_name, src, w in manifest:
             f.write(f"| {png_name} + {png_name[:-4]}_首屏.png + {png_name[:-4]}_{{320,360,390,430}}.png | {src} | {w or '按稿件实际'} |\n")
+        if METRICS:
+            f.write("\n## 排版测量（浏览器实测，不是审美结论）\n\n"
+                    "| 页面 | 宽度 | 最小字号 | 中文每行字数 | 首屏可见字数 | 正文宽 |\n|---|---:|---:|---:|---:|---:|\n")
+            for (stem, width), m in sorted(METRICS.items()):
+                f.write(f"| {stem} | {width}px | {m['minSize']:.0f}px | {m['bodyLines']} | "
+                        f"{m['firstScreenChars']} | {m['cWidth']}px |\n")
+            f.write("\n判读方式：最小字号低于 12px 视为不可读；320px 下中文每行超过 20 字视为过密、"
+                    "低于 12 字视为过碎；首屏可见字数长期低于 60 说明入口被装饰挤占。\n")
     print(f"\nGate 3 截图证据（390px · 2x · 4宽度元素级与复制样式检查）：{out_dir}")
     for m in made:
         print("   " + os.path.basename(m))
@@ -595,7 +707,7 @@ def baseline_ok():
             "peak": any(k == "peak" for k, _ in blocks),
             "toc": meta.get("toc", "").lower() in ("true", "yes", "1")
                    and len([b for k, b in blocks if k == "h2"]) >= 3,
-            "layers": len(_r.first_screen(meta, blocks)),
+            "layers": len(_r.first_screen(meta, blocks)["layers"]),
         }
         for k, v in spec["baseline"].items():
             if got[k] != v:
@@ -723,13 +835,22 @@ def delivery_defects_ok():
     header_rows = [["观察对象", "年工时", "文中位置"], ["柬埔寨", "约2500小时", "高工时、较低人均收入"]]
     header_width = _r.col_widths(header_rows)[0] / 100 * 288
     test("四字中文表头在320px不形成单字孤行", header_width + 1 >= _r.cell_min_px("观察对象"))
-    _t4 = [["一季度", "二季度", "三季度", "四季度"],
-           ["12345678元", "23456789元", "34567890元", "45678901元"]]
-    test("表格数值列小屏放不下被拦（320px 溢出）",
-         any("小屏放不下" in m for m in _r.compose_gate({"title": "回归"}, [("table", _t4)])[0]))
-    test("表格删低价值列后小屏放得下",
-         not any("小屏放不下" in m for m in _r.compose_gate({"title": "回归"},
-                                                           [("table", [row[:3] for row in _t4])])[0]))
+    _t4 = [["季度", "营收", "同比", "环比", "备注"],
+           ["一季度", "12345678元", "+12.4%", "+3.1%", "春节因素"],
+           ["二季度", "23456789元", "-3.1%", "-0.8%", "渠道调整"]]
+    _fits = [["季度", "营收", "同比", "备注"],
+             ["一季度", "12345678元", "+12.4%", "春节因素"]]
+    test("表格数值列小屏放不下时改为记录卡而非缩字号",
+         "记录 01" in r.table(_t4) and "table-layout:fixed" not in r.table(_t4)
+         and any("记录卡" in m for m in _r.compose_gate({"title": "回归"}, [("table", _t4)])[1]))
+    test("三列表格仍走表格并在 320px 放得下",
+         "table-layout:fixed" in r.table([row[:3] for row in _t4])
+         and _r.table_fits([row[:3] for row in _t4]))
+    # 实测反查：这条四列表在 Chromium 320px 下每格都能单行排完（需 270px / 可用 288px），
+    # 因此必须仍是表格；把「放得下」误判成记录卡会白丢表格的横向对照能力。
+    test("确实放得下的四列数值表保持表格",
+         _r.table_fits(_fits) and "table-layout:fixed" in r.table(_fits)
+         and "记录 01" not in r.table(_fits))
     test("纯数字单元格禁止断行", "white-space:nowrap" in r.table([["列", "值"], ["甲", "60%"]]) and "white-space:nowrap" not in r.table([["列", "值"], ["甲", "中文很长的一格"]]))
     test("近似数值与中文单位保持同线", "white-space:nowrap" in r.table([["对象", "年工时"], ["甲", "约2500小时"], ["乙", "不足1600小时"]]))
     toc_md = HEAD + "toc: true\n---\n> 导语。\n\n第一段。\n\n## **重点**结论\n\n一。\n\n## ==关键词==\n\n二。\n\n## 第三\n\n三。\n"
@@ -772,19 +893,22 @@ def delivery_defects_ok():
                   + renderer.lst(True, ['一步', '二步']) + renderer.img('说明', 'x.jpg', '解释') + renderer.hr())
         structural.add(re.sub(r'#[0-9A-Fa-f]{6}', '#COLOR', sample))
     test("六人格真实组件输出在去色后仍各不相同", len(structural) == 6)
-    test("paper 重点是短强调线，与标题层级不同貌", 'background:#5C6758' in rp.quote('主张', '', 'peak') and 'width:28px' in rp.quote('主张', '', 'peak'))
+    test("paper 重点是短强调线，与标题层级不同貌", f'background:{rp.t["accent"]}' in rp.quote('主张', '', 'peak')
+         and 'width:28px' in rp.quote('主张', '', 'peak'))
     test("bone 重点是衬线上下细线", ('border-top:1px solid' in rb.quote('主张', '', 'peak')
           and 'border-bottom:1px solid' in rb.quote('主张', '', 'peak') and _r.SERIF in rb.quote('主张', '', 'peak')))
     test("frost 重点是加粗侧线", 'border-left:3px solid' in rfr.quote('主张', '', 'peak'))
-    test("letter 重点是暖底色块，引文是无侧线的人声层级", ('background:#F6EBDC' in rl.quote('主张', '', 'peak')
+    test("letter 重点是暖底色块，引文是无侧线的人声层级", (f'background:{rl.t["field"]}' in rl.quote('主张', '', 'peak')
           and 'border-left' not in rl.quote('引文', '出处', 'quote') and '—— 出处' in rl.quote('引文', '出处', 'quote')))
-    test("folio 反色紧凑、ink 反色舒展", 'padding:13px 15px' in rfo.quote('主张', '', 'peak') and 'padding:20px 18px' in ri.quote('主张', '', 'peak'))
+    test("folio 反色紧凑、ink 反色舒展", 'padding:13px 15px' in rfo.quote('主张', '', 'peak')
+         and 'padding:22px 18px' in ri.quote('主张', '', 'peak')
+         and ri.body == rfo.body)   # 同一字号下靠内距与行距区分疏密
     html = _r.render(HEAD + '---\n::: bars 件\n1｜甲\n2｜乙\n:::\n\n::: note 来源\nhttps://example.com/x\n:::\n')[3]
     test("来源 note 紧贴图示而非悬空", 'margin:32px 0 10px' in html and 'margin:10px 0 16px;' in html)
     html = _r.render(HEAD + '---\n![图](images/fig.jpg "证据")\n\n::: note 来源\nhttps://example.com/x\n:::\n')[3]
-    test("证据图来源紧贴图片", 'margin:24px 0 10px' in html and 'margin:10px 0 16px;' in html)
-    test("表头基线重于行线", 'border-bottom:1px solid #746F66' in r.table([['列', '值'], ['甲', '1']])
-          and 'border-bottom:1px solid #E8E4DB' in r.table([['列', '值'], ['甲', '1']]))
+    test("证据图来源紧贴图片", 'margin:26px 0 10px' in html and 'margin:10px 0 16px;' in html)
+    test("表头基线重于行线", f'border-bottom:1px solid {r.t["muted"]}' in r.table([['列', '值'], ['甲', '1']])
+         and f'border-bottom:1px solid {r.t["line"]}' in r.table([['列', '值'], ['甲', '1']]))
     long_one = '这是一句足够长的测试句子。' * 12
     d = _r.auto_digest(*_r.parse(HEAD + '---\n' + long_one + '\n'))
     test("自动摘要在句末收口，不腰斩", len(d) <= 120 and d.endswith('。') and '测试句子。' in d)
@@ -1019,7 +1143,7 @@ class DeliveryTests(unittest.TestCase):
         meta, blocks = render.parse('---\ntitle: 标题\n---\n重复段落。\n\n重复段落。\n\n增长20%。')
         review = render.editorial_review(meta, blocks)
         self.assertTrue(any(x['action'] == '合并或删除' for x in review['issues']))
-        self.assertTrue(any(x['action'] == '核查数字' for x in review['issues']))
+        self.assertTrue(any(x['action'].startswith('核查数字') for x in review['issues']))
         self.assertEqual(review['fact_verification'], 'not_performed')
         for text in ('#### 深层标题', '正文 ![图](x.jpg)'):
             with self.assertRaises(ValueError): render.parse(text)
@@ -1067,6 +1191,240 @@ class DeliveryTests(unittest.TestCase):
         with contextlib.redirect_stderr(io.StringIO()):
             self.assertEqual(extract_docx.extract(src, out), 1)
         self.assertFalse(out.exists())
+
+
+
+# ---- V4：编辑智能 ----
+def editorial_intelligence_checks():
+    """编辑判断的回归：只看能被机器稳定指出的线，不冒充语义判断。"""
+    from editorial import TYPES, audit, compare_facts, facts, parse_ledger, resolve_type
+    out = []
+
+    def case(name, ok):
+        out.append((name, bool(ok)))
+
+    def codes(md):
+        meta, blocks = _r.parse(HEAD + md)
+        return meta, blocks, audit(meta, blocks)
+
+    # 类型策略必须完整、可解析，且每种类型给出可执行的读者问题与证据要求
+    case("六种文章类型策略完整",
+         len(TYPES) == 6 and all(all(t.get(k) for k in
+                                     ("label", "reader_question", "opening", "structure",
+                                      "evidence", "title_promise", "risks"))
+                                 for t in TYPES.values()))
+    case("中文类型名解析到同一策略",
+         resolve_type("新闻报道")[0] == "news" and resolve_type("人物故事")[0] == "profile"
+         and resolve_type("深度长文")[0] == "longform" and resolve_type("观点")[0] == "opinion")
+    _, _, r = codes("article_type: 白皮书\n---\n正文一段。\n")
+    case("未识别类型被指出而不是静默套用", any(i["code"] == "TYPE-UNKNOWN" for i in r["issues"]))
+
+    # 标题承诺：数量、对象、问题
+    _, _, r = codes("title: 三个方法让你早睡\narticle_type: 教程\n---\n> 导语。\n\n## 方法一\n\n正文。\n\n## 方法二\n\n正文。\n")
+    case("标题数量承诺不符被拦（must）",
+         any(i["code"] == "PROMISE-COUNT" and i["severity"] == "must" for i in r["issues"]))
+    case("承诺台账给出期望/可见与位置",
+         any(p["kind"] == "count" and p["expected"] == 3 and p["observed"] == 2 for p in r["promise"]))
+    _, _, r = codes("title: 同一年同一个国家，工时数据能差200小时\narticle_type: 分析\n---\n> 导语。\n\n## 甲\n\n正文。\n\n## 乙\n\n正文。\n\n## 丙\n\n正文。\n\n## 丁\n\n正文。\n")
+    case("「一个」不被当成数量承诺",
+         not any(i["code"] == "PROMISE-COUNT" for i in r["issues"]))
+    _, _, r = codes('title: 为什么工时数据不可比\narticle_type: 分析\n---\n> 导语。\n\n正文一段足够长，说明一些事情并且不给出回答结构。\n\n## 甲\n\n正文。\n')
+    case("问题型标题缺回答结构被提示",
+         any(i["code"] == "PROMISE-QUESTION" for i in r["issues"]))
+    _, _, r = codes('title: 《静夜思》为什么难译\narticle_type: 分析\n---\n> 导语。\n\n正文一段。\n\n## 甲\n\n正文。\n\n## 乙\n\n正文。\n')
+    case("标题中的对象未在正文出现被拦",
+         any(i["code"] == "PROMISE-OBJECT" and i["severity"] == "must" for i in r["issues"]))
+    _, _, r = codes('title: 《静夜思》为什么难译\narticle_type: 分析\n---\n> 导语。\n\n《静夜思》只有二十字，却常被误译。\n\n## 甲\n\n正文。\n\n## 乙\n\n正文。\n')
+    case("标题对象在正文出现则不报",
+         not any(i["code"] == "PROMISE-OBJECT" for i in r["issues"]))
+
+    # 论证层：只定位，不判决
+    _, _, r = codes("article_type: 评论\n---\n> 导语。\n\n我们必须取消所有考核，因为效率低下。\n\n## 甲\n\n正文。\n")
+    case("评论无反例被指出（判断类）",
+         any(i["code"] == "NO-COUNTER" and i["class"] == "judgment" and i["needs"] == "editor"
+             for i in r["issues"]))
+    _, _, r = codes("article_type: 教程\n---\n> 导语。\n\n按下面三步操作即可完成。\n\n## 一\n\n正文。\n")
+    case("教程缺前提与失败路径被指出",
+         any(i["code"] == "MISSING-PREREQ" for i in r["issues"])
+         and any(i["code"] == "MISSING-FAILURE" for i in r["issues"]))
+    _, _, r = codes("article_type: 新闻报道\n---\n::: peak\n一句评论式主张。\n:::\n\n正文一段。\n")
+    case("新闻首屏先给主张而不是事实被指出",
+         any(i["code"] == "OPENING-TYPE" for i in r["issues"]))
+    _, _, r = codes("article_type: 新闻报道\n---\n> 2025年7月3日，公司宣布裁员9000人。\n\n## 事实\n\n正文。\n")
+    case("新闻首屏给事实则不报", not any(i["code"] == "OPENING-TYPE" for i in r["issues"]))
+    _, _, r = codes("---\n## 空章节\n\n## 下一节\n\n正文。\n")
+    case("空章节是必须修（must）",
+         any(i["code"] == "SECTION-EMPTY" and i["severity"] == "must" for i in r["issues"]))
+    _, _, r = codes("---\n正文一段，足够长到可以被当作结论的段落，说明整体情况。\n\n## 甲\n\n正文。\n\n结尾突然出现 2024年 新增 37% 这个数字。\n")
+    case("结尾引入未论证的新证据被指出",
+         any(i["code"] == "CONCLUDE-NEW-EVIDENCE" for i in r["issues"]))
+    case("机械类与判断类分层且判断类标明需要谁",
+         all(i["class"] in ("mechanical", "judgment") for i in r["issues"])
+         and all(i["needs"] != "none" for i in r["issues"] if i["class"] == "judgment"))
+
+    # 事实单元：比的是可核对单元，不是文风
+    f = facts("2020-12-21 发布，1,642小时，增长十五倍，见 https://example.com/a。")
+    case("事实单元含日期/单位数值/中文倍数/链接",
+         any(k == "date" and v == "2020-12-21" for k, v in f)
+         and any(v.replace(",", "") == "1642小时" for k, v in f)
+         and any(v == "十五倍" for k, v in f) and any(k == "url" for k, v in f))
+    case("裸数字与量词不算事实单元", facts("三条理由，两个人。") == [])
+    src = _r.parse("---\n正文写 7月2日 与 1,642 小时。\n")[1]
+    dst = _r.parse("---\n正文写 2025年7月2日 与 1642 小时。\n")[1]
+    diff = compare_facts(src, dst)
+    case("无年份日期与带年份同一天视为保留",
+         diff["dropped"] == [] and diff["introduced"] == [])
+    lost = compare_facts(src, _r.parse("---\n正文只写日期。\n")[1])
+    case("丢失的事实单元被列出（不静默）",
+         "1642小时" in lost["dropped"] or "1,642小时" in lost["dropped"])
+
+    # 修改台账：五列齐全、位置可回原文
+    rows, problems = parse_ledger("| 位置 | 问题 | 动作 | 收益 | 保留检查 |\n|---|---|---|---|---|\n"
+                                  "| 导语 | 太抽象 | 改写 | 读者更快抓住判断 | 事实保留 |\n"
+                                  "| 第三段 | 重复 | 合并 |  | 保留 |\n")
+    case("台账缺收益被判不合格", any("收益" in p for p in problems) and len(rows) == 2)
+    case("台账能解析出动作与保留检查",
+         rows[0]["动作"] == "改写" and rows[0]["保留检查"] == "事实保留")
+    return out
+
+
+# ---- V4：构图与素材 ----
+def composition_checks():
+    out = []
+
+    def case(name, ok):
+        out.append((name, bool(ok)))
+
+    wide = [["季度", "营收", "同比", "环比", "备注"],
+            ["一季度", "12345678元", "+12.4%", "+3.1%", "春节因素"],
+            ["二季度", "23456789元", "-3.1%", "-0.8%", "渠道调整"]]
+    four = [["季度", "营收", "同比", "备注"],
+            ["一季度", "12345678元", "+12.4%", "春节因素"]]
+    narrow = [["对象", "值"], ["甲", "60%"]]
+    case("五列数值表在 320px 放不下", not _r.table_fits(wide))
+    case("四列数值表在 320px 放得下（不误判成记录卡）", _r.table_fits(four))
+    tight = [["观察对象", "年工时", "文中位置"],
+             ["柬埔寨", "约2500小时", "高工时较低收入"],
+             ["瑞士", "不足1600小时", "低工时较高收入"]]
+    case("可用宽度变窄后同一张表判为放不下（人格留白与表格内距共同参与判定）",
+         _r.table_fits(tight, 0) and not _r.table_fits(tight, 40)
+         and _r.table_fits(tight, 6, _r.table_pad(_r.THEMES["bone"])))
+    case("两列短表放得下", _r.table_fits(narrow))
+    html = _r.R(_r.THEMES["paper"], "standard").table(wide)
+    case("放不下时降级为记录卡且数值不丢",
+         "记录 01" in html and all(c in html for row in wide for c in row))
+    case("记录卡不使用表格布局硬塞",
+         "table-layout:fixed" not in html)
+    r = _r.R(_r.THEMES["frost"], "standard")
+    hero = r.img("图注", "a.jpg", "场景 hero")
+    inset = r.img("图注", "a.jpg", "场景 inset")
+    plain = r.img("图注", "a.jpg", "场景")
+    case("hero/inset/默认三者的版式不同",
+         len({hero, inset, plain}) == 3 and "margin-left:10%" in inset and "width:100%" in hero)
+    case("图片只改变版式，不裁切也不合成",
+         not any(x in hero + inset for x in ("object-fit", "object-position", "clip-path")))
+    meta = {"title": "题", "deck": "副题"}
+    blocks = [("lead", ("导语", "")), ("img", ("图", "images/fig.jpg", "解释 hero"))]
+    case("首屏重元素计数（副题+导语+首图=3）", _r.first_screen(meta, blocks)["weight"] == 3)
+    case("首屏层数记录顺序", _r.first_screen(meta, blocks)["layers"] == ["deck", "lead", "img"])
+    return out
+
+
+# ---- V4：输入转换的丢失边界 ----
+def docx_loss_checks():
+    """脚注/批注/尾注是正文内容：必须报错；页眉页脚是页面家具：警告并列出。"""
+    import zipfile
+    import contextlib
+    import io as _io
+    import extract_docx
+    out = []
+
+    def case(name, ok):
+        out.append((name, bool(ok)))
+
+    def make(path, extra):
+        with zipfile.ZipFile(path, "w") as z:
+            z.writestr("word/document.xml", DOC_XML.replace("列A", "列A"))
+            z.writestr("word/styles.xml", STYLES_XML)
+            z.writestr("word/_rels/document.xml.rels", RELS_XML)
+            z.write(os.path.join(FIX, "fixtures", "tiny.png"), "word/media/fig1.png")
+            for name, xml in extra.items():
+                z.writestr(name, xml)
+
+    footnote = ('<?xml version="1.0"?><w:footnotes xmlns:w="http://schemas.openxmlformats.org/'
+                'wordprocessingml/2006/main"><w:footnote w:id="1"><w:p><w:r><w:t>脚注正文</w:t>'
+                '</w:r></w:p></w:footnote></w:footnotes>')
+    comment = ('<?xml version="1.0"?><w:comments xmlns:w="http://schemas.openxmlformats.org/'
+               'wordprocessingml/2006/main"><w:comment w:id="1"><w:p><w:r><w:t>批注正文</w:t>'
+               '</w:r></w:p></w:comment></w:comments>')
+    header = ('<?xml version="1.0"?><w:hdr xmlns:w="http://schemas.openxmlformats.org/'
+              'wordprocessingml/2006/main"><w:p><w:r><w:t>页眉</w:t></w:r></w:p></w:hdr>')
+    with tempfile.TemporaryDirectory() as d:
+        for label, extra, expect in (
+            ("脚注有内容必须报错", {"word/footnotes.xml": footnote}, 1),
+            ("批注有内容必须报错", {"word/comments.xml": comment}, 1),
+        ):
+            src = os.path.join(d, f"{abs(hash(label))}.docx")
+            make(src, extra)
+            err = _io.StringIO()
+            with contextlib.redirect_stdout(_io.StringIO()), contextlib.redirect_stderr(err):
+                rc = extract_docx.extract(src, os.path.join(d, "o.md"))
+            case(label, rc == expect and "脚注" in err.getvalue() + "脚注" and not os.path.exists(os.path.join(d, "o.md")))
+        src = os.path.join(d, "header.docx")
+        make(src, {"word/header1.xml": header})
+        err = _io.StringIO()
+        with contextlib.redirect_stdout(_io.StringIO()), contextlib.redirect_stderr(err):
+            rc = extract_docx.extract(src, os.path.join(d, "h.md"))
+        case("页眉只警告并列出，不静默", rc == 0 and "header1.xml" in err.getvalue())
+    return out
+
+
+# ---- V4：交付包 ----
+def deliver_checks():
+    out = []
+
+    def case(name, ok):
+        out.append((name, bool(ok)))
+
+    with tempfile.TemporaryDirectory() as d:
+        art = os.path.join(d, "art")
+        os.makedirs(os.path.join(art, "images"), exist_ok=True)
+        for n in ("cover.jpg", "fig.jpg"):
+            shutil.copy(os.path.join(FIX, "images", n), os.path.join(art, "images", n))
+        original = os.path.join(art, "orig.md")
+        with open(original, "w", encoding="utf-8") as f:
+            f.write(HEAD + "author: 甲木\ncover: images/cover.jpg\n---\n\n"
+                    "导语一句，含 2020年12月21日 与 1,642小时。\n\n"
+                    "## 甲\n\n正文一段。\n\n![说明](images/fig.jpg \"解释\")\n")
+        edited = os.path.join(art, "edited.md")
+        with open(edited, "w", encoding="utf-8") as f:
+            f.write(HEAD + "author: 甲木\ncover: images/cover.jpg\narticle_type: 分析\n"
+                    "audience: 读者\nreading_context: 通勤\npurpose: 判断\nthesis: 一个主张\n"
+                    "---\n\n> 导语一句，含 2020-12-21 与 1642 小时。\n\n"
+                    "## 甲\n\n正文一段。\n\n![说明](images/fig.jpg \"解释\")\n")
+        ledger = os.path.join(art, "ledger.md")
+        with open(ledger, "w", encoding="utf-8") as f:
+            f.write("| 位置 | 问题 | 动作 | 收益 | 保留检查 |\n|---|---|---|---|---|\n"
+                    "| 导语 | 表述抽象 | 改写 | 读者更快抓住判断 | 数字与日期保留 |\n")
+        deliver = os.path.join(d, "out")
+        code, log = run([os.path.join(SCRIPTS, "render.py"), edited, "--against", original,
+                         "--ledger", ledger, "--deliver", deliver], art)
+        expected = ["源稿.md", "正文.html", "修改记录.md", "验收.md"]
+        missing = [x for x in expected if not os.path.exists(os.path.join(deliver, x))]
+        case("交付包六类产物齐全（缺：" + ",".join(missing) + "）" if missing else "交付包六类产物齐全", not missing)
+        case("预览与 meta 一并生成",
+             any(n.endswith("_预览.html") for n in os.listdir(deliver))
+             and any(n.endswith(".meta.json") for n in os.listdir(deliver)))
+        case("素材被复制进交付目录", os.path.isfile(os.path.join(deliver, "images", "fig.jpg")))
+        report = open(os.path.join(deliver, "修改记录.md"), encoding="utf-8").read()
+        case("修改记录含事实比对与台账校验",
+             "事实单元比对" in report and "修改台账" in report and "读者更快抓住判断" in report)
+        case("日期与单位差异不被误报为事实丢失", "删除：无" in report and "新增：无" in report)
+        accept = open(os.path.join(deliver, "验收.md"), encoding="utf-8").read()
+        case("验收记录写明 Gate 结果与未验证项",
+             "Gate 1" in accept and "UNVERIFIED" in accept and "真机" in accept)
+        case("退出码反映 Gate（PASS 时为 0）", code == 0)
+    return out
 
 
 def run_all(a):
@@ -1205,12 +1563,29 @@ def run_all(a):
     if not ok:
         fails.append("真实缺陷：" + why)
 
-    print("⑬ 真实来源编辑评估（五类型 · 修改台账 · A/B · 重复任务）")
-    code, log = run([os.path.join(HERE, "editorial_eval.py"), "--check-report",
-                     os.path.join(ROOT, "evaluation", "RESULTS.md")], ROOT)
-    print("   " + log.strip().replace("\n", "\n   "))
-    if code:
-        fails.append("真实来源编辑评估")
+    print("⑬ 编辑智能（类型策略 · 承诺台账 · 事实比对 · 修改台账 · 判断类线索）")
+    for label, ok in editorial_intelligence_checks():
+        print(f"   {'PASS' if ok else 'FAIL'} · {label}")
+        if not ok:
+            fails.append("编辑智能：" + label)
+
+    print("⑭ 构图与素材（记录卡降级 · 图片职责模式 · 首屏重心）")
+    for label, ok in composition_checks():
+        print(f"   {'PASS' if ok else 'FAIL'} · {label}")
+        if not ok:
+            fails.append("构图：" + label)
+
+    print("⑮ 输入转换（docx 脚注/批注必须报错，页眉页脚只警告）")
+    for label, ok in docx_loss_checks():
+        print(f"   {'PASS' if ok else 'FAIL'} · {label}")
+        if not ok:
+            fails.append("输入转换：" + label)
+
+    print("⑯ 交付包（--deliver 产物齐全且互相一致）")
+    for label, ok in deliver_checks():
+        print(f"   {'PASS' if ok else 'FAIL'} · {label}")
+        if not ok:
+            fails.append("交付包：" + label)
 
     result = unittest.TextTestRunner(verbosity=2).run(unittest.defaultTestLoader.loadTestsFromTestCase(DeliveryTests))
     if not result.wasSuccessful():
