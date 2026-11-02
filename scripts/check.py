@@ -132,7 +132,8 @@ CSS_RULES = {
     "max-width": lambda v: v == "100%",
     "min-width": lambda v: v == "0",
     "overflow": lambda v: v == "hidden",
-    "overflow-wrap": lambda v: v == "anywhere",
+    # 正文根用 break-word（只兜住真的放不下的长词）；表格/代码等固定布局容器用 anywhere。
+    "overflow-wrap": lambda v: v in ("break-word", "anywhere"),
     "padding": lambda v: _length_list(v, max_px=100, max_em=2),
     "padding-bottom": lambda v: _length(v, max_px=100, max_em=2),
     "padding-left": lambda v: _length(v, max_px=100, max_em=2),

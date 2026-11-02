@@ -25,17 +25,82 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from check import check  # noqa: E402
 from safety import local_path, sha256, contrast
-from editorial import (audit, compare_facts, doc_len,  # noqa: E402
+from editorial import (audit, block_text, classify_fact_change, compare_facts,  # noqa: E402
+                       compare_voice, doc_len,
                        first_screen, introduced_without_source, locate, parse_ledger,
                        plain, peak_text, render_report, strategy_notes)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-SKILL_VERSION = "6.0.0"
+SKILL_VERSION = "7.0.0"
 THEMES_PATH = os.path.join(HERE, "..", "assets", "themes.json")
 with open(THEMES_PATH, "rb") as _theme_file:
     THEME_CONFIG_BYTES = _theme_file.read()
 THEME_CONFIG_SHA256 = hashlib.sha256(THEME_CONFIG_BYTES).hexdigest()
 THEMES = json.loads(THEME_CONFIG_BYTES.decode("utf-8"))
+
+# 每个主题轴的**取值全集**必须在这里登记，且 renderer 有对应分支。
+# 没有登记的取值会在载入时直接报错：主题配置写错一个词不会再静默落回默认样式。
+THEME_AXES = {
+    "lead": {"brief", "letter", "ink", "report", "plate", "feature"},
+    "heading": {"index", "plain", "seal", "report", "atelier", "folio"},
+    "h3": {"label", "soft", "serif", "report", "atelier", "folio"},
+    "peak": {"rule", "field", "line", "plate", "dark", "compact"},
+    "divider": {"short-rule", "pause", "seal", "hairline", "double", "slash"},
+    "quote": {"rule", "voice", "serif", "report", "atelier", "folio"},
+    "image": {"flush", "soft", "inkline", "report", "mat", "folio"},
+    "data": {"columns", "stack", "ledger", "ticker", "specimen", "folio"},
+    "table": {"open", "warm", "ink", "report", "atelier", "feature"},
+    "list": {"index", "dash", "chinese", "report", "atelier", "folio"},
+}
+TYPE_KEYS = ("heading_size", "heading_weight", "heading_leading", "lead_size", "lead_weight",
+             "lead_leading", "quote_size", "h3_size", "data_size")
+COLOR_ROLES = ("text", "sub", "muted", "line", "field", "accent", "dark", "on_dark")
+GRID_KEYS = ("inset", "indent", "chapter_gap", "paragraph_gap", "body", "caption")
+
+
+def validate_themes(themes):
+    """主题配置的结构、取值与字号层级：不合格就拒绝运行，而不是渲染出一份错版式。
+
+    字号层级是这里的硬约束：导语必须弱于章节标题，正文字号必须小于两者，
+    图注不大于正文。它们不是审美偏好，而是「读者能否一眼分出层级」的前提。
+    """
+    problems = []
+    for name, t in themes.items():
+        for axis, allowed in THEME_AXES.items():
+            value = t.get(axis)
+            if value not in allowed:
+                problems.append(f"{name}.{axis}={value!r} 未登记（可用：{'、'.join(sorted(allowed))}）")
+        for role in COLOR_ROLES + ("display", "toc_label", "body_font"):
+            if role not in t:
+                problems.append(f"{name} 缺少 {role}")
+        for key in GRID_KEYS:
+            if key not in t.get("grid", {}):
+                problems.append(f"{name}.grid 缺少 {key}")
+        for key in TYPE_KEYS:
+            if key not in t.get("type", {}):
+                problems.append(f"{name}.type 缺少 {key}")
+        if problems:
+            continue
+        ty, grid = t["type"], t["grid"]
+        if not ty["heading_size"] > ty["lead_size"]:
+            problems.append(f"{name}：章节标题 {ty['heading_size']}px 未大于导语 {ty['lead_size']}px，"
+                            f"首屏会出现两个同级入口")
+        if not ty["lead_size"] > grid["body"]:
+            problems.append(f"{name}：导语 {ty['lead_size']}px 未大于正文 {grid['body']}px，导语失去入口作用")
+        if not ty["heading_size"] > ty["h3_size"]:
+            problems.append(f"{name}：H2 {ty['heading_size']}px 未大于 H3 {ty['h3_size']}px")
+        if not grid["body"] >= grid["caption"]:
+            problems.append(f"{name}：正文 {grid['body']}px 小于图注 {grid['caption']}px")
+        if not 15 <= grid["body"] <= 17:
+            problems.append(f"{name}：正文字号 {grid['body']}px 超出 15–17px 的手机阅读区间")
+        if not 12 <= grid["caption"] <= 15:
+            problems.append(f"{name}：图注字号 {grid['caption']}px 超出 12–15px")
+    return problems
+
+
+_THEME_PROBLEMS = validate_themes(THEMES)
+if _THEME_PROBLEMS:
+    raise ValueError("主题配置不合格：\n  " + "\n  ".join(_THEME_PROBLEMS))
 SANS = "-apple-system,BlinkMacSystemFont,'PingFang SC','Hiragino Sans GB','Microsoft YaHei','Noto Sans CJK SC',sans-serif"
 SERIF = "'Songti SC','STSong','SimSun','Noto Serif CJK SC',serif"
 MONO = "'SF Mono',Menlo,Consolas,monospace"
@@ -44,8 +109,12 @@ CJK = "\u4e00-\u9fff\u3400-\u4dbf"
 MICRO, SMALL, BODY, DISPLAY, TITLE = 13, 14, 16, 20, 24
 
 # 正文视觉职责（封面单独由 frontmatter 承担）。说不出职责 → 删。
-ROLES = {"锚点", "解释", "证据", "对比", "结构", "场景", "隐喻", "停顿", "数据",
-         "anchor", "explain", "evidence", "compare", "structure", "context", "metaphor", "rhythm", "data"}
+ROLES = {"锚点", "解释", "证据", "对比", "结构", "场景", "隐喻", "停顿", "数据", "资料", "实拍",
+         "anchor", "explain", "evidence", "compare", "structure", "context", "metaphor", "rhythm",
+         "data", "archival", "photo"}
+# 资料图（馆藏扫描、档案、截图）与实拍照片：读者会默认它们「拍到了现场」，
+# 所以图注必须写明来源与授权状态，而不只是写内容。
+PROVENANCE_ROLES = {"资料", "实拍", "archival", "photo"}
 FACT = {"解释", "证据", "对比", "结构", "数据",
         "explain", "evidence", "compare", "structure", "data"}       # 说明用正文色、字号大一级
 TODO = re.compile(r"(?i)^(todo|待补)")
@@ -379,8 +448,9 @@ class R:
             return (f'<section style="{gap}padding-top:10px;border-top:1px solid {t["text"]};">{marker}'
                     + self.p(title, hs, extra=style) + "</section>")
         elif mode == "atelier":
-            return (f'<section style="{gap}padding-top:16px;border-top:1px solid {t["line"]};">'
-                    + (self.micro("SECTION", extra="margin-bottom:8px;letter-spacing:0.18em;") if numbered else "")
+            # 素作：只留一条发丝线与足够留白；不再每节印同一个英文装饰标签
+            # （那既不是内容，也会在三个以上章节里变成机械重复）。
+            return (f'<section style="{gap}padding-top:18px;border-top:1px solid {t["line"]};">'
                     + self.p(title, hs, extra=style + "letter-spacing:0.04em;") + "</section>")
         elif mode == "folio":
             marker = (self.p(self.leaf(f"{n:02d}"), 40, t["accent"],
@@ -394,7 +464,12 @@ class R:
     def h3(self, text):
         t, mode = self.t, self.t["h3"]
         size, weight, extra = self.type["h3_size"], 700, f"font-family:{self.font};"
-        if mode == "soft":
+        if mode == "label":
+            # 工作纸式小节标签：小一号、加字距、压成弱色，靠位置与字距而不是线来分层。
+            size = max(self.cap, size - 2)
+            weight = 600
+            extra = f"font-family:{self.font};color:{t['sub']};letter-spacing:0.06em;"
+        elif mode == "soft":
             weight, extra = 500, f"font-family:{self.font};color:{t['sub']};"
         elif mode == "serif":
             weight = 600
@@ -513,9 +588,11 @@ class R:
                         f'border-top:4px solid {t["text"]};">'
                         + self.p(body, self.type["quote_size"], t["text"], f"font-weight:700;line-height:1.6;font-family:{self.font};")
                         + cite + "</section>")
-            return (f'<section style="margin:{self.g(26)}px 0;padding:0 4px 0 14px;'
-                    f'border-left:2px solid {t["accent"]};">'
-                    + self.p(body, self.type["quote_size"], t["sub"], "font-weight:500;line-height:1.9;") + cite + "</section>")
+            if mode == "rule":
+                return (f'<section style="margin:{self.g(26)}px 0;padding:0 4px 0 14px;'
+                        f'border-left:2px solid {t["accent"]};">'
+                        + self.p(body, self.type["quote_size"], t["sub"], "font-weight:500;line-height:1.9;") + cite + "</section>")
+            raise ValueError(f"引文轴取值未实现：{mode}")
         style, fam = t["peak"], f"font-family:{self.font};"
         if style in ("dark", "compact"):
             inner = self.p(self.inline(text, normalize=False), DISPLAY, t["on_dark"],
@@ -532,9 +609,23 @@ class R:
         if style == "plate":
             return (f'<section style="margin:{self.g(34)}px 0;text-align:left;padding:16px 0;'
                     f'border-top:1px solid {t["line"]};border-bottom:1px solid {t["line"]};">{claim}</section>')
-        return (f'<section style="margin:{self.g(34)}px 0;text-align:left;">'
-                f'<section style="width:28px;height:2px;background:{t["accent"]};margin:0 0 14px;">{BR}</section>'
-                f'{claim}</section>')
+        if style == "rule":
+            return (f'<section style="margin:{self.g(34)}px 0;text-align:left;">'
+                    f'<section style="width:28px;height:2px;background:{t["accent"]};margin:0 0 14px;">{BR}</section>'
+                    f'{claim}</section>')
+        raise ValueError(f"重点轴取值未实现：{style}")
+
+    def unknown(self, label, lines):
+        """未知项：事实、推断、观点之外的第四类内容，必须与已确认事实在形式上分开。
+
+        虚线框 + 明写标签，是最轻的「边界」表达：不是警告，也不抢正文。
+        它同时是机器可核对的信号——audit 见到 unknown 块就不再提示「缺未知项」。
+        """
+        t = self.t
+        head = self.micro(label or "未知 / 待确认", extra="margin-bottom:6px;")
+        body = "".join(self.p(self.inline(x), self.body - 1, t["sub"], "line-height:1.85;") for x in lines)
+        return (f'<section style="margin:{self.g(24)}px 0;padding:13px 14px;'
+                f'border:1px dashed {t["line"]};border-radius:{t["radius"]}px;">{head}{body}</section>')
 
     def note(self, label, lines, tight=False):
         t = self.t
@@ -605,7 +696,18 @@ class R:
                     + self.p(self.inline(label), self.cap, t["muted"], "margin-top:8px;") + "</section>"
                     for value, label in items[i:i + per])
                 chunks.append(f'<section style="display:flex;gap:12px;margin-top:{12 if i else 0}px;">{cells}</section>')
-        else:  # folio
+        elif mode == "columns":
+            # 工作纸式数值栏：等宽分栏，值在上、标签在下，与 specimen 的差别在留白与分隔线。
+            per = len(items) if 0 < len(items) <= 3 else 2
+            for i in range(0, len(items), per):
+                cells = "".join(
+                    f'<section style="flex:1;min-width:0;padding-top:12px;border-top:1px solid {t["text"]};">'
+                    + self.p(self.leaf(value), size, t["text"],
+                             f"font-weight:600;line-height:1.25;font-family:{self.font};font-variant-numeric:tabular-nums;")
+                    + self.p(self.inline(label), SMALL, t["sub"], "margin-top:6px;") + "</section>"
+                    for value, label in items[i:i + per])
+                chunks.append(f'<section style="display:flex;gap:18px;margin-top:{18 if i else 0}px;">{cells}</section>')
+        elif mode == "folio":
             for value, label in items:
                 chunks.append(f'<section style="display:flex;gap:16px;align-items:flex-end;padding:14px 0;'
                               f'border-top:3px solid {t["text"]};">'
@@ -662,13 +764,13 @@ class R:
         if not table_fits(rows, self.inset, 2 * hpad):
             return self.table_stack(rows, below)
         widths = col_widths(rows, table_avail, 2 * hpad)
-        table_extra = ""
-        if mode == "ink":
-            table_extra = f"border-top:2px solid {t['text']};border-bottom:1px solid {t['text']};"
-        elif mode == "atelier":
-            table_extra = f"border-top:1px solid {t['text']};border-bottom:1px solid {t['text']};"
-        elif mode == "feature":
-            table_extra = f"border-top:4px solid {t['text']};"
+        # 表框只由三轴决定，其余轴（open/warm/report）的差异在单元格内距与表头底色里。
+        # 取值合法性已在载入时由 validate_themes 校验，这里不再用 if/else 兜底。
+        table_extra = {
+            "ink": f"border-top:2px solid {t['text']};border-bottom:1px solid {t['text']};",
+            "atelier": f"border-top:1px solid {t['text']};border-bottom:1px solid {t['text']};",
+            "feature": f"border-top:4px solid {t['text']};",
+        }.get(mode, "")
         for i, cells in enumerate(rows):
             tag = "th" if i == 0 else "td"
             rendered = []
@@ -854,8 +956,10 @@ class R:
         elif kind == "double":
             inner = (f'<section style="width:48px;height:1px;background:{t["text"]};margin:0 auto 5px;">{BR}</section>'
                      f'<section style="width:24px;height:1px;background:{t["line"]};margin:0 auto;">{BR}</section>')
-        else:
+        elif kind == "slash":
             inner = self.p(self.leaf("／"), DISPLAY, t["accent"], "font-weight:700;line-height:1;")
+        else:
+            raise ValueError(f"分隔轴取值未实现：{kind}")
         return f'<section style="margin:{self.g(44)}px 0;text-align:center;">{inner}</section>'
 
     def signature(self, meta):
@@ -991,10 +1095,7 @@ def auto_digest(meta, blocks, limit=120):
     src = next((b[0] for k, b in blocks if k == "lead"), "") \
         or meta.get("deck", "") \
         or next((b for k, b in blocks if k == "p"), "")
-    src = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", src)      # 链接留文字
-    src = re.sub(r"`([^`]*)`|==([^=]*)==|\*\*([^*]*)\*\*|<u>([^<]*)</u>|~~([^~]*)~~",
-                 lambda m: next(g for g in m.groups() if g is not None), src)
-    src = src.strip()
+    src = plain(src)        # 与目录/度量共用一套行内标记剥离，不再维护第二份正则
     if len(src) <= limit:
         return src
     cut = src[:limit]
@@ -1054,6 +1155,20 @@ def compose_gate(meta, blocks, base=".", key=None):
             must.append("证据类图必须写清出处 / 口径 / 时间；解释图也需说明")
         if not src or TODO.match(src):
             continue
+        # 说明/证据类图片必须紧邻它的解释对象：孤零零一张图不承担信息职责。
+        if role0 in FACT and not TODO.match(src or ""):
+            neighbours = [blocks[j] for j in (idx - 1, idx + 1) if 0 <= j < len(blocks)]
+            explained = any(k in ("p", "note", "quote", "table", "data", "bars") and block_text(k, v).strip()
+                            for k, v in neighbours)
+            if not explained:
+                should.append(f"图片 {src}（{role0}）上下都是图片或标题：说明/证据类图片需要紧邻它的解释文字")
+        # 资料图 / 实拍：图注须交代来源与授权，避免读者把扫描件当成现场照片。
+        if role0 in PROVENANCE_ROLES:
+            # 出处可以写在图注（alt），也可以写在紧邻的来源行；两处都认，避免逼作者改语序。
+            note_near = blocks[idx + 1][1][1] if idx + 1 < len(blocks) and blocks[idx + 1][0] == "note" else []
+            caption = " ".join([alt or "", role or ""] + list(note_near))
+            if not re.search(r"来源|馆藏|授权|许可|版权|CC0|CC BY|©|摄影|摄于|截图|扫描|archive|collection", caption, re.I):
+                must.append(f"图片 {src}：资料图/实拍必须在图注写明来源与授权（馆藏、CC BY、摄影者或档案编号）")
         if role0 in {"证据", "数据", "evidence", "data"}:
             context = (alt or "") + " " + role + " " + (" ".join(blocks[idx + 1][1][1]) if idx + 1 < len(blocks) and blocks[idx + 1][0] == "note" else "")
             if re.search(r"AI.*示意|生成.*示意|(?:^|\s)(?:ai|generated)(?:\s|$)", context, re.I):
@@ -1319,6 +1434,8 @@ def render(md, theme=None):
             out.append(r.quote(peak_text(b), "", "peak"))
         elif kind == "note":
             out.append(r.note(*b, tight=i > 0 and blocks[i - 1][0] in attach))
+        elif kind == "unknown":
+            out.append(r.unknown(*b))
         elif kind == "data":
             out.append(r.data(b[1], below=below))
         elif kind == "bars":
@@ -1362,12 +1479,12 @@ def render(md, theme=None):
         elif kind == "hr":
             out.append(r.hr())
         else:
-            sys.exit(f"未知原语 ::: {kind}（可用：peak / note / data / bars）")
+            sys.exit(f"未知原语 ::: {kind}（可用：peak / note / unknown / data / bars）")
     out.append(r.signature(meta))
     t = THEMES[key]
     pad = f"padding-left:{r.inset}px;padding-right:{r.inset}px;" if r.inset else ""
     body = (f'<section style="font-family:{r.reading_font};font-size:{r.body:g}px;color:{t["text"]};line-height:{t["leading"]};'
-            f'letter-spacing:normal;text-align:left;line-break:strict;overflow-wrap:anywhere;{pad}">'
+            f'letter-spacing:normal;text-align:left;line-break:strict;overflow-wrap:break-word;{pad}">'
             + "".join(out) + "</section>")
     return key, meta, blocks, body
 
@@ -1434,7 +1551,8 @@ def build(md_path, theme=None, out=None):
     cover = (meta.get("cover") or "").strip()
     m1, s1 = check(body)
     m2, s2 = compose_gate(meta, blocks, base, key)
-    palette = THEMES[key]
+    # Gate 1 的建议级结论过去算完就丢；并进 Gate 2 的建议里，读者才看得到。
+    s2 = [f"平台层建议：{x}" for x in s1] + s2
     contrasts = contrast_checks(key)
     for pair in contrasts:
         if not pair["pass"]:
@@ -1504,11 +1622,11 @@ def main():
     out = os.path.join(deliver, "正文.html") if deliver else a.out
     res = build(a.md, a.theme, out)
     key, meta, blocks, side = res["key"], res["meta"], res["blocks"], res["side"]
-    m1, s1 = res["gates"][0][1], res["gates"][0][2]
-    m2, s2 = res["gates"][1][1], res["gates"][1][2]
+    g1, g2 = res["gates"]
+    m1, m2, s2 = g1[1], g2[1], g2[2]      # Gate 1 的建议级结论已并入 g2[2]
     review = side["editorial_review"]
 
-    facts_diff = None
+    facts_diff, voice_diff = None, None
     if a.against:
         with open(a.against, encoding="utf-8") as f:
             original_meta, original_blocks = parse(f.read())
@@ -1516,17 +1634,36 @@ def main():
         loose = introduced_without_source(blocks, facts_diff["introduced"])
         declared = {x.strip() for x in (meta.get("removed_facts") or "").replace("，", ",").split(",") if x.strip()}
         for item in facts_diff["dropped"]:
-            if item not in declared:
-                m2.append(f"原稿事实单元在改稿中消失：{item}；确认是删除还是改写，"
-                          f"确属删除请写入 frontmatter removed_facts")
+            if item in declared:
+                continue
+            change, why = classify_fact_change(original_blocks, blocks, "num", item) \
+                if re.search(r"\d", item) else ("lost", "")
+            if change == "lost":
+                change, why = classify_fact_change(original_blocks, blocks, "date", item)
+            message = f"原稿事实单元在改稿中消失：{item}"
+            if change in ("moved", "rounded"):
+                s2.append(f"{message}；{why}（结构性搬家/概括不等于删除，但口径需确认）")
+            else:
+                m2.append(f"{message}；确认是删除还是改写，确属删除请写入 frontmatter removed_facts")
         for item in loose:
-            m2_hint = f"改稿新增事实单元「{item}」附近没有可核对来源：补出处，或说明它来自何处"
-            m2.append(m2_hint)
+            change, why = classify_fact_change(original_blocks, blocks, "date", item) \
+                if not re.search(r"[^\d\-\s]", item) else ("added", "")
+            if change == "rounded":
+                s2.append(f"改稿新增「{item}」；{why}（概括式表述，确认没有替代精确值）")
+            else:
+                m2.append(f"改稿新增事实单元「{item}」附近没有可核对来源：补出处，或说明它来自何处")
         for change in facts_diff["precision_changes"] + facts_diff["qualifier_changes"]:
             m2.append(f"事实精度或限定变化需回源确认：{change}（有链接不等于已核真）")
         for quote in facts_diff["dropped_quotes"] + facts_diff["introduced_quotes"]:
             m2.append(f"直接引语变化需逐字回源：{quote[:40]}；恢复原话或明确改为间接转述")
+        voice_diff = compare_voice(original_blocks, blocks)
         side["fact_diff"] = facts_diff
+        side["voice_diff"] = voice_diff
+        if voice_diff["changes"]:
+            for change in voice_diff["changes"]:
+                # 声音变化是「需要人确认」的事，不阻断渲染：声音该不该保留由编辑判断。
+                s2.append(f"作者声音形态变化（需确认是有意删改）：{change['mark']} "
+                          f"{change['original']} → {change['edited']}（{change['note']}）")
         side["render_errors"] = m1 + m2
 
     ledger_rows, ledger_problems = [], []
@@ -1562,7 +1699,7 @@ def main():
         print("\n修改台账：" + "；".join(ledger_problems))
 
     if deliver:
-        report = render_report(review, facts_diff, ledger_problems)
+        report = render_report(review, facts_diff, ledger_problems, voice_diff)
         report += "\n## 类型策略\n\n" + "\n".join(f"- {x}" for x in strategy_notes(meta, blocks)) + "\n"
         if ledger_rows:
             report += "\n## 修改台账（已校验）\n\n| 位置 | 问题 | 动作 | 收益 | 保留检查 |\n|---|---|---|---|---|\n"
@@ -1578,9 +1715,15 @@ def main():
             acceptance += [f"- 必须改：{x}" for x in must] or ["- 必须改：无"]
             acceptance += [f"- 建议改：{x}" for x in should] or ["- 建议改：无"]
             acceptance.append("")
-        acceptance += ["## UNVERIFIED（不得计作通过）", "",
+        acceptance += ["## 微信验收：三级必须分开记录", "",
+                       "| 级别 | 能证明什么 | 本轮状态 |", "|---|---|---|",
+                       "| 浏览器 PASS | 本地 320/360/390/430px 无溢出、无数值拆行、最小字号达标 | UNVERIFIED（需 `tests/visuals.py` 实际执行证据） |",
+                       "| API 回读 PASS | 草稿字段与本地正文逐字一致（title/content/thumb_media_id） | UNVERIFIED（需授权账号执行 `publish.py`）|",
+                       "| 微信真机 PASS | 客户端清洗后的样式、后台重开、iOS/Android 阅读、封面 2.35:1 与 1:1 裁切 | UNVERIFIED（需真机，脚本无法代劳） |",
+                       "",
+                       "## UNVERIFIED（不得计作通过）", "",
                        "- Gate 3 人工视觉判断：需通读 320/360/390/430px 截图后填写",
-                       "- Gate 4 真实微信：草稿 API 回读 / 后台退出重开 / iOS·Android 真机 / 封面 2.35:1 与 1:1 裁切",
+                       "- Gate 4 真实微信：见上表；三者互不替代",
                        "- 事实逐项第二来源核真：本地脚本不做核真",
                        "- 独立外部读者 A/B 盲选：未执行"]
         open(os.path.join(deliver, "验收.md"), "w", encoding="utf-8").write("\n".join(acceptance) + "\n")

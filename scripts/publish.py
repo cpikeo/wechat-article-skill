@@ -685,6 +685,8 @@ def main():
                     help="--list-materials 的素材类型，默认 image")
     ap.add_argument("--delete-material", default=None, metavar="MEDIA_ID",
                     help="只删除指定永久素材（不可恢复；先用 --list-materials 核对 media_id）")
+    ap.add_argument("--confirm-delete-media-id", default=None, metavar="MEDIA_ID",
+                    help="删除素材的单次授权：必须与 --delete-material 逐字一致（没有持久授权）")
     ap.add_argument("--audit-log", default=".wechat_publish_audit.jsonl", help="本地操作审计 JSONL，不含凭证和正文；默认当前目录")
     ap.add_argument("--evidence-dir", default=None, help="可选：保存脱敏草稿回读对照 JSON；后台重开与手机端仍须单独验收")
     ap.add_argument("--no-reuse-cover", action="store_true", help="不复用缓存的永久素材，封面强制重传")
@@ -735,10 +737,29 @@ def main():
             )
         return
 
+    # 删除永久素材不可逆：授权与格式检查必须在取 token **之前**完成——
+    # 未被确认的破坏性操作不应该先花掉一次凭证请求，更不应该有任何网络副作用。
+    if args.delete_material:
+        if (args.confirm_delete_media_id or "") != args.delete_material:
+            ap.error("删除永久素材不可恢复：必须同时给出 --confirm-delete-media-id "
+                     f"\"{args.delete_material}\"（与 --delete-material 逐字一致，本次有效）")
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", args.delete_material):
+            ap.error("media_id 格式非法，拒绝调用删除接口")
+
     if args.material_count or args.list_materials or args.delete_material:
         token = get_stable_access_token(appid, secret)
         if args.delete_material:
-            print(json.dumps(delete_material(token, args.delete_material), ensure_ascii=False))
+            result = delete_material(token, args.delete_material)
+            print(json.dumps(result, ensure_ascii=False))
+            try:
+                with open(args.audit_log, "a", encoding="utf-8") as f:
+                    f.write(json.dumps({"time": datetime.now(timezone.utc).isoformat(),
+                                        "event": "material_deleted",
+                                        "media_id_sha256": hashlib.sha256(
+                                            args.delete_material.encode()).hexdigest()},
+                                       ensure_ascii=False) + "\n")
+            except OSError:
+                pass
             return
         if args.material_count:
             print(json.dumps(get_material_count(token), ensure_ascii=False, indent=2))
@@ -758,7 +779,16 @@ def main():
     if missing:
         ap.error(f"缺少必填参数：{', '.join(missing)}（--cover/--title 可由 --meta 提供）")
 
+    AUDIT_FIELDS = {"submit", "body_sha256", "media_id", "publish_id", "error_type",
+                    "media_id_sha256", "stage"}
+
     def audit(event, **fields):
+        dropped = set(fields) - AUDIT_FIELDS
+        if dropped:
+            raise ValueError(f"审计日志不接受字段：{'、'.join(sorted(dropped))}（防止凭证/正文入日志）")
+        for value in fields.values():
+            if not isinstance(value, (str, int, float, bool, type(None))):
+                raise ValueError("审计日志只接受标量字段")
         record = {"time": datetime.now(timezone.utc).isoformat(), "event": event, **fields}
         fd = os.open(args.audit_log, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
         with os.fdopen(fd, "a", encoding="utf-8") as f:

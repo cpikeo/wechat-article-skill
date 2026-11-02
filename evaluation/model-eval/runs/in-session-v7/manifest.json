@@ -1,0 +1,48 @@
+{
+  "generated_at": null,
+  "cases": [
+    {
+      "case": "business",
+      "type": "analysis",
+      "source_sha256": "860f1ab8509924441720ddbdaa6e1085739e1636f47154f500f78a16ee152169",
+      "prompt_sha256": "5a915967816bec94549d1002759f7b2a37c147164ee47a124e1bcea8a8071e3c",
+      "prompt_chars": 2137
+    },
+    {
+      "case": "longform",
+      "type": "longform",
+      "source_sha256": "a8800cea4d8a8d4d16ec3260120495ad92ed17fedead3493cbba56babf65a8b5",
+      "prompt_sha256": "bea99ace53eb35dd44d1e1954571f5b9f3663ca7b77e43a476c720a7f36e5f22",
+      "prompt_chars": 3041
+    },
+    {
+      "case": "news",
+      "type": "news",
+      "source_sha256": "d742a6fe9ad2fc50581c5285c0dade73d37fab34de78002c9ac9420d53e85000",
+      "prompt_sha256": "3f12634529b225673e96aead3b8e854cf4563befd393daa3e592056df5275bec",
+      "prompt_chars": 2182
+    },
+    {
+      "case": "opinion",
+      "type": "opinion",
+      "source_sha256": "6269638f0a52239cec8e5cac7ab94eeb251d885d3d962854285286b704a843a2",
+      "prompt_sha256": "5e619f8aecc14929bc34126167755447ae66d6c769b1aef5abd15191eafda711",
+      "prompt_chars": 2305
+    },
+    {
+      "case": "profile",
+      "type": "profile",
+      "source_sha256": "580bbd8c48729b55087efbb5415270e03c52da8f3ea5b53c2647a72ae39096f4",
+      "prompt_sha256": "39ebecc0337b194ea2acd4dc01dc087f90fa66c68b8d4c06b7f1c74e5e0ab4d1",
+      "prompt_chars": 1950
+    },
+    {
+      "case": "tutorial",
+      "type": "tutorial",
+      "source_sha256": "894eb96ef54edcaf45ed2c547ac5e9cd83435e64889e0625c3476d2a0b951983",
+      "prompt_sha256": "20b276cd2b39452a4e5e128e160a2041881c5f280c51524db5ff9357e04a596b",
+      "prompt_chars": 2189
+    }
+  ],
+  "manifest_sha256": "8a36f901f9b37f44bb2552a76b5d539854def2f98754ad6fb7e2d8d7f2d0b729"
+}

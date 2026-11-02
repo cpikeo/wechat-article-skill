@@ -1632,6 +1632,12 @@ def run_all(a):
         if not ok:
             fails.append("V6：" + label)
 
+    print("⑱ V7 回归（文风线索/主题轴/未知项/声音比对/发布与转换护栏）")
+    import v7
+    for label, ok in v7.run():
+        if not ok:
+            fails.append("V7：" + label)
+
     print("⑯ 交付包（--deliver 产物齐全且互相一致）")
     for label, ok in deliver_checks():
         print(f"   {'PASS' if ok else 'FAIL'} · {label}")

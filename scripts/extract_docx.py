@@ -88,6 +88,30 @@ def para_text(p, links=None):
     return re.sub(r"\*\*\*\*", "", s)  # 相邻粗体 run 合并的空标记
 
 
+WP = "{http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing}"
+
+
+def image_alt(p, rid):
+    """取这一张图的替换文字（docPr 的 descr / title）；取不到就返回空串。
+
+    Word 的「替换文字」经常就是作者写的图注或出处。它不进入 md 就等于静默丢失，
+    因此这里优先保留：有 descr 用 descr，否则用 title，再否则空。
+    """
+    for container in p.iter(f"{WP}inline"):
+        doc_pr = container.find(f"{WP}docPr")
+        if doc_pr is not None and doc_pr.get(f"{R}id") is None and doc_pr.get("descr"):
+            return (doc_pr.get("descr") or "").strip()
+    for container in p.iter(f"{WP}anchor"):
+        doc_pr = container.find(f"{WP}docPr")
+        if doc_pr is not None and doc_pr.get("descr"):
+            return (doc_pr.get("descr") or "").strip()
+    for doc_pr in p.iter(f"{WP}docPr"):
+        alt = (doc_pr.get("descr") or doc_pr.get("title") or "").strip()
+        if alt:
+            return alt
+    return ""
+
+
 def extract(docx_path, out_md):
     try:
         z = zipfile.ZipFile(docx_path)
@@ -233,7 +257,10 @@ def extract(docx_path, out_md):
                 continue
             img_n += 1
             fname = f"{img_n:02d}-" + os.path.basename(src)
-            lines.append(f"![](images/{fname})")
+            alt = image_alt(p, rid).replace("[", "(").replace("]", ")").replace("\n", " ")
+            lines.append(f"![{alt}](images/{fname})")
+            if alt:
+                print(f"  图注来自 Word 替换文字：{alt[:40]}（仍须补职责与来源）", file=sys.stderr)
             lines.append("")
         text = para_text(p, links).strip()
         if not text:

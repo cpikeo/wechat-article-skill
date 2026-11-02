@@ -45,8 +45,9 @@ NEUTRALIZE_COLOR = """
 
 def dependency_check():
     try:
-        from PIL import Image, ImageChops, ImageStat  # noqa: F401
-        from playwright.sync_api import sync_playwright  # noqa: F401
+        # 只探测可用性；真正使用时在函数内部按需导入，模块顶层不留未用引用。
+        __import__("PIL.Image"); __import__("PIL.ImageChops"); __import__("PIL.ImageStat")
+        __import__("playwright.sync_api")
     except ImportError as exc:
         return False, f"BLOCKED: optional screenshot dependency unavailable: {exc}"
     font = subprocess.run(["fc-match", "-f", "%{family}", "Noto Sans CJK SC"],
@@ -97,8 +98,41 @@ def inspect_page(page, width):
       ).map(el => ({tag:el.tagName, text:el.textContent.trim().slice(0,32)}));
       const splitAtoms = [...content.querySelectorAll('span[style*="white-space:nowrap"]')]
         .filter(el => el.getClientRects().length > 1).map(el => el.textContent);
+      // 排版层级：导语、H2、正文的相对字号是「第一眼能否分出主次」的可测前提。
+      // 导语 = 第一个章节标题之前、字号最大的正文段落（不含图注/来源），
+      // 这样 kicker（14px 小字）不会被误当成导语。
+      // 章节标记：每个 H2 之前紧邻的 section 里的短文字（如 01 /、SECTION、— 、编号）。
+      // 章节标题 = 字号大于正文、字重≥500、且确实是文字（短于 6 字的多半是 01 / 之类标记）。
+      const chapters = [...content.querySelectorAll('p')].filter(p => {
+        const s = getComputedStyle(p);
+        const text = p.textContent.trim();
+        return parseFloat(s.fontSize) >= 17 && parseFloat(s.fontWeight) >= 500 && text.length >= 6
+          && !p.closest('table') && !inNote(p) && !/^margin:0 0/.test(p.parentElement.getAttribute('style') || '');
+      });
+      const firstChapter = chapters.length ? chapters[0] : null;
+      // 导语候选：首个章节标题之前、字数≥6、且不小于正文的段落。
+      // 图注/来源（本来就比正文小）与 01 这类纯标记（不足 6 字）都不参选。
+      const bodySize = minSize(bodyPs);
+      const leadCandidates = nonempty.filter(p => {
+        const size = parseFloat(getComputedStyle(p).fontSize);
+        return !p.closest('table') && !inNote(p) && p.textContent.trim().length >= 6
+          && (bodySize === null || size >= bodySize)
+          && (!firstChapter || (firstChapter.compareDocumentPosition(p) & Node.DOCUMENT_POSITION_PRECEDING));
+      });
+      const leadSize = leadCandidates.length
+        ? Math.max(...leadCandidates.map(p => parseFloat(getComputedStyle(p).fontSize))) : null;
+      const markers = chapters.map(h => {
+        let el = h.closest('section');
+        let prev = el && el.previousElementSibling;
+        while (prev && !prev.textContent.trim()) prev = prev.previousElementSibling;
+        const t = prev ? prev.textContent.trim() : '';
+        return t.length <= 12 ? t : '';
+      });
       return {
         width,
+        leadSize,
+        chapterHeadingSizes: chapters.map(p => parseFloat(getComputedStyle(p).fontSize)),
+        chapterMarkers: markers,
         viewportOverflow: document.documentElement.scrollWidth > innerWidth + 1,
         elementOverflow: overflow,
         splitAtoms,
@@ -112,6 +146,61 @@ def inspect_page(page, width):
         imagesLoaded: [...document.images].every(img => img.complete && (!img.currentSrc || img.naturalWidth > 0))
       };
     }""", width)
+
+
+# 本脚本会写入的输出文件名；清理旧输出时只删这些形态。
+GENERATED_PATTERNS = ("sample_*.png", "same-draft_*.jpg", "same-draft_*_neutral.png", "REPORT.md")
+
+
+def prune_stale(out, written):
+    """删除上一轮留下、本轮没有写过的截图。
+
+    输出目录只放生成物，但清理必须放在**跑完之后**：中途失败时上一轮的证据仍然在。
+    只删本脚本自己的命名形态，`--out` 指向别的目录也不会误删别人的文件。
+    """
+    keep = {Path(p).resolve() for p in written}
+    removed = []
+    for pattern in GENERATED_PATTERNS:
+        for path in out.glob(pattern):
+            if path.is_file() and path.resolve() not in keep:
+                path.unlink()
+                removed.append(path.name)
+    return sorted(removed)
+
+
+def declares_lead(source):
+    """源稿是否真有导语（frontmatter 之后第一个正文块是 `>`）。没有导语就不该量导语字号。"""
+    text = source.read_text(encoding="utf-8")
+    body = text.split("---\n", 2)[-1]
+    for line in body.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        return line.startswith(">")
+    return False
+
+
+def hierarchy_issues(theme, metrics, has_lead=True):
+    """可机检的排版层级缺陷：导语压过章节标题、正文字号反超导语、章节标记机械复读。
+
+    这些不是审美判断，而是「层级链断掉」的几何证据：读者在小屏上靠字号与标记分辨主次，
+    一旦导语 ≥ 章节标题，首屏就出现两个同级入口（V7 审计发现 paper/folio 曾如此）。
+    """
+    issues = []
+    sizes = metrics.get("chapterHeadingSizes") or []
+    lead = metrics.get("leadSize") if has_lead else None
+    if lead and sizes and lead >= min(sizes):
+        issues.append(f"lead {lead:.1f}px ≥ 章节标题 {min(sizes):.1f}px（首屏出现同级入口）")
+    if lead and metrics.get("minBodySize") and lead <= metrics["minBodySize"]:
+        issues.append(f"lead {lead:.1f}px ≤ 正文 {metrics['minBodySize']:.1f}px（导语失去入口作用）")
+    markers = [m for m in (metrics.get("chapterMarkers") or []) if m]
+    run, best = 1, 1
+    for a, b in zip(markers, markers[1:]):
+        run = run + 1 if a == b else 1
+        best = max(best, run)
+    if best >= 3:
+        issues.append(f"同一章节标记「{markers[0]}」连续出现 {best} 次（机械复读）")
+    return issues
 
 
 def open_page(browser, preview, width, height=844):
@@ -146,7 +235,7 @@ def main():
         print(f"FAIL: missing real-image visual fixture {VISUAL_SAMPLE}")
         return 1
 
-    failures, neutral_paths = [], {}
+    failures, neutral_paths, written = [], {}, []
     with tempfile.TemporaryDirectory(prefix="wechat-theme-study-") as temp_dir, sync_playwright() as p:
         try:
             browser = p.chromium.launch()
@@ -164,6 +253,7 @@ def main():
                 metrics = inspect_page(page, width)
                 png = out / f"sample_{theme}_{case_id}_{width}.png"
                 page.screenshot(path=str(png), full_page=True)
+                written.append(png)
                 issues = []
                 if metrics["viewportOverflow"] or metrics["elementOverflow"]:
                     issues.append("horizontal overflow")
@@ -179,6 +269,7 @@ def main():
                     issues.append(f"note/caption below 12px ({metrics['minNoteSize']:.1f}px)")
                 if not metrics["titleLines"]:
                     issues.append("native title is absent or not measurable")
+                issues.extend(hierarchy_issues(theme, metrics, declares_lead(source)))
                 if issues:
                     failures.append(f"{theme}/{case_id}/{width}px: {', '.join(issues)}")
                 page.close()
@@ -200,10 +291,14 @@ def main():
                     failures.append(f"image fixture/{theme}/{width}px: note/caption below 12px")
                 if not metrics["imagesLoaded"]:
                     failures.append(f"image fixture/{theme}/{width}px: image failed to load")
+                hierarchy = hierarchy_issues(theme, metrics, declares_lead(VISUAL_SAMPLE))
+                if hierarchy:
+                    failures.append(f"image fixture/{theme}/{width}px: {'; '.join(hierarchy)}")
                 if metrics["bodyImageCount"] != 4:
                     failures.append(f"image fixture/{theme}/{width}px: expected 4 body image instances, found {metrics['bodyImageCount']}")
-                page.screenshot(path=str(out / f"same-draft_{theme}_{width}.jpg"),
-                                full_page=True, type="jpeg", quality=90)
+                same_draft = out / f"same-draft_{theme}_{width}.jpg"
+                page.screenshot(path=str(same_draft), full_page=True, type="jpeg", quality=90)
+                written.append(same_draft)
                 if width == 390:
                     # The toolbar contains a theme name, which is not a design difference.
                     page.evaluate("() => { const label=document.querySelector('.bar span'); if(label) label.textContent='同稿同题'; }")
@@ -211,6 +306,7 @@ def main():
                     page.evaluate("() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))")
                     shot = out / f"same-draft_{theme}_390_neutral.png"
                     page.screenshot(path=str(shot), full_page=True)
+                    written.append(shot)
                     neutral_paths[theme] = shot
                 page.close()
 
@@ -235,7 +331,7 @@ def main():
             failures.append(f"{left}/{right}: near-identical after color neutralization ({mean_delta:.5f})")
 
     report = [
-        "# Browser Visual Review · V6",
+        "# Browser Visual Review · V7",
         "",
         "Screenshots are browser evidence and review inputs, not a design score or proof of WeChat compatibility.",
         "",
@@ -264,7 +360,13 @@ def main():
                "- Independent external blind review is UNVERIFIED.",
                "- Real WeChat account, editor sanitization, iOS/Android reading and in-client cover crops are UNVERIFIED.",
                "", "## Reproduction", "", "```bash", "python3 tests/visuals.py", "```", ""]
-    (out / "REPORT.md").write_text("\n".join(report), encoding="utf-8")
+    report_path = out / "REPORT.md"
+    report_path.write_text("\n".join(report), encoding="utf-8")
+    written.append(report_path)
+    removed = prune_stale(out, written)
+    if removed:
+        print(f"清理上一轮遗留输出 {len(removed)} 个：{'、'.join(removed[:6])}"
+              + ("…" if len(removed) > 6 else ""))
     print(f"Browser visual review: {'PASS' if not failures else 'FAIL'}")
     print(f"Real-source samples: {len(THEME_SAMPLES)} × {len(WIDTHS)} widths; same draft: 6 themes × {len(WIDTHS)} widths")
     print(f"Neutralized pair comparisons: {len(pair_rows)}")

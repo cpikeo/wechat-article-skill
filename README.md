@@ -1,11 +1,12 @@
-# WeChat Article Skill · V6.0.0
+# WeChat Article Skill · V7.0.0
 
 把 Markdown、Word `.docx` 或纯文本编辑为可信、克制、适合手机阅读的微信公众号正文 HTML、独立预览与可核验交付记录。它是 AI 编辑与视觉排版 Skill，不是网页模板库、SaaS 或微信编辑器。
 
 **工作顺序：THINK → EDIT → DESIGN → COMPOSE → RENDER → VERIFY。** 内容判断先于视觉；视觉概念先于装饰；删除 > 合并 > 简化 > 复用 > 新增。
 
 - 唯一编辑与设计判断入口：[SKILL.md](SKILL.md)
-- 六类真实来源样稿、确定性评估与未验证状态：[evaluation/RESULTS.md](evaluation/RESULTS.md)
+- V7 审计（每条带证据）、六类受控评估与未验证状态：[evaluation/RESULTS.md](evaluation/RESULTS.md)
+- 六类评估的指标与逐篇明细：[evaluation/model-eval/REPORT.md](evaluation/model-eval/REPORT.md)（首轮失败与修正：`RUN-NOTES.md`）
 - 测试语料许可与盲评方法：[evaluation/README.md](evaluation/README.md)
 - 公众号边界、素材方向与发布安全：[references/](references/)
 
@@ -48,7 +49,7 @@ python3 scripts/extract_docx.py 文章.docx -o 文章.md
 
 ```bash
 python3 tests/run.py
-python3 tests/editorial_eval.py --check-report evaluation/RESULTS.md
+python3 tests/editorial_eval.py --check-report
 
 # 一次性安装截图评估依赖（另需系统安装 Noto CJK 字体）
 python3 -m pip install playwright pillow
@@ -57,6 +58,10 @@ python3 -m playwright install --with-deps chromium
 # 运行浏览器评估
 python3 tests/run.py --shots --shoot examples/draft-handoff.md
 python3 tests/visuals.py
+
+# 六类受控评估（固定提示词 / 重复 3 次 / 指标与未验证状态）
+python3 tests/model_eval.py --list
+python3 tests/model_eval.py --report --run-dir evaluation/model-eval/runs/in-session-v7
 ```
 
 `tests/visuals.py` 对六篇真实来源样稿做四宽度浏览器截图，并把同一篇含 Met CC0 真实馆藏图像的视觉样稿以六种主题渲染；去色全页截图只检测结构是否趋同，不是美学排名。回归与评估截图统一落在被忽略的 `evaluation/visual-review/`，不再写入 `assets/`。真实模型复跑、独立外部盲评、逐项第二来源核真和真实微信账号/真机未执行时，须标 `BLOCKED` 或 `UNVERIFIED`，不可伪造结果；当前状态见 [评估记录](evaluation/RESULTS.md)。
@@ -74,6 +79,18 @@ python3 scripts/publish.py --html 正文.html --meta 正文.meta.json \
 ```
 
 默认止于草稿。`config.json` 不接受持久发布授权；正式提交必须同时具有本次 `--submit` 和逐字匹配的 `--confirm-title`。凭证不进文章或仓库。预检、API 回读、后台重开、手机端样式与封面裁切是不同验收项；没有真实账号就不能声称微信兼容或发布已验证。详见 [`references/publish.md`](references/publish.md)。
+
+## V7 变更摘要（详见 evaluation/AUDIT-V7.md）
+
+| 方向 | 实际改动 |
+|---|---|
+| 编辑判断 | 15 条文风/机械扩写线索（AI 腔、模板排比、主语复读、同义反复、句长过齐、定语堆叠、推断跳步、口语序号、排比开头、空洞呼吁结尾）；负例一份按规则写、一份独立写，并对 18 篇真实稿做反向误报检查；`section_gain` 逐节信息增量；`voice_profile` 作者声音画像，`--against` 会报「声音被抹平」 |
+| 四类内容 | 新增 `::: unknown` 原语：事实 / 推断 / 观点 / 未知在版式上分开；新闻或分析缺未知项会被提示 |
+| 视觉 | 主题轴登记 + 载入校验（写错的取值不再静默落回默认）；字号层级变成硬约束（导语必须小于 H2）；删掉 `bone` 的 `SECTION` 装饰标签；正文断行从 `anywhere` 改为 `break-word` |
+| 构图 | `资料/实拍` 职责必须写明出处与授权；证据类图片必须紧邻其解释文字；决策链逐环标 DECLARED/INFERRED/MISSING |
+| 评估 | `tests/model_eval.py`：固定提示词 + 输入指纹 + 每类 3 次重复 + 指标报告 + 盲评表单；首轮 4 篇被 Gate 2 拦下并逐条修正，记录在 `RUN-NOTES.md` |
+| 安全 | 删除永久素材需逐字确认（且在校验通过前不取 token）；审计日志字段白名单；DOCX 图片的 Word 替换文字不再丢失 |
+| 冗余 | 合并两套盲评实现、两套行内标记剥离；删除未用变量/导入；`render.py` 复核后仍不拆分（同一渲染契约） |
 
 ## V6 审计与处置摘要
 

@@ -7,11 +7,14 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
-import shutil
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 EVAL = ROOT / "evaluation"
+# 机器报告与人工证据记录分开：这份文件必须与本脚本输出逐字一致（CI 会校验），
+# 而 RESULTS.md 是人写的证据索引，可以自由增补说明——两者混在一起时，
+# 「报告过期」的检查会逼人删掉解释性内容，或者干脆关掉检查。
+REPORT_PATH = EVAL / "pairs-report.md"
 SCRIPTS = ROOT / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 import render  # noqa: E402
@@ -46,34 +49,6 @@ def dataset_hash(data):
             h.update(path.relative_to(EVAL).as_posix().encode())
             h.update(path.read_bytes())
     return h.hexdigest()
-
-
-def blind_mapping(data, seed):
-    mapping = {}
-    for case in data["cases"]:
-        original_first = int(hashlib.sha256(f"{seed}:{case['id']}".encode()).hexdigest(), 16) % 2 == 0
-        mapping[case["id"]] = {"A": "original" if original_first else "edited",
-                               "B": "edited" if original_first else "original"}
-    return mapping
-
-
-def write_blind_packet(data, directory, key_file, seed):
-    directory = Path(directory)
-    key_file = Path(key_file)
-    if directory.resolve() == key_file.parent.resolve():
-        raise ValueError("盲测 key 不能和 A/B 稿放在同一目录")
-    directory.mkdir(parents=True, exist_ok=True)
-    key_file.parent.mkdir(parents=True, exist_ok=True)
-    mapping = blind_mapping(data, seed)
-    for case in data["cases"]:
-        case_dir = directory / case["id"]
-        case_dir.mkdir(parents=True, exist_ok=True)
-        for label in ("A", "B"):
-            source = safe_case_file(case[mapping[case["id"]][label]])
-            shutil.copyfile(source, case_dir / f"{label}.md")
-    key_file.write_text(json.dumps({"seed": seed, "mapping": mapping}, ensure_ascii=False, indent=2),
-                        encoding="utf-8")
-    return mapping
 
 
 def evaluate(data):
@@ -163,15 +138,13 @@ def evaluate(data):
     expected = {"商业分析", "新闻报道", "技术教程", "人物故事", "观点评论", "深度长文"}
     if genres != expected:
         problems.append(f"类型覆盖不完整：期望 {sorted(expected)}，实际 {sorted(genres)}")
-    if blind_mapping(data, "v6-repeat") != blind_mapping(data, "v6-repeat"):
-        problems.append("相同 seed 的盲测映射不稳定")
     return problems, rows
 
 
 def report_text(data, rows, problems):
     digest = dataset_hash(data)
     lines = [
-        "# Editorial Evaluation Results · V6",
+        "# Editorial Evaluation Results（机器报告，自动生成）· V7",
         "",
         f"- 数据集指纹：`{digest}`",
         f"- 样本：{len(rows)} 篇真实来源摘录／翻译，覆盖商业分析、新闻报道、技术教程、人物故事、观点评论、深度长文",
@@ -223,8 +196,9 @@ def report_text(data, rows, problems):
         "## 复现",
         "",
         "```bash",
-        "python3 tests/editorial_eval.py --check-report evaluation/RESULTS.md",
-        "python3 tests/editorial_eval.py --blind-dir /tmp/wechat-blind --key-file /tmp/wechat-key.json --seed reviewer-01",
+        "python3 tests/editorial_eval.py --check-report",
+        "python3 tests/model_eval.py --report --run-dir evaluation/model-eval/runs/in-session-v7 \\",
+        "  --out evaluation/model-eval/REPORT.md",
         "python3 tests/visuals.py",
         "```",
         "",
@@ -234,20 +208,14 @@ def report_text(data, rows, problems):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--write-report")
-    ap.add_argument("--check-report")
-    ap.add_argument("--blind-dir")
-    ap.add_argument("--key-file")
-    ap.add_argument("--seed", default="v6")
+    ap.add_argument("--write-report", nargs="?", const=str(REPORT_PATH),
+                    help=f"写出机器报告（默认 {REPORT_PATH.relative_to(ROOT)}）")
+    ap.add_argument("--check-report", nargs="?", const=str(REPORT_PATH),
+                    help="校验机器报告与本次运行完全一致（防止报告与代码脱节）")
     args = ap.parse_args()
     data = load_dataset()
     problems, rows = evaluate(data)
     report = report_text(data, rows, problems)
-    if args.blind_dir or args.key_file:
-        if not (args.blind_dir and args.key_file):
-            ap.error("--blind-dir 与 --key-file 必须同时提供")
-        write_blind_packet(data, args.blind_dir, args.key_file, args.seed)
-        print(f"盲测包 → {args.blind_dir}\n独立 key → {args.key_file}")
     if args.write_report:
         Path(args.write_report).write_text(report, encoding="utf-8")
         print(f"评估报告 → {args.write_report}")

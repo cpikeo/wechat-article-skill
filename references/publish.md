@@ -4,7 +4,7 @@
 
 ## 安全边界
 
-默认建草稿。正式发布是**单次授权**：只有本次运行显式加 `--submit --confirm-title "标题"`（标题逐字一致）才会发布，config 写 `submit:true` 会被拒绝——一次设置不能影响以后的普通运行。发布不等于群发。草稿箱开关的开启不可逆，仅显式 `--enable-draft-switch`；删除永久素材不可恢复，仅显式 `--delete-material`。
+默认建草稿。正式发布是**单次授权**：只有本次运行显式加 `--submit --confirm-title "标题"`（标题逐字一致）才会发布，config 写 `submit:true` 会被拒绝——一次设置不能影响以后的普通运行。发布不等于群发。草稿箱开关的开启不可逆，仅显式 `--enable-draft-switch`；删除永久素材不可恢复，必须 `--delete-material <ID>` **和** 逐字一致的 `--confirm-delete-media-id <ID>` 同时给出，且这两项校验发生在获取 access_token 之前——未确认的破坏性操作不会产生任何网络副作用。审计日志只接受标量白名单字段（`submit/body_sha256/media_id/publish_id/error_type/stage`），凭证与正文在结构上进不了日志。
 账号权限依后台与接口返回，不把历史个人／企业结论当当前实测。
 
 ## 配置与命令
@@ -33,7 +33,8 @@ V6 的 meta 继续携带 `article_type`、`grid`、`editorial_review` 与 `fact_
 ```bash
 python3 scripts/publish.py --material-count
 python3 scripts/publish.py --list-materials --material-type image
-python3 scripts/publish.py --delete-material 已核对的MediaID
+python3 scripts/publish.py --delete-material 已核对的MediaID \
+  --confirm-delete-media-id 已核对的MediaID
 python3 scripts/publish.py --html 文章.html --meta 文章.meta.json --no-reuse-cover
 ```
 

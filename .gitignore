@@ -7,3 +7,4 @@ evaluation/visual-review/
 
 # Local blind-review packets; keep answer keys outside shared review folders.
 wechat-blind/
+evaluation/model-eval/blind/

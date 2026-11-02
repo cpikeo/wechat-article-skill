@@ -1,0 +1,138 @@
+{
+  "model": "arena-agent-session (single executor, self-generated)",
+  "temperature": "not-pinnable-in-session",
+  "repeats": 3,
+  "recorded_at": "2026-11-02T07:06:10.461951+00:00",
+  "declared_limits": "同一执行者在同一会话内按固定提示词独立重写三次；采样参数无法钉住，n=3 反映会话内重复性，不是独立实验室复跑。首轮 4 篇被 Gate 2 拦下，修正与两处工具缺陷的记录见 RUN-NOTES.md。",
+  "manifest_sha256": "8a36f901f9b37f44bb2552a76b5d539854def2f98754ad6fb7e2d8d7f2d0b729",
+  "outputs": [
+    {
+      "case": "business",
+      "repeat": 1,
+      "sha256": "7fbb4c1b2f15f76af28114992211dff191161035b0ad5316224b6b985420b323",
+      "chars": 491,
+      "path": "business/run-1.md"
+    },
+    {
+      "case": "business",
+      "repeat": 2,
+      "sha256": "2b37d8d2c2c439bdacd6bc5398c7c8fa7b8d6e59ac1c09fdff48c629afa93ba6",
+      "chars": 536,
+      "path": "business/run-2.md"
+    },
+    {
+      "case": "business",
+      "repeat": 3,
+      "sha256": "dbac8684ca198d945d8cfb8fcb1811db9cdda8ab84a2738de10006f7e0aa82b4",
+      "chars": 504,
+      "path": "business/run-3.md"
+    },
+    {
+      "case": "longform",
+      "repeat": 1,
+      "sha256": "0873ee612f0fa6f5a7da510b421f2b78b38a78a8f9c9b53fe68047bc74808bc3",
+      "chars": 1490,
+      "path": "longform/run-1.md"
+    },
+    {
+      "case": "longform",
+      "repeat": 2,
+      "sha256": "5d50d6d28aab8d2f6681e7fbb98954abccfa431429370c8d3d3e71d600f592e8",
+      "chars": 1499,
+      "path": "longform/run-2.md"
+    },
+    {
+      "case": "longform",
+      "repeat": 3,
+      "sha256": "dbbf29c7e838b02d83561b83d1f57f3cc758dbbcda8b7c336da6f027067b4229",
+      "chars": 1446,
+      "path": "longform/run-3.md"
+    },
+    {
+      "case": "news",
+      "repeat": 1,
+      "sha256": "e6e849d63fdf488517cb0f8261d0dd60f2fb3580c36abeb651a245e14f899fea",
+      "chars": 436,
+      "path": "news/run-1.md"
+    },
+    {
+      "case": "news",
+      "repeat": 2,
+      "sha256": "2423c81d8b99468409bf4e39455d89283251e5a904a33b6a32046054295cb14f",
+      "chars": 467,
+      "path": "news/run-2.md"
+    },
+    {
+      "case": "news",
+      "repeat": 3,
+      "sha256": "ac8bed7fb79145be78169615ed99992219ca0dd22c5602aa008950a3a0abcdcd",
+      "chars": 377,
+      "path": "news/run-3.md"
+    },
+    {
+      "case": "opinion",
+      "repeat": 1,
+      "sha256": "dfa6fa05c253d462601214505e61e6f3b0aacfd2c00df2302dfc2099738117f4",
+      "chars": 752,
+      "path": "opinion/run-1.md"
+    },
+    {
+      "case": "opinion",
+      "repeat": 2,
+      "sha256": "227ef9155fd642f2cf76cc72d180b01d3ce95251acd84be66bc18a74259826b6",
+      "chars": 735,
+      "path": "opinion/run-2.md"
+    },
+    {
+      "case": "opinion",
+      "repeat": 3,
+      "sha256": "4e226aff8e66ab770fb407a7ef054fe58d2013bfb35a85423fbf4dd02e0d91c2",
+      "chars": 724,
+      "path": "opinion/run-3.md"
+    },
+    {
+      "case": "profile",
+      "repeat": 1,
+      "sha256": "d180cb3d93cba4e8596b9b6e8e801cef4057c640a7b9320dab2744543abc10d4",
+      "chars": 502,
+      "path": "profile/run-1.md"
+    },
+    {
+      "case": "profile",
+      "repeat": 2,
+      "sha256": "9c12e015cb721c190fec72bf12032250ae54407d2bf45951d0f4e213b34decd8",
+      "chars": 477,
+      "path": "profile/run-2.md"
+    },
+    {
+      "case": "profile",
+      "repeat": 3,
+      "sha256": "0c00f11ace5c8e12c88136c30b817218f59abda64dec0820f9abc5e09d0b51fc",
+      "chars": 389,
+      "path": "profile/run-3.md"
+    },
+    {
+      "case": "tutorial",
+      "repeat": 1,
+      "sha256": "f85fdf170405e229b5d0d92a32ae4a446cff81d5285bc807b0b718e85193f2a6",
+      "chars": 657,
+      "path": "tutorial/run-1.md"
+    },
+    {
+      "case": "tutorial",
+      "repeat": 2,
+      "sha256": "43e2e7f21228122fb487d98d951a75f12c6347a9b57c3c7d065bd34fc12708de",
+      "chars": 578,
+      "path": "tutorial/run-2.md"
+    },
+    {
+      "case": "tutorial",
+      "repeat": 3,
+      "sha256": "35b44005ec686469337d37ee9c0f121e2b1c32475eeff2051742d2119e7ea34d",
+      "chars": 572,
+      "path": "tutorial/run-3.md"
+    }
+  ],
+  "problems": [],
+  "status": "COMPLETE"
+}
