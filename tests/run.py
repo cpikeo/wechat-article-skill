@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """回归：合成语料必须 Gate 1/2 全过；用负例守护视觉判断的确定性部分。
 
-    python3 scripts/selftest.py            退出码 1 = 回归失败
-    python3 scripts/selftest.py --shots   把每篇预览截成 390px PNG（需 playwright，未装则失败）
+    python3 tests/run.py            退出码 1 = 回归失败
+    python3 tests/run.py --shots   截取 320/360/390/430px 证据（需 playwright，未装则失败）
 
-语料与素材不入库：fixtures.py 每次在临时目录里现生成（原 eval/ 已删除）。
+合成语料与素材不入库：tests/fixtures.py 每次在临时目录生成；真实来源对照保留在 evaluation/。
 三条铁律：用例必须过；护栏必须仍会在该失败的地方失败；测试只冻结可确定缺陷，不冻结审美配额。
 """
 import argparse
@@ -13,8 +13,6 @@ import io
 from pathlib import Path
 import unittest
 from unittest.mock import patch
-import publish
-from safety import local_path
 import json
 import os
 import re
@@ -23,12 +21,15 @@ import subprocess
 import sys
 import tempfile
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(HERE)
+SCRIPTS = os.path.join(ROOT, "scripts")
+sys.path.insert(0, SCRIPTS)
+import publish
+from safety import local_path
 import render as _r
 import fixtures as _fx
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-ROOT = os.path.dirname(HERE)
 FIX = None          # main() 生成的临时语料目录；用例、素材与负例都在这里解析
 CASES = _fx.CASES
 HEAD = "---\ntitle: 回归用例|固定标题\n"   # 固定内容；不写 date，避免每天产生 diff
@@ -42,7 +43,7 @@ def run(args, cwd):
 def case_ok(name):
     """在语料目录原地渲染：相对图片路径必须像真实使用一样解析。"""
     out = os.path.join(FIX, f"_shots_{name}.html")
-    code, log = run([os.path.join(HERE, "render.py"), f"{name}.md", "-o", out], FIX)
+    code, log = run([os.path.join(SCRIPTS, "render.py"), f"{name}.md", "-o", out], FIX)
     return code == 0, log
 
 
@@ -93,30 +94,52 @@ RENDER_CHECKS = (
 
 
 # ---- 人格签名：决定一个主题是「编辑语言」还是「换色」----
-# 这六个轴直接改变构成（章节标记 / 高潮处理 / 转场 / 引文 / 图片处理 / 字体气质），
-# 色值不在其中：这里只检查执行参数签名重复。
-SIGNATURE = ("heading", "peak", "divider", "quote", "image", "display")
+# 这些轴都由真实渲染器消费：导语 / 章节 / 小标题 / 引文 / 重点 / 转场 / 图片 / 数据 / 表格 / 列表。
+STRUCTURAL_AXES = ("lead", "heading", "h3", "quote", "peak", "divider", "image", "data", "table", "list")
+SIGNATURE = STRUCTURAL_AXES + ("display",)
 COLOR_KEYS = ("text", "sub", "muted", "line", "field", "accent", "dark", "on_dark")
+TYPE_KEYS = ("heading_size", "heading_weight", "heading_leading", "chapter_gap", "paragraph_gap")
 
 
 def theme_audit():
-    """返回 (错误列表)。人格重复或键缺失都是硬错误：前者是判断退化，后者会静默渲染错。"""
-    sys.path.insert(0, HERE)
-    import render as _r
+    """人格键必须完整且结构轴真实分开；不以配色差异代替构图差异。"""
     from itertools import combinations
-    bad = []
-    sig = {}
-    for key, t in _r.THEMES.items():
-        missing = [k for k in SIGNATURE + COLOR_KEYS + ("name", "leading", "radius", "seal", "toc_label") if k not in t]
-        if missing:
-            bad.append(f"{key} 缺少键 {missing}：新人格必须给全，否则渲染会静默出错")
-        sig[key] = tuple(t.get(a) for a in SIGNATURE)
-    for a, b in combinations(sorted(sig), 2):
-        diff = [x for x, y, z in zip(SIGNATURE, sig[a], sig[b]) if y != z]
-        if not diff:
-            bad.append(f"{a} 与 {b} 编辑语言参数重复："
-                       f"参数重复：核对是否有必要保留")
+    bad, sig = [], {}
+    if tuple(_r.THEMES) != ("paper", "letter", "ink", "frost", "bone", "folio"):
+        bad.append("主题必须固定为 paper / letter / ink / frost / bone / folio，不能增删或换序")
+    for key, theme in _r.THEMES.items():
+        missing = [k for k in SIGNATURE + COLOR_KEYS
+                   + ("name", "intent", "leading", "radius", "seal", "toc_label", "type") if k not in theme]
+        missing_type = [k for k in TYPE_KEYS if k not in theme.get("type", {})]
+        if missing or missing_type:
+            bad.append(f"{key} 缺少键 {missing + ['type.' + x for x in missing_type]}")
+        sig[key] = tuple(theme.get(axis) for axis in SIGNATURE)
+    # 每个结构轴都应有六个实际实现；否则至少有两人格在该维只剩颜色差。
+    for axis in STRUCTURAL_AXES:
+        values = [theme.get(axis) for theme in _r.THEMES.values()]
+        if len(set(values)) != len(values):
+            bad.append(f"结构轴 {axis} 存在重复：{values}")
+    for left, right in combinations(sorted(sig), 2):
+        differences = [axis for axis, a, b in zip(SIGNATURE, sig[left], sig[right]) if a != b]
+        if not differences:
+            bad.append(f"{left} 与 {right} 编辑语言参数完全重复")
     return bad
+
+
+def specimen_ok():
+    """themes.json、渲染器和入库展示板必须由同一次生成得到。"""
+    with tempfile.TemporaryDirectory() as directory, contextlib.redirect_stdout(io.StringIO()):
+        generated = os.path.join(directory, "themes.html")
+        _r.specimen(generated)
+        actual = Path(generated).read_bytes()
+    committed = Path(ROOT, "assets", "themes.html")
+    if not committed.is_file():
+        return False, "assets/themes.html 不存在"
+    expected = committed.read_bytes()
+    marker = f"themes sha256 {_r.THEME_CONFIG_SHA256}".encode()
+    return actual == expected and marker in expected, (
+        "themes.json / render.py / themes.html 一致" if actual == expected and marker in expected
+        else "展示板已漂移：运行 python3 scripts/render.py --specimen")
 
 
 def render_check_ok(fm, md, must_have, must_not):
@@ -135,7 +158,7 @@ def platform_fields_ok():
         open(md, "w", encoding="utf-8").write(
             HEAD + "author: 幻海低语者   # 行内注释不能混进值里\nbio: 一句话\ndate: 2026年10月8日\n---\n\n"
                   "> 所有人都在问 AI 会不会让自己失业。\n\n正文一段。\n")
-        code, log = run([os.path.join(HERE, "render.py"), md, "-o", os.path.join(d, "o.html")], d)
+        code, log = run([os.path.join(SCRIPTS, "render.py"), md, "-o", os.path.join(d, "o.html")], d)
         if code != 0:
             return False, log
         body = open(os.path.join(d, "o.html"), encoding="utf-8").read()
@@ -163,7 +186,7 @@ def platform_fields_ok():
 def draft_payload_ok():
     """publish.py 实际发给 draft/add 的 payload：超限拒绝、断行标记转换、
     留言默认与编辑器对齐（1）、原文链接落到底部字段。"""
-    sys.path.insert(0, HERE)
+    sys.path.insert(0, SCRIPTS)
     import publish as _p
     calls = []
 
@@ -205,7 +228,7 @@ def draft_payload_ok():
 def material_ok():
     """封面永久素材：首传写缓存、同图复用不重传、后台已删（40007）重传；
     get_materialcount 走 GET；batchget 翻页取全且 count≤20；del_material payload 正确。"""
-    sys.path.insert(0, HERE)
+    sys.path.insert(0, SCRIPTS)
     import publish as _p
     with tempfile.TemporaryDirectory() as d:
         cover = os.path.join(d, "cover.jpg")
@@ -316,7 +339,7 @@ def docx_ok():
             z.writestr("word/_rels/document.xml.rels", RELS_XML)
             z.write(os.path.join(FIX, "fixtures", "tiny.png"), "word/media/fig1.png")
         out = os.path.join(d, "a.md")
-        code, log = run([os.path.join(HERE, "extract_docx.py"), src, "-o", out], d)
+        code, log = run([os.path.join(SCRIPTS, "extract_docx.py"), src, "-o", out], d)
         if code != 0 or not os.path.exists(out):
             return False, f"退出码 {code}\n{log}"
         md = open(out, encoding="utf-8").read()
@@ -359,7 +382,7 @@ def docx_ok():
 
 
 def shots(shoot=None):
-    """把每篇预览真正截成 390px PNG —— Gate 3 通读（人眼或视觉模型）的**证据**，不是视觉合格证。
+    """把每篇预览截成 320/360/390/430px PNG —— Gate 3 通读（人眼或视觉模型）的**证据**，不是视觉合格证。
 
     产出证据包：全页 + 首屏截图、REVIEW.md 逐张检查清单与复现命令。截图成功只证明渲染与
     截图流程顺利；构图、层级、密度、小字清晰度、封面裁切的结论只能由通读的人给出。
@@ -461,22 +484,24 @@ def shots(shoot=None):
             made.append(png)
             manifest.append((name + ".png", f"fixtures 合成语料 {name}", look.get(name, "")))
             pg.close()
-        from render import THEMES, SPECIMEN_MD
+        from render import THEMES
+        personality_source = os.path.join(ROOT, "evaluation", "cases", "business.edited.md")
         for theme in THEMES:
-            source = os.path.join(FIX, f"personality_{theme}.md")
-            with open(source, "w", encoding="utf-8") as f:
-                f.write(SPECIMEN_MD.replace("author: 甲木", f"author: 甲木\ntheme: {theme}"))
-            code, log = run([os.path.join(HERE, "render.py"), source], FIX)
+            output = os.path.join(FIX, f"personality_{theme}.html")
+            code, log = run([os.path.join(SCRIPTS, "render.py"), personality_source,
+                             "--theme", theme, "-o", output], os.path.dirname(personality_source))
             if code:
-                failed.append(f"{theme}（人格渲染失败）{log[-200:]}")
+                failed.append(f"{theme}（人格渲染失败）{log[-300:]}")
                 continue
-            prev = os.path.join(FIX, f"personality_{theme}_{theme}_预览.html")
+            prev = os.path.splitext(output)[0] + "_预览.html"
             pg = b.new_page(viewport={"width": 390, "height": 844}, device_scale_factor=2)
             png, err = one_shot(pg, prev, f"personality_{theme}")
-            if err: failed.append(err)
+            if err:
+                failed.append(err)
             else:
                 made.append(png)
-                manifest.append((f"personality_{theme}.png", "同稿六人格", "字体/章节尺度/引文/留白的区别"))
+                manifest.append((f"personality_{theme}.png", "真实来源商业分析优化稿 · 同稿六人格",
+                                 "导语/章节/引文/数据/表格/空间节奏的区别"))
             pg.close()
         # Exercise grouped layouts in the browser, including a style-stripped reading-order fallback.
         sample = os.path.join(FIX, "composition.md")
@@ -485,7 +510,7 @@ def shots(shoot=None):
                     '![乙对象](images/fig.jpg "对比 comparison")\n\n'
                     '![第一步](images/fig.jpg "场景 sequence")\n'
                     '![第二步](images/fig.jpg "场景 sequence")\n')
-        code, log = run([os.path.join(HERE, "render.py"), sample], FIX)
+        code, log = run([os.path.join(SCRIPTS, "render.py"), sample], FIX)
         if code:
             failed.append("构图样张渲染失败：" + log[-300:])
         else:
@@ -510,7 +535,7 @@ def shots(shoot=None):
             md = os.path.abspath(md)
             stem = os.path.splitext(os.path.basename(md))[0]
             out_html = os.path.join(FIX, f"shoot_{stem}.html")
-            code, log = run([os.path.join(HERE, "render.py"), md, "-o", out_html], os.path.dirname(md))
+            code, log = run([os.path.join(SCRIPTS, "render.py"), md, "-o", out_html], os.path.dirname(md))
             if code != 0:
                 failed.append(f"{stem}（渲染失败）\n{log[-300:]}")
                 continue
@@ -530,7 +555,7 @@ def shots(shoot=None):
         f.write("# Gate 3 截图证据包（320/360/390/430px · 2x）\n\n"
                 "**截图通过 ≠ 视觉通过。** 本目录只证明渲染与截图流程顺利完成；构图、层级、密度、"
                 "小字清晰度、封面裁切由通读的人（视觉总监）判定，结论写回验收记录，可无需修改。\n\n"
-                "复现：`python3 scripts/selftest.py --shots [--shoot 文章.md ...]`；"
+                "复现：`python3 tests/run.py --shots [--shoot 文章.md ...]`；"
                 "单稿另可 `python3 scripts/render.py 文章.md` 得正文、预览与 meta。\n\n"
                 "## 逐张必看\n\n"
                 "- 中文断行、标点避头尾；标题／正文／图注层级一眼可分\n"
@@ -583,7 +608,7 @@ def preflight_ok():
     """发布预检：不联网，验证 Gate 1 + 原生字段 + 封面按文章目录解析（换个 cwd 也得找得到）。"""
     import io
     import contextlib
-    sys.path.insert(0, HERE)
+    sys.path.insert(0, SCRIPTS)
     import publish as _p
     with tempfile.TemporaryDirectory() as d:
         art = os.path.join(d, "art")
@@ -594,7 +619,7 @@ def preflight_ok():
         open(md, "w", encoding="utf-8").write(
             HEAD + "author: 甲木\ncover: images/cover.jpg\n---\n\n"
             "> 钩子一句。\n\n正文一段。\n\n![说明](images/fig.jpg \"解释\")\n")
-        run([os.path.join(HERE, "render.py"), md, "-o", os.path.join(art, "a.html")], art)
+        run([os.path.join(SCRIPTS, "render.py"), md, "-o", os.path.join(art, "a.html")], art)
         side = json.load(open(os.path.join(art, "a.html".replace(".html", ".meta.json")), encoding="utf-8"))
         ns = argparse.Namespace(appid=None, secret=None, title=None, cover=None, author=None, digest=None,
                                 source_url=None, no_open_comment=False, fans_only_comment=False, submit=False)
@@ -676,6 +701,8 @@ def delivery_defects_ok():
     test("来源与口径标签剥两个前缀", _dup2.count("来源") == 1 and _dup2.count("口径") == 1 and "甲（2025）" in _dup2)
     test("代码内CSS字面量不误判", not check(r.code("css", ["position:fixed; display:grid; float:left; {{demo}};"]))[0])
     test("事件与协议相对图片被拦", bool(check('<img src="//bad/x" onerror="x()" style="max-width:100%">')[0]))
+    malformed = check('<section><p><span leaf="">文字</span></section>')[0]
+    test("Gate 1 拦截错序或未闭合标签", any("嵌套顺序" in x or "未闭合" in x for x in malformed))
     test("img/br不泄漏等宽状态", bool(check(r.code("", ["x"]) + '<br><p>未包裹</p>')[0]))
     test("首屏引文来源不丢失", "来源人物" in r.quote("引文", "来源人物", "lead"))
     meta, blocks = _r.parse(HEAD + "---\n::: data\n10\n:::\n\n::: note 演示\n演示计数，非统计。\n:::\n")
@@ -693,17 +720,18 @@ def delivery_defects_ok():
     test("中文与混排自然左对齐，表头不拉字距", 'text-align:justify' not in r.para('纯中文正文') and 'letter-spacing:2px' not in r.table([['长表头', '数值'], ['中文', '12%']]))
     wide = _r.col_widths([["方案", "研发占比", "备注"], ["甲：重研发", "60%", "产品迭代快，获客慢，留存中等"]])
     test("表格列宽按内容分配，数值列不被挤窄", wide[1] >= 9 and wide[2] > wide[1] and abs(sum(wide) - 100) < 1e-6)
-    _t4 = [["项目", "瑞幸测算（拿铁）", "库迪拆解", "备注"],
-           ["原料", "3–4 元", "5.7 元", "口径与产品不同"],
-           ["包材", "—", "1.5 元", "库迪单列"],
-           ["人工+房租", "不到 2 元", "3.7 元", "城市差异大"],
-           ["合计", "4–5 元", "11.1 元", "均为公开转述"]]
+    header_rows = [["观察对象", "年工时", "文中位置"], ["柬埔寨", "约2500小时", "高工时、较低人均收入"]]
+    header_width = _r.col_widths(header_rows)[0] / 100 * 288
+    test("四字中文表头在320px不形成单字孤行", header_width + 1 >= _r.cell_min_px("观察对象"))
+    _t4 = [["一季度", "二季度", "三季度", "四季度"],
+           ["12345678元", "23456789元", "34567890元", "45678901元"]]
     test("表格数值列小屏放不下被拦（320px 溢出）",
          any("小屏放不下" in m for m in _r.compose_gate({"title": "回归"}, [("table", _t4)])[0]))
     test("表格删低价值列后小屏放得下",
          not any("小屏放不下" in m for m in _r.compose_gate({"title": "回归"},
-                                                           [("table", [_t4[0][:3], _t4[1][:3], _t4[4][:3]])])[0]))
+                                                           [("table", [row[:3] for row in _t4])])[0]))
     test("纯数字单元格禁止断行", "white-space:nowrap" in r.table([["列", "值"], ["甲", "60%"]]) and "white-space:nowrap" not in r.table([["列", "值"], ["甲", "中文很长的一格"]]))
+    test("近似数值与中文单位保持同线", "white-space:nowrap" in r.table([["对象", "年工时"], ["甲", "约2500小时"], ["乙", "不足1600小时"]]))
     toc_md = HEAD + "toc: true\n---\n> 导语。\n\n第一段。\n\n## **重点**结论\n\n一。\n\n## ==关键词==\n\n二。\n\n## 第三\n\n三。\n"
     toc_html = _r.render(toc_md)[3]
     toc_block = toc_html[toc_html.find("目录") - 200:toc_html.find("目录") + 400] if "目录" in toc_html else ""
@@ -735,12 +763,21 @@ def delivery_defects_ok():
     t4 = text_of(HEAD + '---\n## 第一段：准备\n\n正文。\n\n## 第二段：装箱\n\n正文。\n\n## 第三段：收尾\n\n正文。\n')
     test("第X段式标题同样不叠加章标", '01　第一段' not in t4 and '第一段：准备' in t4 and '02　第二段' not in t4)
     rp, rb, rfr, rl, rfo, ri = (_r.R(_r.THEMES[k], 'standard') for k in ('paper', 'bone', 'frost', 'letter', 'folio', 'ink'))
+    structural = set()
+    for theme in _r.THEMES:
+        renderer = _r.R(_r.THEMES[theme], 'standard')
+        sample = (renderer.quote('导语', '', 'lead') + renderer.h2('章节', 1)
+                  + renderer.h3('小标题') + renderer.quote('引文', '出处', 'quote')
+                  + renderer.data(['10｜甲', '20｜乙']) + renderer.table([['项', '值'], ['甲', '10']])
+                  + renderer.lst(True, ['一步', '二步']) + renderer.img('说明', 'x.jpg', '解释') + renderer.hr())
+        structural.add(re.sub(r'#[0-9A-Fa-f]{6}', '#COLOR', sample))
+    test("六人格真实组件输出在去色后仍各不相同", len(structural) == 6)
     test("paper 重点是短强调线，与标题层级不同貌", 'background:#5C6758' in rp.quote('主张', '', 'peak') and 'width:28px' in rp.quote('主张', '', 'peak'))
     test("bone 重点是衬线上下细线", ('border-top:1px solid' in rb.quote('主张', '', 'peak')
           and 'border-bottom:1px solid' in rb.quote('主张', '', 'peak') and _r.SERIF in rb.quote('主张', '', 'peak')))
     test("frost 重点是加粗侧线", 'border-left:3px solid' in rfr.quote('主张', '', 'peak'))
-    test("letter 重点是暖底色块，引文是纯文字语气", ('background:#F6EBDC' in rl.quote('主张', '', 'peak')
-          and 'border-left' not in rl.quote('引文', '出处', 'quote') and 'padding:0 4px 0 14px' in rl.quote('引文', '出处', 'quote')))
+    test("letter 重点是暖底色块，引文是无侧线的人声层级", ('background:#F6EBDC' in rl.quote('主张', '', 'peak')
+          and 'border-left' not in rl.quote('引文', '出处', 'quote') and '—— 出处' in rl.quote('引文', '出处', 'quote')))
     test("folio 反色紧凑、ink 反色舒展", 'padding:13px 15px' in rfo.quote('主张', '', 'peak') and 'padding:20px 18px' in ri.quote('主张', '', 'peak'))
     html = _r.render(HEAD + '---\n::: bars 件\n1｜甲\n2｜乙\n:::\n\n::: note 来源\nhttps://example.com/x\n:::\n')[3]
     test("来源 note 紧贴图示而非悬空", 'margin:32px 0 10px' in html and 'margin:10px 0 16px;' in html)
@@ -772,7 +809,7 @@ def delivery_defects_ok():
         path = os.path.join(art, "a.md")
         open(path, "w", encoding="utf-8").write(HEAD + 'cover: images/cover.jpg\n---\n正文。\n\n![解释](images/fig.jpg "解释")\n')
         html = os.path.join(dest, "body.html")
-        rc, log = run([os.path.join(HERE, "render.py"), path, "-o", html], d)
+        rc, log = run([os.path.join(SCRIPTS, "render.py"), path, "-o", html], d)
         side = json.load(open(os.path.splitext(html)[0] + ".meta.json", encoding="utf-8"))
         src = open(html, encoding="utf-8").read()
         preview = open(os.path.splitext(html)[0] + "_预览.html", encoding="utf-8").read()
@@ -789,7 +826,7 @@ def delivery_defects_ok():
             test("实体路径/重复图片只上传一次", upload.call_count == 1 and rewritten.count("&amp;b=2") == 3)
         cache = os.path.join(d, "cache.json")
         cover = settings["cover"]
-        open(cache, "w").write(json.dumps({pub._file_sha256(cover): "MID"}))
+        open(cache, "w").write(json.dumps({pub.sha256(cover): "MID"}))
         with patch.object(pub, "get_material", side_effect=pub.WeChatAPIError(40001, "token")), patch.object(pub, "upload_thumb_material") as upload:
             try:
                 pub.upload_thumb_material_cached("tok", cover, cache)
@@ -901,7 +938,7 @@ class DeliveryTests(unittest.TestCase):
         self.md = self.root / 'v2.md'
         self.md.write_text('---\ntitle: 测试\ncover: images/cover.jpg\ncomposition: explainer\n---\n正文。\n\n![说明](images/fig.jpg "解释 inset")\n', encoding='utf-8')
         self.html = self.root / 'delivery' / 'body.html'
-        run = subprocess.run([sys.executable, str(Path(HERE)/'render.py'), str(self.md), '-o', str(self.html)], capture_output=True, text=True)
+        run = subprocess.run([sys.executable, str(Path(SCRIPTS)/'render.py'), str(self.md), '-o', str(self.html)], capture_output=True, text=True)
         self.assertEqual(run.returncode, 0, run.stderr + run.stdout)
         self.side = json.loads(self.html.with_suffix('.meta.json').read_text())
         self.settings = dict(title=self.side['api_title'], author=None, digest=self.side['digest'], source=None, cover=publish.resolve_cover(self.side['cover'], str(self.html)), open_comment=True, fans_only=False, submit=False)
@@ -920,7 +957,7 @@ class DeliveryTests(unittest.TestCase):
             src, out = self.root / f'complex{n}.docx', self.root / f'complex{n}.md'
             with zipfile.ZipFile(src, 'w') as z:
                 z.writestr('word/document.xml', base.format(table))
-            result = subprocess.run([sys.executable, str(Path(HERE)/'extract_docx.py'), str(src), '-o', str(out)], capture_output=True, text=True)
+            result = subprocess.run([sys.executable, str(Path(SCRIPTS)/'extract_docx.py'), str(src), '-o', str(out)], capture_output=True, text=True)
             self.assertNotEqual(result.returncode, 0, result.stdout)
             self.assertFalse(out.exists())
             self.assertIn('正文块', result.stderr)
@@ -932,6 +969,14 @@ class DeliveryTests(unittest.TestCase):
             file.write_bytes(old + b'x')
             self.assertEqual(self.flight(), 1, str(file))
             file.write_bytes(old)
+        side_path = self.html.with_suffix('.meta.json')
+        for key, value in (("skill_version", "0.0.0"), ("theme_config_sha256", "stale")):
+            altered = dict(self.side, **{key: value})
+            side_path.write_text(json.dumps(altered, ensure_ascii=False), encoding='utf-8')
+            self.assertEqual(self.flight(), 1, key)
+        side_path.write_text(json.dumps(self.side, ensure_ascii=False), encoding='utf-8')
+        self.assertEqual(self.flight(), 0)
+        self.assertEqual(self.side['integrity_version'], 2)
         self.assertEqual(self.side['decision']['composition'], 'explainer')
 
     def test_boundaries(self):
@@ -947,7 +992,7 @@ class DeliveryTests(unittest.TestCase):
     def test_render_rejects_escaping_cover(self):
         self.md.write_text('---\ntitle: 测试\ncover: ../outside.jpg\n---\n正文。\n', encoding='utf-8')
         output = self.root/'bad.html'
-        result = subprocess.run([sys.executable, str(Path(HERE)/'render.py'), str(self.md), '-o', str(output)], capture_output=True, text=True)
+        result = subprocess.run([sys.executable, str(Path(SCRIPTS)/'render.py'), str(self.md), '-o', str(output)], capture_output=True, text=True)
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse(output.exists())
 
@@ -996,11 +1041,11 @@ class DeliveryTests(unittest.TestCase):
         self.assertEqual(len(signatures), 6)
         txt = self.root/'source.txt'
         txt.write_text('# 纯文本测试\n\n正文和English 2026。', encoding='utf-8')
-        result = subprocess.run([sys.executable, str(Path(HERE)/'render.py'), str(txt)], capture_output=True, text=True)
+        result = subprocess.run([sys.executable, str(Path(SCRIPTS)/'render.py'), str(txt)], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('正文和English 2026。', (self.root/'source_paper.html').read_text())
         pdf = self.root/'wrong.pdf'; pdf.write_text('not a PDF')
-        result = subprocess.run([sys.executable, str(Path(HERE)/'render.py'), str(pdf)], capture_output=True, text=True)
+        result = subprocess.run([sys.executable, str(Path(SCRIPTS)/'render.py'), str(pdf)], capture_output=True, text=True)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('仅支持', result.stderr)
 
@@ -1044,7 +1089,7 @@ def run_all(a):
 
     # themes.json 是所有人格共用的唯一来源：一个键写坏，选到它的人就整篇渲染不出来。
     print("③ 人格系统（themes.json）：可渲染 · 不重复 · 键完整")
-    sys.path.insert(0, HERE)
+    sys.path.insert(0, SCRIPTS)
     import render as _r
     for key in _r.THEMES:
         try:
@@ -1060,7 +1105,11 @@ def run_all(a):
         for m in theme_bad:
             print(f"   FAIL · {m}")
     else:
-        print(f"   不重复 · {len(_r.THEMES)} 套参数签名不完全重复，且键完整")
+        print(f"   独立结构轴 · {len(_r.THEMES)} 套人格在导语/标题/引文/信息/图片/节奏键上完整且不重复")
+    ok, why = specimen_ok()
+    print(f"   {'PASS' if ok else 'FAIL'} · {why}")
+    if not ok:
+        fails.append("主题配置/渲染器/展示板一致性")
 
     print("④ 护栏回归（负例必须仍被拦住）")
     for label, fm, body, kw, level in GUARDS:
@@ -1156,6 +1205,13 @@ def run_all(a):
     if not ok:
         fails.append("真实缺陷：" + why)
 
+    print("⑬ 真实来源编辑评估（五类型 · 修改台账 · A/B · 重复任务）")
+    code, log = run([os.path.join(HERE, "editorial_eval.py"), "--check-report",
+                     os.path.join(ROOT, "evaluation", "RESULTS.md")], ROOT)
+    print("   " + log.strip().replace("\n", "\n   "))
+    if code:
+        fails.append("真实来源编辑评估")
+
     result = unittest.TextTestRunner(verbosity=2).run(unittest.defaultTestLoader.loadTestsFromTestCase(DeliveryTests))
     if not result.wasSuccessful():
         fails.append("交付完整性与输入回归")
@@ -1168,7 +1224,7 @@ def run_all(a):
 
 
 def main():
-    """语料与素材不入库：每次在临时目录现生成（fixtures.py），跑完整体回收。"""
+    """语料与素材不入库：每次在临时目录现生成（tests/fixtures.py），跑完整体回收。"""
     global FIX
     ap = argparse.ArgumentParser()
     ap.add_argument("--shots", action="store_true")

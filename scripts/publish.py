@@ -26,7 +26,7 @@ import urllib.request
 import urllib.error
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from render import api_title, img_size  # noqa: E402  标题断行标记的转换规则与图片尺寸读取单一来源在 render.py
+from render import api_title, img_size, SKILL_VERSION, THEME_CONFIG_SHA256  # noqa: E402
 from check import check, image_sources  # noqa: E402
 from safety import local_path, sha256
 
@@ -193,14 +193,6 @@ def rewrite_local_images(html, access_token, base_dir="."):
 MATERIAL_CACHE_DEFAULT = ".wechat_material_cache.json"
 
 
-def _file_sha256(path):
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(65536), b""):
-            h.update(chunk)
-    return h.hexdigest()
-
-
 def get_material(access_token, media_id):
     """按 media_id 取永久素材详情；素材被删时返回 errcode=40007。"""
     url = f"{API_BASE}/material/get_material?access_token={access_token}"
@@ -246,7 +238,7 @@ def upload_thumb_material_cached(access_token, cover_path, cache_path=MATERIAL_C
     本地缓存 sha256 -> media_id；复用前用 get_material 验活——素材可能在
     后台被手动删掉（40007），缓存命中但已死就重传并更新缓存。
     """
-    digest = _file_sha256(cover_path)
+    digest = sha256(cover_path)
     cache = {}
     if cache_path and os.path.exists(cache_path):
         try:
@@ -421,8 +413,12 @@ def preflight(html_path, s):
         except ValueError as e:
             ok = False
             print("  必须改 · 封面路径越界", e)
-    if os.path.isfile(side_path) and side.get("integrity_version") == 1:
+    if os.path.isfile(side_path) and side.get("integrity_version") == 2:
         try:
+            if side.get("skill_version") != SKILL_VERSION:
+                raise ValueError(f"渲染版本已变化：{side.get('skill_version')} → {SKILL_VERSION}")
+            if side.get("theme_config_sha256") != THEME_CONFIG_SHA256:
+                raise ValueError("主题配置已变化；正文、配置和展示样张可能不一致")
             source = side["source"]
             if sha256(source["path"]) != source["sha256"]:
                 raise ValueError("源 Markdown 已变化")
@@ -434,16 +430,18 @@ def preflight(html_path, s):
             source_root = os.path.dirname(os.path.abspath(source["path"]))
             for item in side["assets"]:
                 path, digest = item["path"], item["sha256"]
-                if sha256(local_path(path, base)) != digest or sha256(local_path(item["source_path"], source_root)) != item["source_sha256"] or digest != item["source_sha256"]:
+                if (sha256(local_path(path, base)) != digest
+                        or sha256(local_path(item["source_path"], source_root)) != item["source_sha256"]
+                        or digest != item["source_sha256"]):
                     raise ValueError(f"素材已变化：{path}")
         except (KeyError, TypeError, ValueError, OSError) as e:
             ok = False
             print("  必须改 · 一致性校验失败：", e)
     elif os.path.isfile(side_path):
-        print("  注意 · 旧版记录缺少源稿和素材哈希，建议重渲染")
+        print("  注意 · 旧版记录缺少 V3 渲染器／主题配置一致性记录，建议重渲染")
         if s["submit"]:
             ok = False
-            print("  必须改 · 正式提交前须用 V2 重渲染")
+            print("  必须改 · 正式提交前须用 V3 重渲染")
     print("预检（不调用接口）")
     for m in must:
         print("  必须改 ·", m)

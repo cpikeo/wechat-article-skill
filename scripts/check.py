@@ -51,10 +51,16 @@ class Leaf(HTMLParser):
             self.handle_endtag(tag)
 
     def handle_endtag(self, tag):
+        if tag in VOID:
+            self.must.append(f"空元素不应有结束标签：{tag}")
+            return
         for i in range(len(self.stack) - 1, -1, -1):
             if self.stack[i][0] == tag:
+                if i != len(self.stack) - 1:
+                    self.must.append(f"标签嵌套顺序错误：{self.stack[-1][0]} 在 {tag} 前未闭合")
                 del self.stack[i:]
-                break
+                return
+        self.must.append(f"多余结束标签：{tag}")
 
     def handle_data(self, data):
         t = data.strip()
@@ -75,6 +81,9 @@ def image_sources(html):
 def check(html):
     p = Leaf()
     p.feed(html)
+    p.close()
+    if p.stack:
+        p.must.append("标签未闭合：" + " > ".join(x[0] for x in p.stack))
     should = [f"待人工核对的半角标点/直引号（URL/引文可保留）：{p.half[:3]}"] if p.half else []
     if re.search(r"<(section|span)\b[^>]*>\s*</\1>", html, re.I):
         p.must.append('空装饰元素缺少 <span leaf=""><br></span>')

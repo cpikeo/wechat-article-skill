@@ -8,7 +8,10 @@ purpose: 区分建稿成功与交付完成
 thesis: 草稿是交接点，不是阅读验收的终点
 article_type: 实务说明
 composition: explainer
+visual_concept: 用四个验收位置组成一条冷静交接链，让“成功”与“完成”保持可见距离
+information_shape: 流程 + 对照
 asset_strategy: 无图；接口关系用步骤和对照表即可
+mobile_risk: 四行对照表必须在320px仍可读，长接口名不单独成列
 design_rationale: 冷静紧凑的层级服务操作判断，不使用装饰图片
 digest: 建稿成功只解决了一部分问题。把字段回读、后台复核与手机阅读分开检查，才能让交付可追踪。
 ---

@@ -10,6 +10,7 @@
 """
 import argparse
 import base64
+import difflib
 import hashlib
 import mimetypes
 import html as H
@@ -26,7 +27,12 @@ from check import check  # noqa: E402
 from safety import local_path, sha256, contrast
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-THEMES = json.load(open(os.path.join(HERE, "..", "assets", "themes.json"), encoding="utf-8"))
+SKILL_VERSION = "3.0.0"
+THEMES_PATH = os.path.join(HERE, "..", "assets", "themes.json")
+with open(THEMES_PATH, "rb") as _theme_file:
+    THEME_CONFIG_BYTES = _theme_file.read()
+THEME_CONFIG_SHA256 = hashlib.sha256(THEME_CONFIG_BYTES).hexdigest()
+THEMES = json.loads(THEME_CONFIG_BYTES.decode("utf-8"))
 SANS = "-apple-system,BlinkMacSystemFont,'PingFang SC','Hiragino Sans GB','Microsoft YaHei','Noto Sans CJK SC',sans-serif"
 SERIF = "'Songti SC','STSong','SimSun','Noto Serif CJK SC',serif"
 MONO = "'SF Mono',Menlo,Consolas,monospace"
@@ -279,42 +285,118 @@ class R:
                 f'font-weight:600;color:{color or self.t["text"]};box-sizing:border-box;">{self.leaf(glyph)}</span>')
 
     def h2(self, text, n):
-        t = self.t
-        if t["heading"] == "seal" and not ORDINAL.match(text.strip()):
-            mark = self.seal(f"{n:02d}", 24) + " "
-        elif t["heading"] == "number" and not ORDINAL.match(text.strip()):
-            mark = f'<span style="font-size:{SMALL}px;color:{t["muted"]};font-weight:500;">{self.leaf(f"{n:02d}　")}</span>'
-        else:
-            mark = ""
-        return f'<section style="margin:{self.g(self.type["chapter_gap"])}px 0 {self.g(14)}px;">' + self.p(
-            mark + self.inline(text), self.type["heading_size"], extra=f"font-weight:{self.type['heading_weight']};line-height:{self.type['heading_leading']};font-family:{self.font};") + "</section>"
+        """章节标记参与构图；六人格不共享同一套“数字 + 换色”。"""
+        t, mode = self.t, self.t["heading"]
+        numbered = not ORDINAL.match(text.strip())
+        title = self.inline(text)
+        style = (f"font-weight:{self.type['heading_weight']};line-height:{self.type['heading_leading']};"
+                 f"font-family:{self.font};")
+        if mode == "seal" and numbered:
+            title = self.seal(f"{n:02d}", 24) + "　" + title
+        elif mode == "index" and numbered:
+            title = (f'<span style="font-size:{SMALL}px;color:{t["muted"]};font-weight:500;">'
+                     f'{self.leaf(f"{n:02d}　")}</span>' + title)
+        elif mode == "report":
+            marker = self.micro(f"{n:02d} /", extra="margin-bottom:7px;") if numbered else ""
+            return (f'<section style="margin:{self.g(self.type["chapter_gap"])}px 0 {self.g(14)}px;'
+                    f'padding-top:10px;border-top:1px solid {t["text"]};">{marker}'
+                    + self.p(title, self.type["heading_size"], extra=style) + "</section>")
+        elif mode == "atelier":
+            return (f'<section style="margin:{self.g(self.type["chapter_gap"])}px 0 {self.g(14)}px;'
+                    f'padding-top:14px;border-top:1px solid {t["line"]};">'
+                    + self.p(title, self.type["heading_size"], extra=style) + "</section>")
+        elif mode == "folio":
+            marker = (self.p(self.leaf(f"{n:02d}"), 28, t["accent"],
+                             f"font-weight:700;line-height:1;font-family:{self.font};margin-bottom:8px;")
+                      if numbered else "")
+            return (f'<section style="margin:{self.g(self.type["chapter_gap"])}px 0 {self.g(14)}px;">{marker}'
+                    + self.p(title, self.type["heading_size"], extra=style) + "</section>")
+        return (f'<section style="margin:{self.g(self.type["chapter_gap"])}px 0 {self.g(14)}px;">'
+                + self.p(title, self.type["heading_size"], extra=style) + "</section>")
 
     def h3(self, text):
-        return f'<section style="margin:{self.g(24)}px 0 {self.g(10)}px;">' + \
-            self.p(self.inline(text), BODY, self.t["text"], f"font-weight:700;font-family:{self.font};") + "</section>"
+        t, mode = self.t, self.t["h3"]
+        size, weight, extra = BODY, 700, f"font-family:{self.font};"
+        if mode == "soft":
+            size, weight, extra = 17, 500, f"font-family:{self.font};color:{t['sub']};"
+        elif mode == "serif":
+            size, weight = 18, 600
+        elif mode == "report":
+            extra += f"padding-bottom:6px;border-bottom:1px solid {t['line']};"
+        elif mode == "atelier":
+            size, weight = 17, 500
+            extra += "letter-spacing:0.04em;"
+        elif mode == "folio":
+            size, weight = 18, 700
+            extra += f"padding-left:10px;border-left:3px solid {t['accent']};"
+        return (f'<section style="margin:{self.g(24)}px 0 {self.g(10)}px;">'
+                + self.p(self.inline(text), size, t["text"], f"font-weight:{weight};{extra}") + "</section>")
 
     def para(self, text):
         return f'<section style="margin:0 0 {self.g(self.type["paragraph_gap"])}px;">' + \
             self.p(self.inline(text), extra="text-align:left;") + "</section>"
 
     def quote(self, text, src, weight):
-        """lead / quote / peak 同一原语，三种重量。引用不改原句；重点按主题语言呈现，不与引文同貌。"""
+        """导语、引文、主张分权重；引文保留原标点，主题只改变构图关系。"""
         t = self.t
         if weight == "lead":
-            return f'<section style="margin:{self.g(8)}px 0 {self.g(24)}px;">' + \
-                self.p(self.inline(text, normalize=False), LEAD, t["text"],
-                       f"line-height:1.85;font-family:{self.font};") + (self.p(self.leaf("—— " + src), MICRO, t["muted"], "margin-top:12px;") if src else "") + "</section>"
+            inner = self.inline(text, normalize=False)
+            cite = (self.p(self.leaf("—— " + src), MICRO, t["muted"], "margin-top:10px;")
+                    if src else "")
+            mode = t["lead"]
+            if mode == "brief":
+                return (f'<section style="margin:{self.g(8)}px 0 {self.g(24)}px;padding-top:12px;'
+                        f'border-top:2px solid {t["accent"]};">'
+                        + self.p(inner, LEAD, t["text"], f"line-height:1.85;font-family:{self.font};") + cite + "</section>")
+            if mode == "letter":
+                return (f'<section style="margin:{self.g(8)}px 0 {self.g(28)}px;padding:0 6px;">'
+                        + self.p(inner, LEAD, t["sub"], f"line-height:1.9;font-family:{self.font};") + cite + "</section>")
+            if mode == "ink":
+                return (f'<section style="margin:{self.g(8)}px 0 {self.g(28)}px;padding:14px 0;'
+                        f'border-top:1px solid {t["line"]};border-bottom:1px solid {t["line"]};">'
+                        + self.p(inner, 19, t["text"], f"line-height:1.9;font-family:{SERIF};") + cite + "</section>")
+            if mode == "report":
+                return (f'<section style="margin:{self.g(8)}px 0 {self.g(22)}px;padding-bottom:14px;'
+                        f'border-bottom:1px solid {t["text"]};">'
+                        + self.p(inner, 17, t["text"], "line-height:1.75;font-weight:500;") + cite + "</section>")
+            if mode == "plate":
+                return (f'<section style="margin:{self.g(8)}px 0 {self.g(30)}px;padding:16px 14px;'
+                        f'background:{t["field"]};">'
+                        + self.p(inner, LEAD, t["text"], f"line-height:1.9;font-family:{SERIF};") + cite + "</section>")
+            return (f'<section style="margin:{self.g(8)}px 0 {self.g(26)}px;">'
+                    f'<section style="width:44px;height:4px;background:{t["accent"]};margin-bottom:14px;">{BR}</section>'
+                    + self.p(inner, 22, t["text"], f"line-height:1.55;font-weight:700;font-family:{self.font};") + cite + "</section>")
         if weight == "quote":
-            cite = self.p(self.leaf(f"—— {src}"), MICRO, t["muted"],
-                          "margin-top:8px;") if src else ""
-            if t["quote"] == "voice":
-                return (f'<section style="margin:{self.g(24)}px 0;padding:0 4px 0 14px;">'
-                        + self.p(self.inline(text, normalize=False), LEAD, t["text"], "font-weight:500;line-height:1.8;")
+            cite = (self.p(self.leaf(f"—— {src}"), MICRO, t["muted"], "margin-top:9px;")
+                    if src else "")
+            mode = t["quote"]
+            if mode == "voice":
+                return (f'<section style="margin:{self.g(26)}px 0;padding:0 6px 0 14px;">'
+                        + self.p(self.inline(text, normalize=False), LEAD, t["text"], "font-weight:500;line-height:1.85;")
                         + cite + "</section>")
-            fam = f"font-family:{SERIF};" if t["quote"] == "serif" else ""
+            if mode == "serif":
+                return (f'<section style="margin:{self.g(26)}px 0;padding:2px 4px 2px 16px;'
+                        f'border-left:2px solid {t["accent"]};">'
+                        + self.p(self.inline(text, normalize=False), LEAD, t["sub"],
+                                 f"font-weight:500;line-height:1.9;font-family:{SERIF};") + cite + "</section>")
+            if mode == "report":
+                return (f'<section style="margin:{self.g(24)}px 0;padding:12px 0;'
+                        f'border-top:1px solid {t["line"]};border-bottom:1px solid {t["line"]};">'
+                        + self.p(self.inline(text, normalize=False), 17, t["text"], "font-weight:600;line-height:1.75;")
+                        + cite + "</section>")
+            if mode == "atelier":
+                return (f'<section style="margin:{self.g(28)}px 8%;padding:12px 0;'
+                        f'border-top:1px solid {t["line"]};">'
+                        + self.p(self.inline(text, normalize=False), LEAD, t["sub"],
+                                 f"font-weight:500;line-height:1.9;font-family:{SERIF};") + cite + "</section>")
+            if mode == "folio":
+                return (f'<section style="margin:{self.g(28)}px 0;padding-top:12px;'
+                        f'border-top:4px solid {t["text"]};">'
+                        + self.p(self.inline(text, normalize=False), DISPLAY, t["text"],
+                                 f"font-weight:700;line-height:1.6;font-family:{self.font};") + cite + "</section>")
             return (f'<section style="margin:{self.g(24)}px 0;padding:0 4px 0 14px;'
                     f'border-left:2px solid {t["accent"]};">'
-                    + self.p(self.inline(text, normalize=False), LEAD, t["sub"], f"font-weight:500;line-height:1.8;{fam}")
+                    + self.p(self.inline(text, normalize=False), LEAD, t["sub"], "font-weight:500;line-height:1.8;")
                     + cite + "</section>")
         style, fam = t["peak"], f"font-family:{self.font};"
         if style in ("dark", "compact"):
@@ -351,20 +433,64 @@ class R:
         return f'<section style="margin:{self.g(10) if tight else self.g(16)}px 0 {self.g(16)}px;">{head}{body}</section>'
 
     def data(self, lines, below=None):
-        # 全角「｜」与半角「|」都要能拆：中文输入法默认给的是全角，
-        # 只按半角拆会把「3｜标签」整条当成数值，标签消失、大字号里挤进一整句。
-        t, rows, items = self.t, [], [x.replace("|", "｜").split("｜", 1) for x in lines]
-        per = len(items) if 0 < len(items) <= 3 else 2
-        for i in range(0, len(items), per):
-            cells = "".join(
-                f'<section style="flex:1;min-width:0;padding-top:12px;border-top:1px solid {t["text"]};">'
-                + self.p(self.leaf(v.strip()), TITLE, t["text"],
-                         f"font-weight:600;line-height:1.3;font-family:{self.font};font-variant-numeric:tabular-nums;")
-                + self.p(self.inline(lab.strip() if lab else ""), MICRO, t["muted"],
-                         "margin-top:6px;")
-                + "</section>" for v, *rest in items[i:i + per] for lab in [rest[0] if rest else ""])
-            rows.append(f'<section style="display:flex;gap:16px;margin-top:{16 if i else 0}px;">{cells}</section>')
-        return f'<section style="margin:{self.g(36)}px 0 {below if below is not None else self.g(36)}px;">{"".join(rows)}</section>'
+        """离散数值组。关系不变，六人格通过值/标签次序和基线组织信息。"""
+        t = self.t
+        items = []
+        for line in lines:
+            value, _, label = line.replace("|", "｜").partition("｜")
+            items.append((value.strip(), label.strip()))
+        mode, chunks = t["data"], []
+        if mode == "columns":
+            per = len(items) if 0 < len(items) <= 3 else 2
+            for i in range(0, len(items), per):
+                cells = "".join(
+                    f'<section style="flex:1;min-width:0;padding-top:12px;border-top:1px solid {t["text"]};">'
+                    + self.p(self.leaf(value), TITLE, t["text"],
+                             f"font-weight:600;line-height:1.3;font-family:{self.font};font-variant-numeric:tabular-nums;")
+                    + self.p(self.inline(label), MICRO, t["muted"], "margin-top:6px;") + "</section>"
+                    for value, label in items[i:i + per])
+                chunks.append(f'<section style="display:flex;gap:16px;margin-top:{16 if i else 0}px;">{cells}</section>')
+        elif mode == "stack":
+            for value, label in items:
+                chunks.append(f'<section style="display:flex;gap:14px;align-items:baseline;padding:12px 0;'
+                              f'border-top:1px solid {t["line"]};">'
+                              + self.p(self.leaf(value), 22, t["accent"],
+                                       f"width:34%;flex-shrink:0;font-weight:600;line-height:1.35;font-family:{self.font};font-variant-numeric:tabular-nums;")
+                              + self.p(self.inline(label), SMALL, t["sub"], "flex:1;min-width:0;line-height:1.75;") + "</section>")
+        elif mode == "ledger":
+            for value, label in items:
+                chunks.append(f'<section style="display:flex;gap:16px;align-items:baseline;padding:11px 0;'
+                              f'border-bottom:1px solid {t["line"]};">'
+                              + self.p(self.inline(label), SMALL, t["sub"], "flex:1;min-width:0;")
+                              + self.p(self.leaf(value), 22, t["text"],
+                                       f"flex-shrink:0;font-weight:600;line-height:1.3;font-family:{SERIF};font-variant-numeric:tabular-nums;") + "</section>")
+        elif mode == "ticker":
+            for value, label in items:
+                chunks.append(f'<section style="display:flex;gap:12px;align-items:center;padding:10px 0;'
+                              f'border-top:1px solid {t["text"]};">'
+                              + self.p(self.leaf(value), 24, t["text"],
+                                       f"width:38%;flex-shrink:0;font-weight:700;line-height:1.2;font-family:{self.font};font-variant-numeric:tabular-nums;")
+                              + self.p(self.inline(label), SMALL, t["sub"], "flex:1;min-width:0;line-height:1.65;") + "</section>")
+        elif mode == "specimen":
+            per = 2
+            for i in range(0, len(items), per):
+                cells = "".join(
+                    f'<section style="flex:1;min-width:0;padding:14px 10px 12px;'
+                    f'border-top:1px solid {t["line"]};border-bottom:1px solid {t["line"]};">'
+                    + self.p(self.leaf(value), 24, t["text"],
+                             f"font-weight:500;line-height:1.3;font-family:{SERIF};font-variant-numeric:tabular-nums;")
+                    + self.p(self.inline(label), MICRO, t["muted"], "margin-top:8px;") + "</section>"
+                    for value, label in items[i:i + per])
+                chunks.append(f'<section style="display:flex;gap:12px;margin-top:{12 if i else 0}px;">{cells}</section>')
+        else:  # folio
+            for value, label in items:
+                chunks.append(f'<section style="display:flex;gap:16px;align-items:flex-end;padding:12px 0;'
+                              f'border-top:3px solid {t["text"]};">'
+                              + self.p(self.leaf(value), 28, t["accent"],
+                                       f"width:42%;flex-shrink:0;font-weight:700;line-height:1;font-family:{self.font};font-variant-numeric:tabular-nums;")
+                              + self.p(self.inline(label), SMALL, t["text"], "flex:1;min-width:0;font-weight:600;line-height:1.6;") + "</section>")
+        return (f'<section style="margin:{self.g(36)}px 0 '
+                f'{below if below is not None else self.g(36)}px;">{"".join(chunks)}</section>')
 
     def bars(self, lines, label="", below=None):
         """数量对比图：值｜标签。数值同时以文字给出——即使长度表达失效，信息也不丢。"""
@@ -390,29 +516,78 @@ class R:
         return f'<section style="margin:{self.g(32)}px 0 {below if below is not None else self.g(32)}px;">{"".join(rows)}</section>'
 
     def table(self, rows, below=None):
-        t, out = self.t, []
+        """语义表格；人格改变表头、基线和首列权重，不靠缩小字号塞列。"""
+        t, out, mode = self.t, [], self.t["table"]
         if not rows or any(len(row) != len(rows[0]) for row in rows):
             raise ValueError("表格行列数不一致，不能对齐数据")
         widths = col_widths(rows)
+        table_extra = ""
+        if mode == "ink":
+            table_extra = f"border-top:2px solid {t['text']};border-bottom:1px solid {t['text']};"
+        elif mode == "atelier":
+            table_extra = f"border-top:1px solid {t['text']};border-bottom:1px solid {t['text']};"
+        elif mode == "feature":
+            table_extra = f"border-top:4px solid {t['text']};"
         for i, cells in enumerate(rows):
             tag = "th" if i == 0 else "td"
-            out.append("<tr>" + "".join(
-                f'<{tag} style="width:{widths[j]:.6g}%;padding:10px 6px;vertical-align:top;'
-                f'overflow-wrap:anywhere;word-break:normal;text-align:left;border-bottom:1px solid {t["muted"] if i == 0 else t["line"]};font-weight:{600 if i == 0 else 400};">'
-                + self.p(self.inline(c), SMALL, t["sub"] if i == 0 else t["text"], "line-height:1.75;"
-                         + ("white-space:nowrap;" if NUMERIC.fullmatch(c) else ""))
-                + f'</{tag}>' for j, c in enumerate(cells)) + "</tr>")
-        return (f'<table style="width:100%;table-layout:fixed;border-collapse:collapse;'
-                f'margin:{self.g(24)}px 0 {below if below is not None else self.g(24)}px;">' + "".join(out) + "</table>")
+            rendered = []
+            for j, cell in enumerate(cells):
+                pad = "10px 6px"
+                bg, color = "", t["sub"] if i == 0 else t["text"]
+                border = t["muted"] if i == 0 else t["line"]
+                weight = 600 if i == 0 or (j == 0 and mode in ("report", "feature")) else 400
+                family = f"font-family:{self.font};" if i == 0 and mode in ("ink", "atelier") else ""
+                if mode == "warm":
+                    pad = "11px 7px"
+                    bg = f"background:{t['field']};" if i == 0 else ""
+                    border = t["accent"] if i == 0 else t["line"]
+                elif mode == "report":
+                    pad = "9px 6px"
+                    bg = f"background:{t['field']};" if i == 0 else ""
+                    border = t["text"] if i == 0 else t["line"]
+                    color = t["text"]
+                elif mode == "atelier":
+                    pad = "12px 7px"
+                elif mode == "feature" and i == 0:
+                    bg, color, border = f"background:{t['dark']};", t["on_dark"], t["dark"]
+                extra = "line-height:1.75;" + family
+                if NUMERIC.fullmatch(cell):
+                    extra += "white-space:nowrap;font-variant-numeric:tabular-nums;"
+                rendered.append(
+                    f'<{tag} style="width:{widths[j]:.6g}%;padding:{pad};vertical-align:top;'
+                    f'overflow-wrap:anywhere;word-break:normal;text-align:left;border-bottom:1px solid {border};'
+                    f'font-weight:{weight};{bg}">'
+                    + self.p(self.inline(cell), SMALL, color, extra) + f'</{tag}>')
+            out.append("<tr>" + "".join(rendered) + "</tr>")
+        return (f'<table style="width:100%;table-layout:fixed;border-collapse:collapse;{table_extra}'
+                f'margin:{self.g(24)}px 0 {below if below is not None else self.g(24)}px;">'
+                + "".join(out) + "</table>")
 
     def lst(self, ordered, items):
-        t, out = self.t, []
-        for n, it in enumerate(items, 1):
-            mk = (self.p(self.leaf(f"{n:02d}"), SMALL, t["muted"], "font-weight:500;") if ordered
-                  else self.p(self.leaf("·"), BODY, t["muted"], "font-weight:700;"))
-            out.append(f'<section style="display:flex;margin-bottom:{self.g(10)}px;">'
-                       f'<section style="width:{28 if ordered else 18}px;flex-shrink:0;padding-top:{2 if ordered else 0}px;">{mk}</section>'
-                       f'<section style="flex:1;min-width:0;">{self.p(self.inline(it))}</section></section>')
+        t, out, mode = self.t, [], self.t["list"]
+        chinese = "一二三四五六七八九十"
+        for n, item in enumerate(items, 1):
+            if ordered:
+                marker = {
+                    "index": f"{n:02d}",
+                    "dash": f"{n}.",
+                    "chinese": (chinese[n - 1] + "、") if n <= len(chinese) else f"{n}、",
+                    "report": f"{n:02d}",
+                    "atelier": (chinese[n - 1] + "　") if n <= len(chinese) else f"{n}　",
+                    "folio": f"{n:02d}/",
+                }[mode]
+            else:
+                marker = {"index": "·", "dash": "—", "chinese": "〇", "report": "—",
+                          "atelier": "◇", "folio": "▪"}[mode]
+            marker_color = t["accent"] if mode in ("dash", "folio") else t["muted"]
+            marker_family = SERIF if mode in ("chinese", "atelier") else self.font
+            marker_html = self.p(self.leaf(marker), SMALL if ordered else BODY, marker_color,
+                                 f"font-weight:{600 if mode in ('report', 'folio') else 500};font-family:{marker_family};")
+            width = 34 if mode in ("chinese", "atelier", "folio") else 28 if ordered else 20
+            rule = f"border-top:1px solid {t['line']};padding-top:10px;" if mode == "report" else ""
+            out.append(f'<section style="display:flex;margin-bottom:{self.g(10)}px;{rule}">'
+                       f'<section style="width:{width}px;flex-shrink:0;padding-top:2px;">{marker_html}</section>'
+                       f'<section style="flex:1;min-width:0;">{self.p(self.inline(item))}</section></section>')
         return f'<section style="margin:{self.g(8)}px 0 {self.g(22)}px;">{"".join(out)}</section>'
 
     def code(self, lang, body):
@@ -442,10 +617,15 @@ class R:
         extra, wrap = "", ""
         if treat == "soft":
             extra = f"border-radius:{t['radius']}px;"
-        elif treat == "line":
-            extra = f"border:1px solid {t['line']};"
+            wrap = "margin-left:2%;margin-right:2%;"
+        elif treat == "inkline":
+            wrap = f"padding:8px 0;border-top:1px solid {t['text']};border-bottom:1px solid {t['line']};"
+        elif treat == "report":
+            wrap = f"padding-top:8px;border-top:2px solid {t['text']};"
         elif treat == "mat":
             wrap = f"padding:12px 12px 10px;background:{t['field']};"   # 器物台纸：图与说明同在一整块底上
+        elif treat == "folio":
+            wrap = f"padding-bottom:10px;border-bottom:4px solid {t['text']};"
         # Mode affects display, never crops, combines or invents image content.
         if mode == "hero":
             extra += "width:100%;"
@@ -465,21 +645,31 @@ class R:
         cap = ("GIF · " if src.lower().endswith(".gif") else "") + (alt or "")
         cap_size = SMALL if role0 in FACT else MICRO
         cap_color = t["sub"] if role0 in FACT else t["muted"]
+        cap_extra = "margin-top:8px;"
+        if treat in ("report", "folio"):
+            cap_extra += "font-weight:600;"
+        elif treat in ("inkline", "mat"):
+            cap_extra += f"font-family:{self.font};"
         return (f'<section style="margin:{mt}px 0 {mb}px;{wrap}">'
                 f'<img src="{H.escape(src)}" alt="{H.escape(alt or "")}" style="max-width:100%;height:auto;display:block;margin:0 auto;{extra}" />'
-                + (self.p(self.leaf(typo(cap)), cap_size, cap_color, "margin-top:8px;") if cap else "")
+                + (self.p(self.leaf(typo(cap)), cap_size, cap_color, cap_extra) if cap else "")
                 + "</section>")
 
     def hr(self):
         t, kind = self.t, self.t["divider"]
         if kind == "seal":
             inner = self.seal("·", 20, t["muted"])
-        elif kind == "rule":
-            inner = self.rule(32)
+        elif kind == "short-rule":
+            inner = self.rule(36, 2, t["accent"])
+        elif kind == "pause":
+            inner = f'<section style="height:1px;overflow:hidden;">{BR}</section>'
         elif kind == "hairline":
             inner = f'<section style="width:100%;height:1px;background:{t["line"]};margin:0;">{BR}</section>'
+        elif kind == "double":
+            inner = (f'<section style="width:48px;height:1px;background:{t["text"]};margin:0 auto 5px;">{BR}</section>'
+                     f'<section style="width:24px;height:1px;background:{t["line"]};margin:0 auto;">{BR}</section>')
         else:
-            inner = self.p(self.leaf("· · ·"), SMALL, t["muted"], "letter-spacing:8px;")
+            inner = self.p(self.leaf("／"), DISPLAY, t["accent"], "font-weight:700;line-height:1;")
         return f'<section style="margin:{self.g(44)}px 0;text-align:center;">{inner}</section>'
 
     def signature(self, meta):
@@ -492,42 +682,73 @@ class R:
                 + "".join(out) + "</section>") if out else ""
 
     def toc(self, heads):
-        t = self.t
+        t, mode = self.t, self.t["heading"]
+        def marker(n, heading):
+            if ORDINAL.match(heading.strip()) or mode in ("plain", "atelier"):
+                return ""
+            return {"index": f"{n:02d}　", "seal": f"{n:02d} · ",
+                    "report": f"{n:02d} / ", "folio": f"{n:02d} — "}.get(mode, "")
         rows = "".join(
-            self.p(self.leaf((f"{n:02d}　" if not ORDINAL.match(h.strip()) else "") + plain(h)),
-                   SMALL, t["text"], f"line-height:2.1;font-family:{self.font};")
+            self.p(self.leaf(marker(n, h) + plain(h)), SMALL, t["text"],
+                   f"line-height:{'1.9' if mode == 'report' else '2.1'};font-family:{self.font};"
+                   + ("font-weight:600;" if mode == "folio" else ""))
             for n, h in enumerate(heads, 1))
-        return (f'<section style="margin:0 0 {self.g(36)}px;padding:16px 0;border-top:1px solid {t["line"]};'
+        top = t["text"] if mode in ("report", "folio") else t["line"]
+        return (f'<section style="margin:0 0 {self.g(36)}px;padding:16px 0;border-top:1px solid {top};'
                 f'border-bottom:1px solid {t["line"]};">{self.micro(t["toc_label"], extra="margin-bottom:10px;")}{rows}</section>')
 
 
-NUMERIC = re.compile(r"[+\-−]?[\d.,，]+\s*(%|％|百分点|元|万|亿)?")
+NUMERIC = re.compile(
+    r"(?:约|近|超过|超|不足|少于|多于|不到)?"
+    r"[+\-−]?[\d.,，]+(?:\s*[–—-]\s*[\d.,，]+)?\s*"
+    r"(?:个百分点|小时|分钟|美元|亿元|万元|%|％|元|万|亿|年|天|人|家|件|倍)?"
+)
+MOBILE_TABLE_PX = 288  # 320px 视口减正文左右各 16px
 
 
 def cell_min_px(s):
-    """nowrap 数值单元格的最小内容宽度：14px 字号下 ASCII≈0.5em、CJK≈1em、空格≈0.25em，加左右内距。"""
-    return sum(0.25 if ch == " " else 0.5 if ord(ch) < 128 else 1.0 for ch in s) * 14 + 12
+    """14px 表格字下的最小单行宽：ASCII≈0.5em、CJK≈1em、空格≈0.25em，含内距与字体度量余量。"""
+    # 按六人格中最大的 14px 横向内距计，并给 Noto Sans CJK 数字宽度 6px 余量。
+    return sum(0.25 if ch == " " else 0.5 if ord(ch) < 128 else 1.0 for ch in s) * 14 + 20
 
 
 def col_widths(rows):
-    """表格列宽按内容权重分配：中文字占 1，ASCII 占 0.5，每列至少 1 个字宽。
+    """按内容分配列宽，并先兑现 320px 下的不可拆宽度。
 
-    等分列宽会让「备注」这类长文本列被挤成一字一行，而「是/否」「数值」列空得很。
-    权重按列内最长的一格（封顶 12 字宽，防止单格撑爆整表），保证短数值列不被无谓放大。
+    数值/单位必须同线；四字以内的短表头也不该折成“三字＋孤字”。先为这些单元格保留
+    最小像素份额，再把余量给长文本列。若最小份额总和已超过 100%，返回归一化结果，
+    compose_gate 会把放不下的数值列明确拦下，而不是缩字号硬塞。
     """
     if not rows or not rows[0]:
         return []
     n = len(rows[0])
-    weights = []
+    weights, floor_px = [], [0.0] * n
     for j in range(n):
         best = 1.0
-        for row in rows:
-            if j < len(row):
-                w = sum(0.5 if ord(ch) < 128 else 1.0 for ch in re.sub(r"[`*=~]", "", row[j]))
-                best = max(best, min(w, 12.0))
-        weights.append(max(best, 3.0))      # 下限 3 字宽：数值列不被挤到断行
-    total = sum(weights)
-    return [w / total * 100 for w in weights]
+        for i, row in enumerate(rows):
+            if j >= len(row):
+                continue
+            text = re.sub(r"[`*=~]", "", str(row[j])).strip()
+            w = sum(0.5 if ord(ch) < 128 else 1.0 for ch in text)
+            best = max(best, min(w, 12.0))
+            if NUMERIC.fullmatch(text):
+                floor_px[j] = max(floor_px[j], cell_min_px(text))
+            if i == 0 and 0 < len(text) <= 4 and not re.search(r"\s", text):
+                floor_px[j] = max(floor_px[j], cell_min_px(text))
+        weights.append(max(best, 3.0))
+
+    floors = [px / MOBILE_TABLE_PX * 100 for px in floor_px]
+    floor_total = sum(floors)
+    if floor_total >= 100:
+        return [f / floor_total * 100 for f in floors]
+
+    # 已由 floor 兑现的内容不再争抢余量；长文本列获得剩余空间并自然换行。
+    residual = [max(0.0, w - px / 14) for w, px in zip(weights, floor_px)]
+    residual_total = sum(residual)
+    if not residual_total:
+        residual, residual_total = weights, sum(weights)
+    remain = 100 - floor_total
+    return [f + remain * r / residual_total for f, r in zip(floors, residual)]
 
 
 def plain(s):
@@ -761,26 +982,120 @@ def compose_gate(meta, blocks, base="."):
 
 
 def editorial_review(meta, blocks):
-    """Traceable editorial prompts, not truth or aesthetic scores; never rewrite source."""
-    issues, seen = [], {}
+    """可观察的编辑诊断；只提出带位置与收益的复核动作，不代替语义判断或核真。"""
+    issues, paragraphs, seen = [], [], {}
+
+    def add(location, problem, action, benefit, evidence, preservation="保留原意、事实、语气与限定条件"):
+        issues.append({"location": location, "block": location.replace("块 ", ""),
+                       "problem": problem, "action": action, "benefit": benefit,
+                       "evidence": evidence, "preservation": preservation,
+                       # V2 consumer compatibility: reason remains an observable explanation.
+                       "reason": evidence})
+
     for index, (kind, value) in enumerate(blocks, 1):
         text = value if kind in ("p", "h2", "h3") else ""
         if not text:
             continue
         normalized = re.sub(r"\s+", "", plain(text))
-        if normalized in seen:
-            issues.append({"block": index, "action": "合并或删除", "reason": f"与块 {seen[normalized]} 完全重复"})
+        if kind == "p":
+            paragraphs.append((index, normalized, text))
+        if normalized in seen and normalized:
+            add(f"块 {index}", "信息完全重复", "合并或删除",
+                "减少重复阅读，不改变论证", f"与块 {seen[normalized]} 的可见文字完全相同")
         seen[normalized] = index
         if kind == "p" and len(normalized) > 260:
-            issues.append({"block": index, "action": "检查语义断点", "reason": "长段可能压低移动端阅读节奏；不按字数机械拆分"})
-        if kind == "p" and re.search(r"\d+(?:\.\d+)?(?:%|％|亿元|万人|倍)", text):
-            nearby = blocks[max(0, index-2):index+1]
-            if not any(k == "note" for k, _ in nearby) and not re.search(r"https?://", text):
-                issues.append({"block": index, "action": "核查数字", "reason": "附近未见来源 note 或链接；补原始依据、口径与日期，或标明估算/预测"})
-    return {"brief": {k: meta.get(k, "") for k in ("audience", "reading_context", "purpose", "thesis")},
-            "missing_brief": [k for k in ("audience", "reading_context", "purpose", "thesis") if not meta.get(k)],
-            "issues": issues, "fact_verification": "not_performed",
-            "visual_acceptance": "pending", "wechat_acceptance": "not_tested"}
+            add(f"块 {index}", "移动端长段可能掩盖语义转折", "检查语义断点",
+                "让论点、证据与限制更容易被扫读", f"该段去标记后为 {len(normalized)} 字；不按字数机械拆分")
+        nearby = blocks[max(0, index - 2):min(len(blocks), index + 1)]
+        has_source = any(k == "note" for k, _ in nearby) or bool(re.search(r"https?://", text))
+        if kind == "p" and re.search(r"\d+(?:\.\d+)?(?:%|％|亿元|万人|倍|年|月|日)", text) and not has_source:
+            add(f"块 {index}", "关键数字附近未见可核对依据", "核查数字",
+                "读者可判断时间、口径与结论力度", "相邻块未见来源 note 或 HTTP(S) 链接",
+                "不补写无法确认的来源；必要时限定、删除或标未核")
+        if kind == "p" and re.search(r"数据显示|研究表明|报告显示|据(?:报道|统计|调查)", text) and not has_source:
+            add(f"块 {index}", "来源型表述没有就近指向依据", "补原始出处或降级表述",
+                "区分可核事实与作者转述", "出现“数据显示/研究表明/据…”而相邻块无来源")
+        if kind == "p" and re.search(r"证明(?:了)?|必然|一定会|唯一原因|彻底(?:改变|解决)|直接导致", text):
+            if not re.search(r"可能|或许|相关|之一|在.+条件|不等于|未必", text):
+                add(f"块 {index}", "因果或确定性措辞可能强于可见证据", "核对推断链并补限定",
+                    "避免把相关、估算或观点写成确定事实", "出现强因果/绝对措辞，句内未见限制词")
+
+    # 高阈值近重复：只提示，不自动删；短句和必要复现不纳入。
+    for pos, (i, norm, _) in enumerate(paragraphs):
+        if len(norm) < 36:
+            continue
+        for j, other, _ in paragraphs[:pos]:
+            if len(other) >= 36 and norm != other:
+                ratio = difflib.SequenceMatcher(None, norm, other, autojunk=False).ratio()
+                if ratio >= 0.9:
+                    add(f"块 {i}", "两段高度相似，可能重复推进同一信息", "比较后合并、分工或保留",
+                        "每段承担不同论证任务", f"与块 {j} 的字符序列相似度 {ratio:.2f}；须人工判断是否为必要复现")
+                    break
+
+    title = api_title(meta.get("title", ""))
+    visible_body = "".join(plain(v) if k in ("p", "h2", "h3") else "" for k, v in blocks)
+    number_words = {"一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5,
+                    "六": 6, "七": 7, "八": 8, "九": 9, "十": 10}
+    promised = re.search(r"([一二两三四五六七八九十]|\d{1,2})(?:个|项|种|步|条|点|问)", title)
+    if promised:
+        expected = int(promised.group(1)) if promised.group(1).isdigit() else number_words[promised.group(1)]
+        h2_count = sum(k == "h2" for k, _ in blocks)
+        ordered_counts = [len(v[1]) for k, v in blocks if k == "list" and v[0]]
+        observed = h2_count if h2_count else max(ordered_counts, default=0)
+        if observed and observed != expected:
+            add("标题与全文", "标题的数量承诺与可见结构不一致", "逐项核对标题承诺",
+                "避免点击后发现正文没有兑现标题", f"标题承诺 {expected} 项；H2/主要有序列表可见 {observed} 项")
+    quoted_terms = re.findall(r"[《「]([^》」]{2,20})[》」]", title)
+    for term in quoted_terms:
+        if term not in visible_body:
+            add("标题与全文", "标题中的明确对象未在正文出现", "补兑现位置或收窄标题",
+                "让标题对象能在正文被定位", f"标题对象“{term}”未出现在正文可见文字中")
+    if re.search(r"为什么|为何|如何|能否|真相|原因", title) and not meta.get("thesis"):
+        h2_count = sum(k == "h2" for k, _ in blocks)
+        if h2_count < 2:
+            add("标题与全文", "问题型标题缺少可定位的回答结构", "标出核心回答与推导步骤",
+                "读者能确认标题问题在何处被回答", f"未提供 thesis，且只有 {h2_count} 个二级标题")
+
+    # 章节失衡只报告字符分布，不把比例当审美得分。
+    sections, current = [], None
+    for index, (kind, value) in enumerate(blocks, 1):
+        if kind == "h2":
+            if current:
+                sections.append(current)
+            current = {"heading": plain(value), "block": index, "chars": 0}
+        elif current:
+            if kind == "p":
+                current["chars"] += visible_len(value)
+            elif kind in ("list", "table", "data", "bars"):
+                current["chars"] += doc_len([(kind, value)])
+    if current:
+        sections.append(current)
+    total = sum(x["chars"] for x in sections)
+    if len(sections) >= 2 and total:
+        for section in sections:
+            share = section["chars"] / total
+            if section["chars"] < 45 or share > 0.7:
+                add(f"块 {section['block']}（{section['heading']}）", "章节篇幅与其他章节明显失衡",
+                    "检查是否缺证据、应并入相邻章或需要拆分", "让章节推进与信息重量一致",
+                    f"本章约 {section['chars']} 字，占有标题章节文字 {share:.0%}；比例仅作定位，不自动改稿")
+
+    brief_keys = ("audience", "reading_context", "purpose", "thesis")
+    design_keys = ("article_type", "composition", "visual_concept", "information_shape",
+                   "asset_strategy", "mobile_risk", "design_rationale")
+    return {
+        "brief": {k: meta.get(k, "") for k in brief_keys},
+        "missing_brief": [k for k in brief_keys if not meta.get(k)],
+        "decision": {k: meta.get(k, "") for k in design_keys},
+        "claim_map": {"title": title, "thesis": meta.get("thesis", ""),
+                      "sections": [plain(v) for k, v in blocks if k == "h2"],
+                      "evidence_blocks": sum(k in ("note", "table", "bars", "data") or
+                                             (k == "img" and (v[2] or "").split()[:1] in (["证据"], ["evidence"], ["数据"], ["data"]))
+                                             for k, v in blocks)},
+        "issues": issues,
+        "fact_verification": "not_performed",
+        "visual_acceptance": "pending",
+        "wechat_acceptance": "not_tested",
+    }
 
 
 def evidence(meta, blocks, base="."):
@@ -972,35 +1287,58 @@ def render(md, theme=None):
 SPECIMEN_MD = """---
 title: 留下的东西|比发出去的更重要
 author: 甲木
-bio: 气候对照用样张
+bio: 六人格同稿对照；数值与图示均为演示
 ---
 
 > 一篇文章的气质，不在配色，而在什么被允许发出声音。
 
 ## 判断在主题之前
 
-主题是人格，不是皮肤。同一段文字，换人格，节奏应跟着变；若只换了色，判断没有发生。
+主题是人格，不是皮肤。同一段文字换人格，标题、引文、信息结构与留白都应改变；如果只换了颜色，判断没有发生。
 
 > 能不用就不用，能弱化就弱化。
+> —— 编辑台
+
+### 三个动作
+
+1. 先确认读者要解决的问题。
+2. 再安排主张、证据和限制。
+3. 最后选择图像与版式。
 
 ## 视觉权重服从信息权重
 
-正文永远是最安静的一层，标记只留给真正需要停顿的地方。
-
 ::: data
 01｜可删元素
-01｜可弱化层级
-01｜可取消装饰
+02｜证据层级
+03｜移动端宽度
 :::
 
-::: note 演示
-样张计数仅演示data原语，非统计。
+::: note 演示口径
+样张计数仅测试信息结构，非统计结果。
 :::
+
+| 信息 | 该回答的问题 |
+|---|---|
+| 主张 | 文章要读者理解什么 |
+| 证据 | 这项判断凭什么成立 |
+
+![抽象构图示意；非真实数据](specimen.svg "解释 plate")
+
+---
 
 ::: peak
 克制不是少，是每一处都有职责。
 :::
 """
+
+SPECIMEN_IMAGE_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 500">
+<rect width="900" height="500" fill="#E9E5DC"/><rect x="56" y="58" width="480" height="32" fill="#242321"/>
+<rect x="56" y="112" width="680" height="12" fill="#969087"/><rect x="56" y="142" width="590" height="12" fill="#B6B0A6"/>
+<circle cx="704" cy="302" r="116" fill="#7B4038"/><rect x="56" y="230" width="420" height="18" fill="#242321"/>
+<rect x="56" y="274" width="500" height="11" fill="#9C968D"/><rect x="56" y="306" width="438" height="11" fill="#B6B0A6"/>
+<rect x="56" y="338" width="468" height="11" fill="#B6B0A6"/><rect x="56" y="410" width="788" height="2" fill="#242321"/>
+</svg>"""
+
 
 SPECIMEN_HTML = """<!DOCTYPE html>
 <html lang="zh-CN"><head><meta charset="UTF-8">
@@ -1013,14 +1351,15 @@ h1{{font-size:28px;font-weight:600;letter-spacing:.4px;margin:10px 0 8px;line-he
 .lede{{font-size:14px;color:#6E6860;line-height:1.7;max-width:560px;margin:0}}
 .board{{display:flex;gap:32px;overflow-x:auto;padding:28px 40px 88px;align-items:flex-start}}
 .col{{flex:0 0 390px}}
-.name{{font-size:13px;font-weight:600;letter-spacing:.3px}}
-.swatches{{display:flex;gap:7px;margin:12px 0 16px}}
+.name{{font-size:13px;font-weight:700;letter-spacing:.3px}}
+.intent{{font-size:12px;color:#6E6860;line-height:1.6;min-height:38px;margin-top:6px}}
+.swatches{{display:flex;gap:7px;margin:10px 0 16px}}
 .sw{{display:block;width:16px;height:16px;border-radius:50%;box-shadow:inset 0 0 0 1px rgba(40,30,20,.12)}}
 .phone{{background:#fff;padding:28px 18px 48px;border:1px solid #D6D0C5}}</style>
 </head><body>
-<header><div class="k">EDITORIAL MODES · 生成物，勿手改（render.py --specimen）</div>
+<header><div class="k">EDITORIAL MODES · V3 · 生成物，勿手改（render.py --specimen）</div>
 <h1>六种编辑人格，不是六套配色</h1>
-<p class="lede">同一篇样张，六种气候。用途与判断见 SKILL.md；此板用来目视对照与主题回归。</p></header>
+<p class="lede">同一篇样张同时检验导语、章节、引文、列表、数据、表格、图片与重点。用途与判断见 SKILL.md；此板只用于对照与回归。</p></header>
 <div class="board">
 {cols}
 </div></body></html>
@@ -1031,12 +1370,18 @@ def specimen(path):
     """六格对照板由真实渲染器生成，避免与人手维护的样本漂移。入库 assets/themes.html，--specimen 重新生成。"""
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     cols = []
+    image_uri = "data:image/svg+xml;base64," + base64.b64encode(SPECIMEN_IMAGE_SVG.encode()).decode()
     for key, t in THEMES.items():
         _, _, _, body = render(SPECIMEN_MD, key)
+        body = body.replace('src="specimen.svg"', f'src="{image_uri}"')
         sw = "".join(f'<i class="sw" style="background:{t[k]}"></i>' for k in ("text", "field", "accent", "line", "dark"))
         cols.append(f'<div class="col"><div class="name">{t["name"]}</div>'
+                    f'<div class="intent">{t["intent"]}</div>'
                     f'<div class="swatches">{sw}</div><div class="phone">{body}</div></div>')
-    open(path, "w", encoding="utf-8").write(SPECIMEN_HTML.format(cols="".join(cols)))
+    generated = (f"<!-- generated by wechat-article {SKILL_VERSION}; "
+                 f"themes sha256 {THEME_CONFIG_SHA256} -->\n"
+                 + SPECIMEN_HTML.format(cols="".join(cols)))
+    open(path, "w", encoding="utf-8").write(generated)
     print(f"气候对照板 → {path}（对照用，不进公众号）")
 
 
@@ -1113,9 +1458,13 @@ def main():
         "cover": "" if (not cover or TODO.match(cover)) else output_src(cover),
         "source_url": meta.get("source", ""),
         "theme": key,
-        "decision": {"article_type": meta.get("article_type", ""), "composition": meta.get("composition", ""), "asset_strategy": meta.get("asset_strategy", ""), "rationale": meta.get("design_rationale", "")},
+        "skill_version": SKILL_VERSION,
+        "theme_config_sha256": THEME_CONFIG_SHA256,
+        "theme_profile": {axis: THEMES[key][axis] for axis in ("lead", "heading", "h3", "quote", "peak", "divider", "image", "data", "table", "list")},
+        "decision": {field: meta.get(field, "") for field in ("article_type", "composition", "visual_concept", "information_shape", "asset_strategy", "mobile_risk", "design_rationale")},
+        "composition_evidence": {"first_screen_layers": first_screen(meta, blocks), "h2_count": sum(k == "h2" for k, _ in blocks), "body_characters": doc_len(blocks)},
         "editorial_review": editorial_review(meta, blocks),
-        "integrity_version": 1,
+        "integrity_version": 2,
         "source": {"path": os.path.abspath(a.md), "sha256": sha256(a.md)},
         "assets": [{"path": src, "sha256": sha256(local_path(src, out_base)), "source_path": src, "source_sha256": sha256(local_path(src, base))} for src in sorted(set([output_src(b[1]) for k, b in blocks if k == "img" and b[1] and not TODO.match(b[1])] + ([output_src(cover)] if cover and not TODO.match(cover) else []))) if os.path.isfile(local_path(src, out_base))],
         "body_sha256": hashlib.sha256(body.encode()).hexdigest(),
@@ -1127,7 +1476,8 @@ def main():
         json.dump(side, f, ensure_ascii=False, indent=2)
     review = side["editorial_review"]
     for issue in review["issues"]:
-        print(f"编辑提示 · 块 {issue['block']} · {issue['action']}：{issue['reason']}")
+        print(f"编辑提示 · {issue['location']} · {issue['problem']} → {issue['action']}；"
+              f"收益：{issue['benefit']}（证据：{issue['evidence']}）")
     print(f"{THEMES[key]['name']} → {out}\n预览 → {prev}\n发布字段 → {meta_path}（publish.py --meta 直接消费）\n")
     print("\nGate 3 证据（可核对的都摆在这里；结论与艺术判断由通读的人 / 视觉模型给）")
     for line in evidence(meta, blocks, base):

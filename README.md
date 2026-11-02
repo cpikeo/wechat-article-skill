@@ -1,70 +1,99 @@
-# wechat-article
+# wechat-article · V3.0.0
 
-把 Markdown／Word／纯文本编辑为公众号正文HTML、独立嵌图预览与发布字段。**唯一设计判断入口：[SKILL.md](SKILL.md)**；不要把主题、脚本或本README当另一套设计规范。
+把 Markdown／Word／纯文本编辑为公众号正文 HTML、独立嵌图预览、发布字段与可核验交付记录。它是 **Editorial Intelligence × Visual Design × WeChat Publishing System**，不是网页模板库。
+
+- 唯一编辑与设计判断入口：[SKILL.md](SKILL.md)
+- V3 审计、主题对照、测试与未验证项：[AUDIT.md](AUDIT.md)
+- 真实来源原稿／优化稿与结果：[evaluation/](evaluation/README.md)
 
 ## 运行
 
-Python 3，运行脚本只用标准库。截图回归可选安装Playwright，不是Skill运行依赖。
+运行时仅需 Python 3 标准库。
 
 ```bash
 python3 scripts/render.py 文章.md
 python3 scripts/render.py 文章.md --theme frost -o 交付/正文.html
 python3 scripts/extract_docx.py 文章.docx -o 文章.md
-python3 scripts/render.py --specimen
-python3 scripts/selftest.py
-# 显式要求像素验收时，浏览器缺失必须失败
-pip install playwright
-python3 -m playwright install --with-deps chromium
-python3 scripts/selftest.py --shots
+python3 scripts/render.py --specimen       # 可复现 assets/themes.html
 ```
 
-render输出：正文HTML（无原生标题作者）、`*_预览.html`（封面裁切／资产表／模拟原生字段）、`.meta.json`（字段／正文哈希／渲染错误／待补资产）。`-o`跨目录会复制素材至交付目录（遇同名不同内容拒绝覆盖）；正文交付仍需素材，预览嵌图不能替代上传。
-退出码1表示必须改。todo可生成待补预览，但发布预检拒绝待补稿。Word抽取保留链接与普通表格；合并单元格、单元格多段落或换行、行列不齐、文本框、脚注、修订等会定位报错，停止输出；编号/嵌套归一会显式警告；Markdown 嵌套、混合或不连续编号列表会停止转换；进入编辑前核对原件并补图片职责。
+`render.py` 输出：
 
-## 发布与可验证边界
+- 正文 HTML：不重印微信原生标题／作者；只含保守内联样式。
+- `*_预览.html`：模拟原生字段、嵌入本地图片、封面2.35:1／1:1裁切和资产表；工具栏不进正文。
+- `.meta.json`：字段、编辑诊断、设计决策、首屏结构、主题配置指纹、源稿／正文／素材哈希和阻断项。
+
+退出码1表示 Gate 1/2 有必须修复的问题。`todo` 可生成待补预览，但发布预检拒绝待补稿。跨目录输出会复制素材到交付目录；同名不同内容拒绝覆盖。
+
+Word 抽取保留链接与普通表格；复杂表格、文本框、脚注、修订、丢失关系等无法保真的结构会定位报错并停止输出。编号或嵌套归一会显式警告；进入编辑前仍须对照原件并为图片补职责／来源。
+
+## 六种编辑人格
+
+固定保留六种：
+
+- `paper`：理性分析、开放基线、精确信息表达。
+- `letter`：温暖叙事、自然呼吸、人物声音。
+- `ink`：东方评论、宋体展示、圆章与收束强调。
+- `frost`：新闻报道、冷静秩序、紧凑数据层级。
+- `bone`：器物工艺、台纸图版、精细规格感。
+- `folio`：国际特稿、强章标、标题与图片张力。
+
+差异真实落在导语、标题、H3、引文、重点、分隔、图片、数据、表格、列表与空间节奏；不是换色、圆角或间距。`assets/themes.json` 是参数单一来源，`assets/themes.html` 由真实渲染器生成；回归会检查三者一致。
+
+## 回归与截图
+
+开发测试与运行时已分离：运行脚本在 `scripts/`，合成语料、mock接口和浏览器检查在 `tests/`。
+
+```bash
+python3 tests/run.py
+python3 tests/editorial_eval.py --check-report evaluation/RESULTS.md
+```
+
+Gate 3 截图是可选开发依赖，不进入 Skill 运行包：
+
+```bash
+pip install playwright
+python3 -m playwright install --with-deps chromium
+python3 tests/run.py --shots --shoot examples/draft-handoff.md
+```
+
+截图覆盖320／360／390／430px、复制内容与内联样式、分组构图，以及**同一篇真实来源商业分析稿的六人格对照**。完整产物写入被忽略的 `assets/shots/` 并由 CI 上传；仓库只保留 [`evaluation/visual/`](evaluation/visual/README.md) 中六张有展示价值的 390px 发布基线。截图成功不等于视觉通过。
+
+## 发布与授权边界
 
 ```bash
 cp config.example.json config.json
-# 填凭证；config.json不提交。预检无需凭证
+# 推荐用 WECHAT_APPID / WECHAT_APPSECRET；config.json 已忽略
 python3 scripts/publish.py --html 正文.html --meta 正文.meta.json --preflight
 python3 scripts/publish.py --html 正文.html --meta 正文.meta.json
-# 只有明确授权才加 --submit --confirm-title "标题"（单次授权，逐字确认标题）；
-# config 不接受 submit:true——一次设置不能影响以后的普通运行。默认止于草稿
+# 只有本次明确授权才继续正式发布：
+python3 scripts/publish.py --html 正文.html --meta 正文.meta.json \
+  --submit --confirm-title "逐字一致的标题"
 ```
 
-命令行覆盖meta，meta覆盖config兜底。真实入口也强制预检。详见[接口与素材说明](references/publish.md)。
-复制只复制正文，本地图片须在公众号编辑器上传替换；预览工具栏、封面、原生字段不带入正文。静态检查与浏览器截图不证明微信清洗、草稿或真机效果，必须在目标账号核验。发布不是群发。
+默认止于草稿；`config.json` 不接受 `submit:true`。真实入口先做同一预检，检查正文、源稿、素材、渲染版本与主题配置一致性，再上传封面／正文图、建稿并回读核心字段。发布不是群发。
+
+没有目标账号时，不得声称微信兼容或发布验证完成。Gate 4 必须单独记录：API草稿回读、后台退出重开、手机端样式／图片、封面裁切。详见 [references/publish.md](references/publish.md)。
 
 ## 文件职责
 
-|文件|职责|
+|路径|职责|
 |---|---|
-|SKILL.md|唯一编辑／视觉／事实与质量判断入口|
-|references/direction.md|按需素材工艺|
-|references/platform.md|按需HTML与粘贴边界|
-|references/publish.md|按需接口／配置／素材知识|
-|assets/themes.json|六种可复用编辑语言参数，无独立判断权|
-|assets/themes.html|真实渲染器生成的对照板；不再保存过期缩图|
-|scripts/render.py、check.py|渲染、确定性检查、预览、meta|
-|scripts/publish.py|统一预检、草稿、可选发布、素材管理|
-|scripts/extract_docx.py|标准库Word抽取|
-|scripts/selftest.py|回归：合成语料、缺陷负例、输入／接口与浏览器|
-|scripts/fixtures.py|回归用的合成语料与素材，运行时现生成，不入库|
-|.github/workflows/ci.yml|回归与可选像素证据上传|
+|`SKILL.md`|唯一编辑、视觉、事实与验收判断入口|
+|`assets/themes.json`|六人格参数单一来源|
+|`assets/themes.html`|渲染器生成的同稿对照板|
+|`scripts/render.py`|解析、排版、Gate 2、预览和meta|
+|`scripts/check.py`|Gate 1保守HTML检查|
+|`scripts/publish.py`|预检、素材、草稿回读与单次发布授权|
+|`scripts/extract_docx.py`|零依赖Word抽取|
+|`scripts/safety.py`|路径边界、哈希和对比度共享实现|
+|`tests/run.py`|工程／渲染／接口／浏览器完整回归|
+|`tests/fixtures.py`|运行时生成的合成测试语料与图片|
+|`tests/editorial_eval.py`|五类型真实来源对照、盲测包与重复性|
+|`evaluation/`|原稿、优化稿、修改台账、许可与结果|
+|`references/`|按需读取的素材、平台与发布边界|
+|`AUDIT.md`|V3变更、六主题结果、测试和未验证项|
 
-六种材料：paper、letter、ink、frost、bone、folio；用途见SKILL，不在README重复制定设计门槛。
-
-## 回归与验证边界
-
-`python3 scripts/selftest.py` 跑完整回归：语料与素材由 `scripts/fixtures.py` 在临时目录现生成，仓库不再保存语料、审计产物或二进制素材。加 `--shots` 会把每篇预览截成 320/360/390/430px PNG，并包含六人格同稿对照 作为 Gate 3 通读输入（需 playwright 与 fonts-noto-cjk）。
-回归只覆盖可确定的缺陷；CI 通过不等于事实核真，也不等于微信端效果，仍须在目标账号核验。
+运行时仍保留 Markdown 唯一成稿、素材路径安全、发布单次授权、草稿回读和完整性校验。SHA-256 用于发现变化，不是签名或来源认证。
 
 [MIT](LICENSE.txt) © 2026 cpikeo
-
-## V2 设计与验证状态
-
-审计、变更与验证边界见 [AUDIT.md](AUDIT.md)。设计决策可在源稿 frontmatter 写 `article_type`、`composition`、`asset_strategy`、`design_rationale`，随渲染记录在 meta。图片可写 `"解释 inset"`，八种表达的语义与限制见 SKILL。
-
-图片及封面必须是源 Markdown 所在目录内相对路径，不允许 `..`、绝对路径或符号链接越界；输出素材也限制在 HTML 目录内。跨目录输出时 source 的绝对路径记录在 meta 用于回查，迁移后重新渲染；注意该文件的隐私。SHA-256 用于检测变化，不是签名或来源认证。预检不等于艺术或真机验收。
-
-凭证推荐使用 `WECHAT_APPID` 与 `WECHAT_APPSECRET` 环境变量，优先级为命令行 > 环境变量 > 配置；避免命令行秘钥泄露进进程列表和 shell 历史。建稿后回读核心字段；异常时保存 media_id，不要盲目重复建稿。CLI 的默认审计文件 `.wechat_publish_audit.jsonl` 记录操作阶段和 ID，不含正文与凭证；本地应按敏感运营记录保护。
