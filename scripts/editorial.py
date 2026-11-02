@@ -18,6 +18,7 @@
 """
 import difflib
 import re
+from collections import Counter
 
 # ---------------------------------------------------------------- 文章类型
 
@@ -77,6 +78,17 @@ TYPES = {
         "risks": ["章节失衡", "中段只复述", "收尾引入未论证的新主张"],
     },
 }
+
+EDIT_WORK = {
+    "news": {"protect": "消息来源、归属动词、时间、已确认与未知边界", "prefer": "删除情绪性补白；按事实归属分层；不替当事人解释动机", "questions": ["每个事实是谁确认的？", "公司说法是否仍写成公司说法？", "标题的变化量有无同口径依据？"]},
+    "analysis": {"protect": "指标口径、期间、比较基准、相关性与例外", "prefer": "先对齐比较对象；把证据→机制→推断拆开；保留反例", "questions": ["证据支持相关、机制还是因果？", "有没有口径不同却直接比较？", "最强反例是否改变结论范围？"]},
+    "tutorial": {"protect": "版本、前提、命令、参数、输出、顺序与警告", "prefer": "按执行依赖重排；补可观察完成标准；保留失败与回退", "questions": ["上一步输出是否满足下一步输入？", "读者如何知道执行成功？", "失败时能否恢复原状态？"]},
+    "profile": {"protect": "人物原话、时间线、具体动作、事实与作者评价的边界", "prefer": "用已有场景与选择组织叙事；删除空泛赞美；不补心理和采访", "questions": ["评价能否回到具体动作或原话？", "叙事是否倒置了时间或因果？", "场景与引语是否有真实出处？"]},
+    "opinion": {"protect": "作者立场、声音、论证对象、价值前提与原有时代用字", "prefer": "优先分段与重排；拆出理由和最强反驳；不为现代口吻重写原文", "questions": ["反驳是否是对方最强版本？", "事实前提与价值判断是否分开？", "回应反例后结论需要缩小吗？"]},
+    "longform": {"protect": "主线、伏笔与回收、时间线、各节独有的信息增量", "prefer": "先画章节推进；合并中段复述；保留必要回环，不把长文压成清单", "questions": ["每节相对上一节新增了什么？", "转折是否有前文铺垫？", "结尾是否回收主线而非塞新证据？"]},
+}
+for key, work in EDIT_WORK.items():
+    TYPES[key]["editorial_work"] = work
 
 # 中文类型别名：frontmatter 允许写中文，解析到同一策略，避免作者被迫记英文键。
 TYPE_ALIASES = {
@@ -181,44 +193,78 @@ def first_screen(meta, blocks):
 # ---------------------------------------------------------------- 事实单元
 
 _NUM = re.compile(
-    r"(?<![\d.])(\d{1,3}(?:,\d{3})+|\d+(?:\.\d+)?)\s*"
-    r"(%|％|个百分点|亿元|万元|亿美元|万美元|美元|元|倍|小时|分钟|秒|年|天|人|家|件|台|兆瓦|千瓦|吨|公里|千米|米|GB|MB|TB|ms|s)?"
+    r"(?<![\d.])([+\-−]?\d{1,3}(?:,\d{3})+(?:\.\d+)?|[+\-−]?\d+(?:\.\d+)?)\s*"
+    r"(个百分点|万亿美元|亿美元|万美元|万亿元|亿元|万元|千亿|百万|兆瓦|千瓦|公里|千米|小时|分钟|"
+    r"美元|人民币|欧元|日元|GB|MB|TB|ms|%|％|元|倍|年|月|日|天|人|家|件|台|吨|米|秒|万|亿)?"
 )
-_CN_NUM = re.compile(r"[一二三四五六七八九十百千万两]{1,4}(?:倍|成|万人|亿元)")
-_QUOTED = re.compile(r"「([^」]{2,40})」|“([^”]{2,40})”|《([^》]{2,60})》|【([^】]{2,40})】")
+_CN_NUM = re.compile(r"[一二三四五六七八九十百千万两零]{1,7}(?:倍|成|万人|亿元|美元|小时)")
+_QUOTED = re.compile(r"「([^」]{2,})」|“([^”]{2,})”")
 _URL = re.compile(r"https?://[^\s<>，；。！？）\"]+")
-_DATE = re.compile(r"(?:(?:19|20)\d{2}\s*年\s*\d{1,2}\s*月\s*\d{1,2}\s*日)"
-                   r"|(?:(?:19|20)\d{2}\s*[-–/]\s*\d{1,2}\s*[-–/]\s*\d{1,2})"
-                   r"|(?:\d{1,2}\s*月\s*\d{1,2}\s*日)")
+_DATE = re.compile(r"(?:19|20)\d{2}年(?:\d{1,2}月(?:\d{1,2}日)?)?|"
+                   r"(?:19|20)\d{2}[-–/]\d{1,2}(?:[-–/]\d{1,2})?|"
+                   r"\d{1,2}月\d{1,2}日")
+_QUALIFIER = re.compile(r"大约|约|近|超过|超|不足|少于|多于|不到|至少|至多|预计|估算|初步")
 
-# 事实单元只收「数字+单位 / 日期 / 链接」。裸数字（如“三条理由”）与自引短语不入表：
-# 前者制造大量假阳性，后者是修辞而非事实，训练人忽略检查的规则等于没有规则。
-def facts(text):
+
+def _fact_matches(text):
+    """(kind, raw, start, end)；位置用于逐次限定检查，不靠第一次出现代表整段。"""
     out, spans = [], []
-    for m in _DATE.finditer(text):
-        spans.append((m.start(), m.end()))
-        raw = re.sub(r"\s+", "", m.group(0))
-        year = re.match(r"(?:19|20)\d{2}", raw)
-        rest = re.findall(r"\d{1,2}", raw[4:] if year else raw)
-        mo = rest[0] if rest else "0"
-        dy = rest[1] if len(rest) > 1 else "0"
-        # 无年份的「7月2日」保留为 ????-07-02：与带年份的同一天在第二轮按「月-日」对齐。
-        out.append(("date", f"{year.group(0) if year else '????'}-{int(mo):02d}-{int(dy):02d}"))
-    for m in _NUM.finditer(text.replace("，", ",")):
+    normalized = text.replace("，", ",")
+    # URL 是单一事实单元；路径/百分号编码里的数字不拆成统计数值。
+    for m in _URL.finditer(text):
+        raw = m.group().rstrip("。，；）")
+        spans.append((m.start(), m.start() + len(raw)))
+        out.append(("url", raw, m.start(), m.start() + len(raw)))
+    for m in _DATE.finditer(normalized):
+        if any(a <= m.start() < b for a, b in spans):
+            continue
+        spans.append(m.span())
+        raw = re.sub(r"\s+", "", m.group())
+        nums = re.findall(r"\d+", raw)
+        if len(nums[0]) == 4:
+            year, month, day = nums[0], nums[1] if len(nums) > 1 else "", nums[2] if len(nums) > 2 else ""
+        else:
+            year, month, day = "????", nums[0], nums[1] if len(nums) > 1 else ""
+        out.append(("date", year + (f"-{int(month):02d}" if month else "") + (f"-{int(day):02d}" if day else ""), m.start(), m.end()))
+    for m in _NUM.finditer(normalized):
         if any(a <= m.start() < b for a, b in spans):
             continue
         if m.group(2):
-            out.append(("num", re.sub(r"\s+", "", m.group(0)).replace("％", "%")))
-    for m in _CN_NUM.finditer(text):
-        out.append(("num", m.group(0)))
-    for m in _URL.finditer(text):
-        out.append(("url", m.group(0).rstrip("。，；）")))
+            value = re.sub(r"\s+", "", m.group()).replace("％", "%").replace("−", "-")
+            out.append(("num", value, m.start(), m.end()))
+    for m in _CN_NUM.finditer(normalized):
+        if not any(a <= m.start() < b for a, b in spans):
+            out.append(("num", m.group(), m.start(), m.end()))
     return out
 
 
+def facts(text):
+    """字面事实候选，不是真实性判断；保留正负号、单位、日期精度。"""
+    return [(kind, raw) for kind, raw, _, _ in _fact_matches(text)]
+
+
+def fact_occurrences(blocks):
+    """给编辑回查的上下文；近似/预测等限定与事实值分开记录。"""
+    rows = []
+    for index, (kind, value) in enumerate(blocks, 1):
+        text = block_text(kind, value)
+        normalized = text.replace("，", ",")
+        for fact_kind, raw, start, _ in _fact_matches(text):
+            clause = re.split(r"[。！？；;，,]", normalized[:start])[-1]
+            qualifiers = list(_QUALIFIER.finditer(clause[-16:]))
+            rows.append({"block": index, "kind": fact_kind, "value": raw,
+                         "qualifier": qualifiers[-1].group() if qualifiers else "", "context": text[:180]})
+    return rows
+
+
 def quoted_spans(text):
-    """引语与书名短语：单独统计，只用于「原文引语是否还在」，不参与新增判定。"""
-    return [next(g for g in m.groups() if g) for m in _QUOTED.finditer(text)]
+    """只把有说话/引用归属的引号当直接引语；强调性引号不冒充引语。"""
+    out = []
+    for m in _QUOTED.finditer(text):
+        before = text[max(0, m.start() - 14):m.start()]
+        if re.search(r"说|称|问|道|引述|引用|信中|古语|俗语|写道|回答|宣布|表示", before):
+            out.append(next(g for g in m.groups() if g))
+    return out
 
 
 def _fact_key(kind, value):
@@ -227,47 +273,51 @@ def _fact_key(kind, value):
     return kind, v
 
 
-def compare_facts(original_blocks, edited_blocks):
-    """改写前后的事实单元集合比对。
-
-    - dropped：原稿有、改稿没有的事实单元（必须显式说明删除理由）。
-    - introduced：改稿新出现的事实单元（必须能就近核对，否则是凭空生成）。
-    只比较字面单元，不判断真伪；同义改写会显示为 dropped+introduced，需要人确认。
-    """
+def compare_facts(original_blocks, edited_blocks, original_meta=None, edited_meta=None):
+    """集合保留 + 出现次数/限定/日期精度变化；不把补年份或删「约」当作无损改写。"""
+    original_blocks = list(original_blocks)
+    edited_blocks = list(edited_blocks)
+    if original_meta:
+        original_blocks += [("p", original_meta.get(k, "")) for k in ("title", "deck")]
+    if edited_meta:
+        edited_blocks += [("p", edited_meta.get(k, "")) for k in ("title", "deck")]
     src, dst = {}, {}
-    for kind, value in (f for k, b in original_blocks for f in facts(block_text(k, b))):
-        src.setdefault(_fact_key(kind, value), value)
-    for kind, value in (f for k, b in edited_blocks for f in facts(block_text(k, b))):
-        dst.setdefault(_fact_key(kind, value), value)
-    # 第二轮：同一「月-日」，一侧带年份、一侧没有（如原稿写 7月2日、改稿写 2025年7月2日），
-    # 视为同一事实。年份本身发生变化时不会命中，仍会被报出。
-    def month_day(key, any_year=False):
-        kind, value = key
-        if kind != "date" or len(value.split("-")) != 3:
-            return None
-        y, m, d = value.split("-")
-        return (m, d) if (any_year or y == "????") else None
-
+    for blocks, target in ((original_blocks, src), (edited_blocks, dst)):
+        for kind, value in blocks:
+            for fact in facts(block_text(kind, value)):
+                target.setdefault(_fact_key(*fact), fact[1])
     matched = {k for k in src if k in dst}
-    for k in [k for k in src if k not in matched and month_day(k)]:
-        want = month_day(k)
-        cand = next((c for c in dst if c not in matched and month_day(c, any_year=True) == want), None)
-        if cand:
-            matched.add(k)
-            matched.add(cand)
-    dropped = [src[k] for k in src if k not in matched]
-    introduced = [dst[k] for k in dst if k not in matched]
-    # 引语只查「原文的引语是否被丢掉」：改写中出现新的引号短语是正常修辞，不是伪造事实。
+    precision = []
+    # 仅识别可能的日期补全，不自动认证；同年不同日期、不同年份绝不匹配。
+    for key in src:
+        if key in matched or key[0] != "date" or not key[1].startswith("????-"):
+            continue
+        candidates = [c for c in dst if c not in matched and c[0] == "date"
+                      and not c[1].startswith("????") and c[1][5:] == key[1][5:]]
+        if len(candidates) == 1:
+            cand = candidates[0]
+            matched.update((key, cand))
+            precision.append({"original": src[key], "edited": dst[cand], "status": "UNVERIFIED", "reason": "补全年份需回原始来源确认"})
     src_q = {q for k, b in original_blocks for q in quoted_spans(block_text(k, b))}
     dst_q = {q for k, b in edited_blocks for q in quoted_spans(block_text(k, b))}
-    dropped_quotes = sorted(q for q in src_q if q not in dst_q)
+    before, after = fact_occurrences(original_blocks), fact_occurrences(edited_blocks)
+    counts_before, counts_after = Counter((_fact_key(x['kind'], x['value'])) for x in before), Counter((_fact_key(x['kind'], x['value'])) for x in after)
+    qualifiers = []
+    for key in matched:
+        q1 = {x['qualifier'] for x in before if _fact_key(x['kind'], x['value']) == key and x['qualifier']}
+        q2 = {x['qualifier'] for x in after if _fact_key(x['kind'], x['value']) == key and x['qualifier']}
+        if q1 != q2:
+            qualifiers.append({"value": src[key], "original": sorted(q1), "edited": sorted(q2), "status": "UNVERIFIED"})
     return {
         "preserved": [src[k] for k in src if k in matched],
-        "dropped": sorted(dropped),
-        "dropped_quotes": dropped_quotes,
-        "introduced": sorted(introduced),
-        "source_units": len(src),
-        "edited_units": len(dst),
+        "dropped": sorted(src[k] for k in src if k not in matched),
+        "dropped_quotes": sorted(src_q - dst_q), "introduced_quotes": sorted(dst_q - src_q),
+        "introduced": sorted(dst[k] for k in dst if k not in matched),
+        "source_units": len(src), "edited_units": len(dst),
+        "precision_changes": precision, "qualifier_changes": qualifiers,
+        "occurrence_changes": [{"value": src.get(k, dst.get(k)), "before": counts_before[k], "after": counts_after[k]}
+                               for k in sorted(set(counts_before) | set(counts_after)) if counts_before[k] != counts_after[k]],
+        "verification": "UNVERIFIED",
     }
 
 
@@ -282,7 +332,9 @@ def introduced_without_source(edited_blocks, introduced):
         if re.search(r"https?://\S+", near) or kind == "note":
             haystack.append(text + " " + near)
     joined = " ".join(haystack)
-    return [f for f in introduced if f not in joined]
+    nearby_keys = {_fact_key(*fact) for fact in facts(joined)}
+    return [f for f in introduced
+            if f not in joined and not any(key[1] == _fact_key("num", f)[1] for key in nearby_keys)]
 
 
 # ---------------------------------------------------------------- 台账
@@ -290,23 +342,33 @@ def introduced_without_source(edited_blocks, introduced):
 LEDGER_HEAD = ("位置", "问题", "动作", "收益", "保留检查")
 
 
+def split_row(line):
+    return [c.strip().replace(r"\|", "|") for c in re.split(r"(?<!\\)\|", line.strip().strip("|"))]
+
+
 def parse_ledger(text):
-    """解析修改台账（Markdown 表格，五列）。返回 (rows, problems)。"""
-    rows, problems = [], []
-    for line in text.splitlines():
-        s = line.strip()
-        if not s.startswith("|") or not s.endswith("|"):
+    rows, problems, header, separator = [], [], False, False
+    for number, line in enumerate(text.splitlines(), 1):
+        line = line.strip()
+        if not line.startswith("|"):
             continue
-        cells = [c.strip() for c in s.strip("|").split("|")]
-        if len(cells) != 5 or any(set(c) <= {"-", ":", " "} and c for c in cells):
-            continue
+        cells = split_row(line)
         if tuple(cells) == LEDGER_HEAD:
+            header = True
+            continue
+        if cells and all(re.fullmatch(r":?-+:?", c) for c in cells):
+            separator = len(cells) == 5
+            continue
+        if len(cells) != 5:
+            problems.append(f"台账第 {number} 行必须为五列，实际 {len(cells)} 列")
             continue
         rows.append(dict(zip(LEDGER_HEAD, cells)))
+    if not header or not separator:
+        problems.append("台账缺少五列表头或分隔行")
     for i, row in enumerate(rows, 1):
-        for col in ("动作", "收益", "保留检查"):
-            if not row[col] or row[col] in ("—", "-"):
-                problems.append(f"台账第 {i} 行缺少「{col}」：改动能做，但说不出收益就不该改")
+        for col in LEDGER_HEAD:
+            if not row[col] or row[col] in ("—", "-", "无", "略"):
+                problems.append(f"台账第 {i} 行缺少「{col}」")
     return rows, problems
 
 
@@ -320,8 +382,8 @@ def locate(needle, blocks):
     body = re.sub(r"\s+", "", " ".join(block_text(k, b) for k, b in blocks))
     if key in body:
         return True
-    entry = ("标题", "导语", "全文", "首段", "结尾", "封面", "副题")
-    return any(w in needle for w in entry)
+    entry = {"标题", "导语", "全文", "首段", "结尾", "封面", "副题"}
+    return all(part.strip() in entry for part in re.split(r"[与和、，,]", needle) if part.strip())
 
 
 # ---------------------------------------------------------------- 审计
@@ -345,7 +407,7 @@ def _add(issues, code, cls, severity, location, problem, action, benefit, eviden
     })
 
 
-def promise_ledger(title, blocks):
+def promise_ledger(title, blocks, thesis=""):
     """标题承诺 → 正文兑现位置。只核对可数、可指的承诺，不评价标题好坏。"""
     text = plain(title)
     heads = [plain(v) for k, v in blocks if k == "h2"]
@@ -363,10 +425,14 @@ def promise_ledger(title, blocks):
         raw = m.group(1)
         expected = int(raw) if raw.isdigit() else words[raw]
         ordered = max((len(v[1]) for k, v in blocks if k == "list" and v[0]), default=0)
-        observed = len(heads) or ordered
+        noun = re.search(r"方法|步骤|原因|问题|建议|误区|原则|技巧|理由|教训", m.group(0) + text[m.end():m.end()+4])
+        explicit = [h for h in heads if re.match(r"^(?:第?[一二三四五六七八九十\d]+[、．.：:]?|[（(][一二三四五六七八九十\d]+[）)]|(?:方法|步骤|原因|问题|建议|误区|原则|技巧|理由|教训)[一二三四五六七八九十\d]+)", h)
+                    or (noun and noun.group() in h and re.search(r"[一二三四五六七八九十\d]", h))]
+        observed = len(explicit) or len(heads) or ordered
         out.append({"kind": "count", "promise": m.group(0), "expected": expected, "observed": observed,
                     "status": "fulfilled" if observed == expected else ("absent" if not observed else "mismatch"),
-                    "locations": [f"H2「{h}」" for h in heads] if heads else ([f"有序列表 {ordered} 项"] if ordered else [])})
+                    "locations": [f"H2「{h}」" for h in (explicit or heads)] if heads else ([f"有序列表 {ordered} 项"] if ordered else []),
+                    "verification": "structural_only"})
     for term in re.findall(r"[《「]([^》」]{2,20})[》」]", text):
         out.append({"kind": "object", "promise": term, "expected": 1,
                     "observed": body.count(term),
@@ -374,20 +440,18 @@ def promise_ledger(title, blocks):
                     "locations": [f"出现 {body.count(term)} 次"] if term in body else []})
     if re.search(r"为什么|为何|如何|怎样|能否|是否|真相|原因", text):
         answer = [h for h in heads if re.search(r"因为|原因|机制|如何|答案|所以|取决于|在于", h)]
+        if not answer and thesis:
+            answer = ["frontmatter.thesis（语义兑现仍需评审）"]
         out.append({"kind": "question", "promise": "标题提出的问题", "expected": 1,
-                    "observed": len(answer) or (1 if meta_thesis(blocks) else 0),
-                    "status": "fulfilled" if answer else "unclear",
-                    "locations": answer})
+                    "observed": len(answer),
+                    "status": "needs-judgment" if answer else "unclear",
+                    "verification": "UNVERIFIED", "locations": answer})
     if re.search(r"最|唯一|第一|首次|没有之一", text):
         out.append({"kind": "superlative", "promise": "最高级断言", "expected": 1,
                     "observed": 1 if re.search(r"最|唯一|第一|首次", body) else 0,
                     "status": "needs-judgment",
                     "locations": ["标题使用最高级；正文须给出比较范围与依据"]})
     return out
-
-
-def meta_thesis(blocks):
-    return any(k == "peak" for k, _ in blocks)
 
 
 def _section_stats(blocks):
@@ -441,15 +505,15 @@ def audit(meta, blocks):
                 _add(issues, "NUM-NO-SOURCE", "mechanical", "should", f"块 {index}",
                      "关键数字附近未见可核对依据", "核查数字并就近补口径",
                      "读者可判断时间、口径与结论力度", "相邻块未见来源 note 或 HTTP(S) 链接",
-                     "不补写无法确认的来源；必要时限定、删除或标未核")
+                     "不补写无法确认的来源；必要时限定、删除或标未核", needs="fact-check")
             if kind == "p" and ATTRIB.search(text) and not has_source:
                 _add(issues, "ATTR-NO-SOURCE", "mechanical", "should", f"块 {index}",
                      "来源型表述没有就近指向依据", "补原始出处或降级表述",
-                     "区分可核事实与作者转述", "出现“数据显示/研究表明/据…”而相邻块无来源")
+                     "区分可核事实与作者转述", "出现“数据显示/研究表明/据…”而相邻块无来源", needs="fact-check")
             if kind == "p" and CAUSAL.search(text) and not HEDGE.search(text):
-                _add(issues, "CAUSAL-STRONG", "mechanical", "should", f"块 {index}",
+                _add(issues, "CAUSAL-STRONG", "judgment", "should", f"块 {index}",
                      "因果或确定性措辞可能强于可见证据", "核对推断链并补限定",
-                     "避免把相关、估算或观点写成确定事实", "出现强因果/绝对措辞，句内未见限制词")
+                     "避免把相关、估算或观点写成确定事实", "出现强因果/绝对措辞，句内未见限制词", needs="editor")
             if kind == "p" and CLICHE.search(text):
                 _add(issues, "OPENING-CLICHE", "mechanical", "should", f"块 {index}",
                      "套语开头占据入口，没有给出信息", "删除套语，直接给事实或判断",
@@ -566,7 +630,7 @@ def audit(meta, blocks):
                  "读者在出问题时能自行判断", "全文未见失败/回退表述", needs="fact-check")
 
     # --- 标题承诺 ---
-    promises = promise_ledger(title, blocks)
+    promises = promise_ledger(title, blocks, meta.get("thesis", ""))
     for p in promises:
         if p["kind"] == "count" and p["status"] != "fulfilled" and p["observed"]:
             _add(issues, "PROMISE-COUNT", "mechanical", "must", "标题与全文",
@@ -584,7 +648,7 @@ def audit(meta, blocks):
         if p["kind"] == "question" and p["status"] == "unclear":
             _add(issues, "PROMISE-QUESTION", "judgment", "should", "标题与全文",
                  "问题型标题缺少可定位的回答结构", "标出核心回答与推导步骤",
-                 "读者能确认标题问题在何处被回答", "未提供 thesis，且 H2 未见回答性表述", needs="editor")
+                 "读者能确认标题问题在何处被回答", "未提供 thesis，且 H2 未见回答性表述；关键词命中也不等于回答成立", needs="editor")
         if p["kind"] == "superlative":
             _add(issues, "PROMISE-SUPERLATIVE", "judgment", "note", "标题",
                  "最高级断言需要比较范围与依据", "写明比较范围、时间与来源",
@@ -601,6 +665,21 @@ def audit(meta, blocks):
     severity_rank = {"must": 0, "should": 1, "note": 2}
     issues.sort(key=lambda x: (severity_rank[x["severity"]], x["code"], x["location"]))
 
+    argument_map = []
+    for section in sections:
+        start = section["block"]
+        end = next((x["block"] for x in sections if x["block"] > start), len(blocks) + 1)
+        members = list(enumerate(blocks[start - 1:end - 1], start))
+        argument_map.append({
+            "section": section["heading"], "block": start,
+            "claim_candidates": [{"block": i, "text": plain(v)[:180]} for i, (k, v) in members
+                                 if k == "p" and re.search(r"应该|必须|意味着|说明|证明|表明|因此|所以|关键|本质", block_text(k, v))],
+            "evidence_candidates": [{"block": i, "kind": k, "text": block_text(k, v)[:180]} for i, (k, v) in members if k in evidence_kinds],
+            "boundary_candidates": [{"block": i, "text": block_text(k, v)[:180]} for i, (k, v) in members
+                                    if k in ("p", "note", "quote") and re.search(r"但|不过|限制|边界|例外|不能|仅|可能|尚未|未知", block_text(k, v))],
+            "inference_relation": "UNVERIFIED", "title_contribution": "UNVERIFIED",
+            "counterexample_response": "UNVERIFIED", "information_gain": "UNVERIFIED",
+        })
     claim_map = {
         "title": title,
         "thesis": meta.get("thesis", ""),
@@ -622,6 +701,9 @@ def audit(meta, blocks):
                      ("composition", "visual_concept", "information_shape", "asset_strategy",
                       "mobile_risk", "design_rationale")},
         "claim_map": claim_map,
+        "argument_map": argument_map,
+        "semantic_review": {"status": "UNVERIFIED", "questions": strategy["editorial_work"]["questions"] if strategy else [],
+                            "required": ["标题兑现", "逐节信息增量", "证据到结论的推导", "最强反例", "结论适用范围", "原意与声音保留"]},
         "promise": promises,
         "issues": issues,
         "summary": summary,
@@ -637,11 +719,14 @@ def strategy_notes(meta, blocks):
     if not key:
         return ["先判断文章类型与读者任务；类型决定入口、证据密度与标题承诺的兑现方式。"]
     t = TYPES[key]
+    work = t["editorial_work"]
     notes = [f"类型：{t['label']}｜读者问题：{t['reader_question']}",
              f"入口应先给：{t['opening']}",
              f"结构参考：{' → '.join(t['structure'])}",
              f"证据要求：{t['evidence']}",
-             f"常见失败：{'；'.join(t['risks'])}"]
+             f"常见失败：{'；'.join(t['risks'])}",
+             f"优先保护：{work['protect']}", f"编辑顺序：{work['prefer']}",
+             f"语义复核：{' / '.join(work['questions'])}"]
     heads = [plain(v) for k, v in blocks if k == "h2"]
     if key == "analysis" and heads and not re.search(r"限制|边界|反例|例外|风险", " ".join(heads)):
         notes.append("动作：补一节「限制与反例」，或把限定写进结论句。")
@@ -672,15 +757,26 @@ def render_report(result, facts_diff=None, ledger_problems=None):
         for i in result["issues"]:
             lines.append(f"| {i['severity']} | {i['class']} | {i['location']} | {i['problem']} | "
                          f"{i['action']} | {i['benefit']} | {i['evidence']} | {i['needs']} |")
+    lines += ["", "## 语义评审工作单（UNVERIFIED，须由编辑逐项填写）", "",
+              "| 章节/位置 | 主张候选 | 证据候选 | 推导关系 | 反例与边界 | 信息增量 |",
+              "|---|---|---|---|---|---|"]
+    for section in result.get("argument_map", []):
+        claims = "；".join(x["text"] for x in section["claim_candidates"]) or "未定位，需通读"
+        evidence = "；".join(f"块{x['block']} {x['kind']}" for x in section["evidence_candidates"]) or "未定位，不等于不存在"
+        bounds = "；".join(x["text"] for x in section["boundary_candidates"]) or "UNVERIFIED"
+        lines.append(f"| {section['section']}（块 {section['block']}） | {claims.replace('|', '｜')} | {evidence} | UNVERIFIED | {bounds.replace('|', '｜')} | UNVERIFIED |")
     if facts_diff is not None:
         lines += ["", "## 事实单元比对（机械，不等于核真）", "",
                   f"- 保留 {len(facts_diff['preserved'])} / 原稿 {facts_diff['source_units']}",
                   f"- 删除：{'、'.join(facts_diff['dropped']) or '无'}",
-                  f"- 新增：{'、'.join(facts_diff['introduced']) or '无'}"]
+                  f"- 新增：{'、'.join(facts_diff['introduced']) or '无'}",
+                  f"- 日期精度变化：{facts_diff.get('precision_changes', [])}",
+                  f"- 限定变化：{facts_diff.get('qualifier_changes', [])}",
+                  f"- 引语变化：删除 {facts_diff.get('dropped_quotes', [])}；新增 {facts_diff.get('introduced_quotes', [])}",
+                  "- 出现次数变化：" + str(facts_diff.get('occurrence_changes', []))]
     if ledger_problems:
         lines += ["", "## 台账问题", ""] + [f"- {p}" for p in ledger_problems]
-    if result["missing_brief"]:
-        lines += ["", "## 未验证", "",
+    lines += ["", "## 未验证", "",
                   "- 独立外部读者盲选：未执行（脚本不产生偏好结论）",
                   "- 逐项第二来源事实核真：未执行",
                   "- 真实微信草稿 / 手机端：未执行"]

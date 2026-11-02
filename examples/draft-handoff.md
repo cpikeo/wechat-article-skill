@@ -12,7 +12,6 @@ visual_concept: 用四个验收位置组成一条冷静交接链，让“成功�
 information_shape: 流程 + 对照
 asset_strategy: 无图；接口关系用步骤和对照表即可
 mobile_risk: 四行对照表必须在320px仍可读，长接口名不单独成列
-design_rationale: 冷静紧凑的层级服务操作判断，不使用装饰图片
 digest: 建稿成功只解决了一部分问题。把字段回读、后台复核与手机阅读分开检查，才能让交付可追踪。
 kicker: 交付实务
 design_rationale: 冷静紧凑的层级服务操作判断，不使用装饰图片

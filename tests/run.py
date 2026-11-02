@@ -98,9 +98,9 @@ RENDER_CHECKS = (
 STRUCTURAL_AXES = ("lead", "heading", "h3", "quote", "peak", "divider", "image", "data", "table", "list")
 SIGNATURE = STRUCTURAL_AXES + ("display",)
 # V4：网格是人格的一部分（出入、段首缩进、行距、正文与图注字号），必须一起进入唯一性检查。
-GRID_KEYS = ("inset", "paragraph", "indent", "chapter_gap", "paragraph_gap", "body", "caption")
+GRID_KEYS = ("inset", "indent", "chapter_gap", "paragraph_gap", "body", "caption")
 COLOR_KEYS = ("text", "sub", "muted", "line", "field", "accent", "dark", "on_dark")
-TYPE_KEYS = ("heading_size", "heading_weight", "heading_leading", "chapter_gap", "paragraph_gap")
+TYPE_KEYS = ("heading_size", "heading_weight", "heading_leading", "lead_size", "lead_weight", "lead_leading", "quote_size", "h3_size", "data_size")
 
 
 def theme_audit():
@@ -111,7 +111,7 @@ def theme_audit():
         bad.append("主题必须固定为 paper / letter / ink / frost / bone / folio，不能增删或换序")
     for key, theme in _r.THEMES.items():
         missing = [k for k in SIGNATURE + COLOR_KEYS
-                   + ("name", "intent", "leading", "radius", "seal", "toc_label", "type", "grid", "concept") if k not in theme]
+                   + ("name", "leading", "radius", "toc_label", "type", "grid", "body_font") if k not in theme]
         missing_grid = [k for k in GRID_KEYS if k not in theme.get("grid", {})]
         if missing_grid:
             bad.append(f"{key} 缺少网格键 {missing_grid}")
@@ -139,20 +139,13 @@ def theme_audit():
     return bad
 
 
-def specimen_ok():
-    """themes.json、渲染器和入库展示板必须由同一次生成得到。"""
-    with tempfile.TemporaryDirectory() as directory, contextlib.redirect_stdout(io.StringIO()):
-        generated = os.path.join(directory, "themes.html")
-        _r.specimen(generated)
-        actual = Path(generated).read_bytes()
-    committed = Path(ROOT, "assets", "themes.html")
-    if not committed.is_file():
-        return False, "assets/themes.html 不存在"
-    expected = committed.read_bytes()
-    marker = f"themes sha256 {_r.THEME_CONFIG_SHA256}".encode()
-    return actual == expected and marker in expected, (
-        "themes.json / render.py / themes.html 一致" if actual == expected and marker in expected
-        else "展示板已漂移：运行 python3 scripts/render.py --specimen")
+def runtime_boundary_ok():
+    """开发样张不进入运行时；六人格仍由同一真实渲染器消费配置。"""
+    runtime = Path(SCRIPTS)
+    leaks = [p.name for p in runtime.glob('*.py') if 'SPECIMEN_MD' in p.read_text(encoding='utf-8') or 'def specimen(' in p.read_text(encoding='utf-8')]
+    board = Path(ROOT, 'assets', 'themes.html').exists()
+    ok = not leaks and not board and all(_r.render(_fx.PERSONALITY_MD, key)[3] for key in _r.THEMES)
+    return ok, "开发样张隔离，六人格由真实渲染器消费" if ok else f"运行时泄漏 {leaks} / 展示板 {board}"
 
 
 def render_check_ok(fm, md, must_have, must_not):
@@ -473,11 +466,34 @@ def shots(shoot=None):
                 }
                 const c=document.querySelector('#c').getBoundingClientRect();
                 let visible=0;
-                for (const p of ps){const b=p.getBoundingClientRect();
-                   if (b.top < 844) visible += p.textContent.length;}
+                const walker=document.createTreeWalker(document.querySelector('#c'),NodeFilter.SHOW_TEXT);
+                while(walker.nextNode()){
+                  const node=walker.currentNode; if(!node.textContent.trim()) continue;
+                  for(let i=0;i<node.textContent.length;i++){
+                    const r=document.createRange(); r.setStart(node,i); r.setEnd(node,i+1);
+                    const b=r.getBoundingClientRect(); if(b.bottom>0 && b.top<844 && b.width>0) visible++;
+                  }
+                }
+                const lum=c=>{const m=c.match(/[0-9.]+/g).slice(0,3).map(Number).map(v=>{v/=255;return v<=.04045?v/12.92:((v+.055)/1.055)**2.4});return .2126*m[0]+.7152*m[1]+.0722*m[2]};
+                let minContrast=99, badContrast=[];
+                for(const span of document.querySelectorAll('#c [leaf]')){
+                  if(!span.textContent.trim()) continue;
+                  let bg='rgb(255, 255, 255)';
+                  for(let e=span;e;e=e.parentElement){const v=getComputedStyle(e).backgroundColor;if(v!=='rgba(0, 0, 0, 0)'&&v!=='transparent'){bg=v;break}}
+                  const a=lum(getComputedStyle(span).color),b=lum(bg);
+                  const ratio=(Math.max(a,b)+.05)/(Math.min(a,b)+.05);
+                  minContrast=Math.min(minContrast,ratio);
+                  if(ratio<4.5) badContrast.push(span.textContent.slice(0,18)+':'+ratio.toFixed(2));
+                }
+                const splitAtoms=[...document.querySelectorAll('#c span')].filter(e=>e.style.whiteSpace==='nowrap'&&e.getClientRects().length>1).map(e=>e.textContent);
                 return {minSize: Math.min(...sizes), bodyLines: perLine, firstScreenChars: visible,
-                        cWidth: Math.round(c.width)};
+                        cWidth: Math.round(c.width), minContrast, badContrast, splitAtoms};
             }""")
+            m = METRICS[(stem, width)]
+            if m['badContrast']:
+                return png, f"{stem}（{width}px小字对比不足：{m['badContrast'][:3]}）"
+            if m['splitAtoms']:
+                return png, f"{stem}（{width}px数值原子被拆行：{m['splitAtoms'][:3]}）"
         pg.set_viewport_size({"width": 390, "height": 844})
         return png, None
 
@@ -604,12 +620,12 @@ date: 2026年11月2日
             if err: failed.append(err)
             else:
                 made.append(png)
-                manifest.append(("compose_matrix.png", "合成构图样张", "并列几何、顺序、图注与微信降级"))
+                manifest.append(("compose_matrix.png", "合成构图样张", "纵向同宽对照、顺序、图注与微信降级"))
             pg.set_viewport_size({"width": 320, "height": 844})
             geometry = pg.evaluate("""() => {let a=[...document.querySelectorAll('#c table td')];
                 let x=a.map(e=>e.getBoundingClientRect());
-                return x.length===2 && x[1].left>=x[0].right-1 && Math.abs(x[0].top-x[1].top)<2;}""")
-            if not geometry: failed.append("comparison 未实际并列")
+                return x.length===0;}""")
+            if not geometry: failed.append("comparison 默认未改为纵向同宽对照")
             text = pg.locator('#c').text_content()
             pg.evaluate("() => document.querySelectorAll('#c [style]').forEach(e=>e.removeAttribute('style'))")
             if pg.locator('#c').text_content() != text or not (text.index('甲对象') < text.index('乙对象') < text.index('第一步') < text.index('第二步')):
@@ -673,10 +689,10 @@ date: 2026年11月2日
             f.write(f"| {png_name} + {png_name[:-4]}_首屏.png + {png_name[:-4]}_{{320,360,390,430}}.png | {src} | {w or '按稿件实际'} |\n")
         if METRICS:
             f.write("\n## 排版测量（浏览器实测，不是审美结论）\n\n"
-                    "| 页面 | 宽度 | 最小字号 | 中文每行字数 | 首屏可见字数 | 正文宽 |\n|---|---:|---:|---:|---:|---:|\n")
+                    "| 页面 | 宽度 | 最小字号 | 中文每行字数 | 首屏可见字符 | 正文宽 | 最小文字对比 |\n|---|---:|---:|---:|---:|---:|---:|\n")
             for (stem, width), m in sorted(METRICS.items()):
                 f.write(f"| {stem} | {width}px | {m['minSize']:.0f}px | {m['bodyLines']} | "
-                        f"{m['firstScreenChars']} | {m['cWidth']}px |\n")
+                        f"{m['firstScreenChars']} | {m['cWidth']}px | {m['minContrast']:.2f}:1 |\n")
             f.write("\n判读方式：最小字号低于 12px 视为不可读；320px 下中文每行超过 20 字视为过密、"
                     "低于 12 字视为过碎；首屏可见字数长期低于 60 说明入口被装饰挤占。\n")
     print(f"\nGate 3 截图证据（390px · 2x · 4宽度元素级与复制样式检查）：{out_dir}")
@@ -808,9 +824,9 @@ def delivery_defects_ok():
     test("地址单独一行不占来源行数",
           not any("两行内" in m for m in _r.compose_gate(*_r.parse(_note3.format("来源：甲（2025）。\n口径：媒体转述。\nhttps://example.com/x")))[0]))
     _dup = r.note("来源", ["来源: 甲（2025）。", "口径：媒体转述。"])
-    test("标签点明来源，正文不重复「来源」", _dup.count("来源") == 1 and "甲（2025）" in _dup and "口径：" in _dup)
+    test("标签点明来源，正文不重复「来源」", _dup.count("来源") == 1 and "甲（2025）" in re.sub(r"<[^>]+>", "", _dup) and "口径：" in _dup)
     _dup2 = r.note("来源与口径", ["来源：甲（2025）。", "口径：媒体转述。"])
-    test("来源与口径标签剥两个前缀", _dup2.count("来源") == 1 and _dup2.count("口径") == 1 and "甲（2025）" in _dup2)
+    test("来源与口径标签剥两个前缀", _dup2.count("来源") == 1 and _dup2.count("口径") == 1 and "甲（2025）" in re.sub(r"<[^>]+>", "", _dup2))
     test("代码内CSS字面量不误判", not check(r.code("css", ["position:fixed; display:grid; float:left; {{demo}};"]))[0])
     test("事件与协议相对图片被拦", bool(check('<img src="//bad/x" onerror="x()" style="max-width:100%">')[0]))
     malformed = check('<section><p><span leaf="">文字</span></section>')[0]
@@ -841,7 +857,7 @@ def delivery_defects_ok():
     _fits = [["季度", "营收", "同比", "备注"],
              ["一季度", "12345678元", "+12.4%", "春节因素"]]
     test("表格数值列小屏放不下时改为记录卡而非缩字号",
-         "记录 01" in r.table(_t4) and "table-layout:fixed" not in r.table(_t4)
+         "条目 01" in r.table(_t4) and "table-layout:fixed" not in r.table(_t4)
          and any("记录卡" in m for m in _r.compose_gate({"title": "回归"}, [("table", _t4)])[1]))
     test("三列表格仍走表格并在 320px 放得下",
          "table-layout:fixed" in r.table([row[:3] for row in _t4])
@@ -850,7 +866,7 @@ def delivery_defects_ok():
     # 因此必须仍是表格；把「放得下」误判成记录卡会白丢表格的横向对照能力。
     test("确实放得下的四列数值表保持表格",
          _r.table_fits(_fits) and "table-layout:fixed" in r.table(_fits)
-         and "记录 01" not in r.table(_fits))
+         and "条目 01" not in r.table(_fits))
     test("纯数字单元格禁止断行", "white-space:nowrap" in r.table([["列", "值"], ["甲", "60%"]]) and "white-space:nowrap" not in r.table([["列", "值"], ["甲", "中文很长的一格"]]))
     test("近似数值与中文单位保持同线", "white-space:nowrap" in r.table([["对象", "年工时"], ["甲", "约2500小时"], ["乙", "不足1600小时"]]))
     toc_md = HEAD + "toc: true\n---\n> 导语。\n\n第一段。\n\n## **重点**结论\n\n一。\n\n## ==关键词==\n\n二。\n\n## 第三\n\n三。\n"
@@ -859,7 +875,7 @@ def delivery_defects_ok():
     test("目录不外露行内标记", "重点结论" in toc_html and "**重点**" not in toc_block and "==关键词==" not in toc_block)
     test("引文侧线使用主题强调色而非发丝线", 'border-left:2px solid' in r.quote("引文", "出处", "quote") and 'border-left:1px solid' not in r.quote("引文", "出处", "quote"))
     test("引用原标点不被归一", '中文,原句...' in r.quote('中文,原句...', '出处', 'quote'))
-    test("表格语义与正负单位保持", '<th ' in r.table([['列', '值'], ['甲', '−8 百分点']]) and '−8 百分点' in r.table([['列', '值'], ['甲', '−8 百分点']]))
+    test("表格语义与正负单位保持", '<th ' in r.table([['列', '值'], ['甲', '−8 百分点']]) and '−8 百分点' in re.sub(r'<[^>]+>', '', r.table([['列', '值'], ['甲', '−8 百分点']])))
     meta, blocks = _r.parse(HEAD + '---\n|甲|乙|\n|---|---|\n|只有一列|\n')
     test("表格行列不齐明确失败", any('行列数' in e for e in _r.compose_gate(meta, blocks)[0]))
     test("BOM/CRLF不丢原生字段", _r.parse('\ufeff' + HEAD.replace('\n', '\r\n') + '---\r\n正文')[0]['title'] == '回归用例|固定标题')
@@ -1039,8 +1055,10 @@ class DeliveryTests(unittest.TestCase):
         pair = ('# 测试标题\n\n![甲对象](images/fig.jpg "对比 comparison")\n'
                 '![乙对象](images/fig.jpg "对比 comparison")\n')
         _, meta, blocks, html = _r.render(pair)
-        self.assertEqual(html.count('<td style="width:50%'), 2)
+        self.assertNotIn('<table', html)
         self.assertLess(html.index('甲对象'), html.index('乙对象'))
+        parallel = _r.render(pair.replace('comparison', 'comparison parallel'))[3]
+        self.assertEqual(parallel.count('<td style="width:50%'), 2)
         self.assertFalse(_r.check(html)[0])
         must, _ = _r.compose_gate(meta, blocks, FIX)
         self.assertFalse(must, must)
@@ -1048,7 +1066,7 @@ class DeliveryTests(unittest.TestCase):
         self.assertTrue(any('恰好两张' in x for x in _r.compose_gate(meta, blocks, FIX)[0]))
         seq = pair.replace('comparison', 'sequence')
         html = _r.render(seq)[3]
-        self.assertLess(html.index('顺序 1'), html.index('顺序 2'))
+        self.assertLess(html.index('01 · 甲对象'), html.index('02 · 乙对象'))
         self.assertIn('甲对象', html)
         for bad in ('- 一\n  - 二\n', '1. 一\n3. 三\n', '- 一\n1. 二\n', '- 一\n  续行\n'):
             with self.subTest(bad=bad), self.assertRaises(ValueError):
@@ -1141,7 +1159,7 @@ class DeliveryTests(unittest.TestCase):
     def test_editorial_and_input(self):
         import render
         meta, blocks = render.parse('---\ntitle: 标题\n---\n重复段落。\n\n重复段落。\n\n增长20%。')
-        review = render.editorial_review(meta, blocks)
+        review = render.audit(meta, blocks)
         self.assertTrue(any(x['action'] == '合并或删除' for x in review['issues']))
         self.assertTrue(any(x['action'].startswith('核查数字') for x in review['issues']))
         self.assertEqual(review['fact_verification'], 'not_performed')
@@ -1159,7 +1177,7 @@ class DeliveryTests(unittest.TestCase):
             theme = render.THEMES[key]
             signature = tuple(theme['type'].values()) + (theme['display'], theme['heading'], theme['peak'])
             signatures.add(signature)
-            body = render.render(render.SPECIMEN_MD, key)[3]
+            body = render.render(_fx.PERSONALITY_MD, key)[3]
             self.assertIn(f"font-size:{theme['type']['heading_size']}px", body)
             self.assertFalse(render.check(body)[0])
         self.assertEqual(len(signatures), 6)
@@ -1167,7 +1185,7 @@ class DeliveryTests(unittest.TestCase):
         txt.write_text('# 纯文本测试\n\n正文和English 2026。', encoding='utf-8')
         result = subprocess.run([sys.executable, str(Path(SCRIPTS)/'render.py'), str(txt)], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn('正文和English 2026。', (self.root/'source_paper.html').read_text())
+        self.assertIn('正文和English 2026。', re.sub(r'<[^>]+>', '', (self.root/'source_paper.html').read_text()))
         pdf = self.root/'wrong.pdf'; pdf.write_text('not a PDF')
         result = subprocess.run([sys.executable, str(Path(SCRIPTS)/'render.py'), str(pdf)], capture_output=True, text=True)
         self.assertNotEqual(result.returncode, 0)
@@ -1204,7 +1222,7 @@ def editorial_intelligence_checks():
         out.append((name, bool(ok)))
 
     def codes(md):
-        meta, blocks = _r.parse(HEAD + md)
+        meta, blocks = _r.parse(("---\n" + md) if md.startswith("title:") else (HEAD + md))
         return meta, blocks, audit(meta, blocks)
 
     # 类型策略必须完整、可解析，且每种类型给出可执行的读者问题与证据要求
@@ -1269,12 +1287,12 @@ def editorial_intelligence_checks():
          and any(v.replace(",", "") == "1642小时" for k, v in f)
          and any(v == "十五倍" for k, v in f) and any(k == "url" for k, v in f))
     case("裸数字与量词不算事实单元", facts("三条理由，两个人。") == [])
-    src = _r.parse("---\n正文写 7月2日 与 1,642 小时。\n")[1]
-    dst = _r.parse("---\n正文写 2025年7月2日 与 1642 小时。\n")[1]
+    src = _r.parse("正文写 7月2日 与 1,642 小时。\n")[1]
+    dst = _r.parse("正文写 2025年7月2日 与 1642 小时。\n")[1]
     diff = compare_facts(src, dst)
     case("无年份日期与带年份同一天视为保留",
          diff["dropped"] == [] and diff["introduced"] == [])
-    lost = compare_facts(src, _r.parse("---\n正文只写日期。\n")[1])
+    lost = compare_facts(src, _r.parse("正文只写日期。\n")[1])
     case("丢失的事实单元被列出（不静默）",
          "1642小时" in lost["dropped"] or "1,642小时" in lost["dropped"])
 
@@ -1312,7 +1330,7 @@ def composition_checks():
     case("两列短表放得下", _r.table_fits(narrow))
     html = _r.R(_r.THEMES["paper"], "standard").table(wide)
     case("放不下时降级为记录卡且数值不丢",
-         "记录 01" in html and all(c in html for row in wide for c in row))
+         "条目 01" in html and all(c in re.sub(r"<[^>]+>", "", html) for row in wide for c in row))
     case("记录卡不使用表格布局硬塞",
          "table-layout:fixed" not in html)
     r = _r.R(_r.THEMES["frost"], "standard")
@@ -1451,7 +1469,7 @@ def run_all(a):
     import render as _r
     for key in _r.THEMES:
         try:
-            _r.render(_r.SPECIMEN_MD, key)
+            _r.render(_fx.PERSONALITY_MD, key)
             print(f"   可渲染 · {key}（{_r.THEMES[key]['name']}）")
         except Exception as e:  # noqa: BLE001 —— 回归要报告任何一种崩
             fails.append(f"主题 {key}")
@@ -1464,10 +1482,10 @@ def run_all(a):
             print(f"   FAIL · {m}")
     else:
         print(f"   独立结构轴 · {len(_r.THEMES)} 套人格在导语/标题/引文/信息/图片/节奏键上完整且不重复")
-    ok, why = specimen_ok()
+    ok, why = runtime_boundary_ok()
     print(f"   {'PASS' if ok else 'FAIL'} · {why}")
     if not ok:
-        fails.append("主题配置/渲染器/展示板一致性")
+        fails.append("运行时/开发样张隔离")
 
     print("④ 护栏回归（负例必须仍被拦住）")
     for label, fm, body, kw, level in GUARDS:
@@ -1581,6 +1599,12 @@ def run_all(a):
         if not ok:
             fails.append("输入转换：" + label)
 
+    print("⑰ V5 真实缺陷回归（解析/事实限定/门禁/对比度/配置/回读/DOCX）")
+    for label, ok in v5_defect_checks():
+        print(f"   {'PASS' if ok else 'FAIL'} · {label}")
+        if not ok:
+            fails.append("V5：" + label)
+
     print("⑯ 交付包（--deliver 产物齐全且互相一致）")
     for label, ok in deliver_checks():
         print(f"   {'PASS' if ok else 'FAIL'} · {label}")
@@ -1596,6 +1620,59 @@ def run_all(a):
             fails.append("Gate 3 截图")
 
     return fails
+
+
+def v5_defect_checks():
+    """只覆盖本轮实际复现的缺陷：解析、事实限定、门禁、对比度、DOCX、回读证据。"""
+    import extract_docx, zipfile
+    from editorial import compare_facts, facts, parse_ledger, locate, promise_ledger
+    out = []
+    def case(name, ok): out.append((name, bool(ok)))
+    for bad in ('---\ntitle: 甲\ntitle: 乙\n---\n正文。\n',
+                '---\ntitle: 甲\nunknown: 乙\n---\n正文。\n',
+                '---\ntitle: 甲\n  nested: 乙\n---\n正文。\n',
+                '---\ntitle: 甲\ntoc: maybe\n---\n正文。\n',
+                '---\ntitle: 甲\n---\n# 乙\n'):
+        try: _r.parse(bad); ok=False
+        except ValueError: ok=True
+        case("frontmatter/H1 冲突拒绝", ok)
+    meta, blocks = _r.parse('---\ntitle: 三个方法\n---\n## 背景\n\n正文。\n\n## 方法一\n\n正文。\n\n## 方法二\n\n正文。\n\n## 方法三\n\n正文。\n\n## 结语\n\n正文。\n')
+    case("数量承诺不把背景/结语算作方法", promise_ledger(meta['title'], blocks)[0]['observed'] == 3)
+    case("编辑 must 进入真实 Gate 2", any('PROMISE-COUNT' in x for x in _r.compose_gate({'title':'四个方法'}, blocks)[0]))
+    diff = compare_facts([('p','营收-20%，约2500小时。他说“原话”。')], [('p','营收20%，2500小时。他说“新话”。')])
+    case("URL 百分号编码不拆成统计数值", facts('见 https://zh.wikisource.org/zh-hans/%E8%83%8C%E5%BD%B1') == [('url','https://zh.wikisource.org/zh-hans/%E8%83%8C%E5%BD%B1')])
+    case("正负号变化被识别", '-20%' in diff['dropped'] and '20%' in diff['introduced'])
+    case("近似限定删除被识别", bool(diff['qualifier_changes']))
+    case("直接引语增删被识别", diff['dropped_quotes']==['原话'] and diff['introduced_quotes']==['新话'])
+    diff2 = compare_facts([('p','约2500小时；实际2500小时。')], [('p','2500小时；实际2500小时。')])
+    case("同段多次出现逐次检查限定", bool(diff2['qualifier_changes']))
+    rows, problems = parse_ledger('| 位置 | 问题 | 动作 | 收益 | 保留检查 |\n|---|---|---|---|---|\n| 导语 | 重复 |\n')
+    case("坏台账行不静默跳过", bool(problems) and not rows)
+    case("台账位置不接受任意含标题字样", not locate('不是标题位置', [('p','正文')]))
+    case("六人格全部文字/底色组合对比≥4.5", all(p['pass'] for k in _r.THEMES for p in _r.contrast_checks(k)))
+    long_data = _r.render('---\ntitle: 长数值\n---\n::: data\n1234567890｜长数值标签\n20｜短标签\n:::\n')[3]
+    case("长数值改纵向而不是固定34%列", 'width:34%' not in long_data)
+    ai = _r.compose_gate({'title':'题'}, [('img',('图','images/fig.jpg','证据 ai'))], FIX)[0]
+    case("AI 修饰词不能绕过证据职责", any('生成示意' in x for x in ai))
+    with tempfile.TemporaryDirectory() as d:
+        cfg=Path(d)/'c.json'
+        for bad in ('{"authro":"x"}', '{"appid":1}', '{"submit":"false"}'):
+            cfg.write_text(bad)
+            try: publish.load_config(str(cfg)); ok=False
+            except ValueError: ok=True
+            case("发布配置错键/错型拒绝", ok)
+        evidence = publish.write_readback_evidence(d, 'MID', {'news_item':[{'title':'题','content':'文','thumb_media_id':'T'}]}, {'title':'题','content':'文','thumb_media_id':'T'})
+        saved=json.loads((Path(d)/'MID'/'draft-readback.json').read_text())
+        case("回读证据落盘且真机仍未验证", evidence['api_readback']=='PASS' and saved['wechat_mobile']=='UNVERIFIED' and '文' not in json.dumps(saved,ensure_ascii=False))
+        # DOCX: empty comments part must not be mistaken for footnote text; colliding images must not overwrite.
+        doc='<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>正文</w:t></w:r></w:p></w:body></w:document>'
+        src=Path(d)/'a.docx'; md=Path(d)/'a.md'
+        with zipfile.ZipFile(src,'w') as z:
+            z.writestr('word/document.xml',doc)
+            z.writestr('word/comments.xml','<w:comments xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:comment><w:p><w:r><w:tab/></w:r></w:p></w:comment></w:comments>')
+        with contextlib.redirect_stdout(io.StringIO()): rc=extract_docx.extract(src,md)
+        case("DOCX 空批注不冒充正文丢失", rc==0 and md.is_file())
+    return out
 
 
 def main():

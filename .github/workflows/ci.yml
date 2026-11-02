@@ -15,11 +15,13 @@ jobs:
           cp examples/draft-handoff.md /tmp/original.md
           python3 scripts/render.py examples/draft-handoff.md \
             --against /tmp/original.md --deliver /tmp/deliver
+      - name: 六类真实来源编辑评估（确定性证据）
+        run: python3 tests/editorial_eval.py --check-report evaluation/RESULTS.md
       - name: 中文字体（禁止缺字截图）
         run: sudo apt-get update && sudo apt-get install -y fonts-noto-cjk fontconfig
       - name: Gate 3 四宽度与同稿六人格截图证据
         run: |
-          pip install playwright
+          pip install playwright pillow
           python3 -m playwright install --with-deps chromium --only-shell
           python3 tests/run.py --shots --shoot examples/draft-handoff.md
       - uses: actions/upload-artifact@v4

@@ -1,0 +1,245 @@
+① 用例回归（Gate 1/2 必须全过）
+   PASS · composition
+   PASS · skills
+   PASS · portrait
+   PASS · visual
+   PASS · brief
+   PASS · longread
+② 结构基准（5 篇合成稿的机器可验证快照）
+   PASS · 6 篇合成稿 · 人格/资产/结构/首屏 全部对齐基准
+③ 人格系统（themes.json）：可渲染 · 不重复 · 键完整
+   可渲染 · paper（静纸 Silent Paper）
+   可渲染 · letter（暖信笺 Warm Letter）
+   可渲染 · ink（酌墨 Wine Ink）
+   可渲染 · frost（北霜 North Frost）
+   可渲染 · bone（素作 Atelier Bone）
+   可渲染 · folio（特稿 Feature Folio）
+   独立结构轴 · 6 套人格在导语/标题/引文/信息/图片/节奏键上完整且不重复
+   PASS · 开发样张隔离，六人格由真实渲染器消费
+④ 护栏回归（负例必须仍被拦住）
+   PASS · 封面写了但文件不存在（must → 封面文件不存在）
+   PASS · 图片分辨率过低（should → 分辨率过低）
+   PASS · bars 值不是数字（must → bars 的值必须是数字）
+   PASS · bars 只有一项（must → bars 至少 2 项）
+   PASS · bars 缺来源（must → 缺少紧邻来源）
+   PASS · bars 缺单位（must → 必须声明单一单位）
+   PASS · 证据类图片没有说明（must → 证据类图必须写清出处）
+   PASS · density 写错静默降级（must → density）
+⑤ 原语渲染（渲染出来是不是我以为的样子）
+   PASS · data 的全角/半角分隔符都要拆开
+   PASS · 正文不重印原生标题与作者
+   PASS · 正文无顶部元信息块，只保留 deck
+   PASS · 目录不占首屏（toc 排在第一段之后）
+⑥ Word 抽取回归（三条输入路径之一，此前零覆盖）
+   PASS · docx → Markdown（标题/加粗/两种列表/图片/表格）
+⑦ 平台原生字段（正文不重印标题/作者 · 预览模拟原生栏 · meta 上限）
+   PASS · 正文无重印 · 预览模拟原生栏 · meta 上限合规
+⑧ draft/add payload（超限拒绝 · 留言默认 · 原文链接）
+   PASS · title｜·上限·留言默认·原文链接 全对
+⑨ 永久素材管理（封面复用 · 验活 · 删除重传 · 总数 · 翻页 · 删除）
+  复用已有封面永久素材 M1
+  缓存的素材 M1 已不可用（errcode=40007），重新上传
+   PASS · 复用·验活·删除重传·总数·翻页·删除 全对
+⑩ config.json 默认与优先级（命令行 > meta > config）
+   PASS · 凭证默认来自 config
+   PASS · meta > config
+   PASS · 原文链接回落到 config
+   PASS · 留言开关跟随 config；submit 只来自本次命令行
+   PASS · 命令行 > meta/config
+   PASS · 空字符串视同未配置
+   PASS · 默认查找命中 ./config.json
+   PASS · 显式路径不存在时报错
+⑪ 发布预检（不联网：Gate 1 · 原生字段 · 封面路径解析 · 待传图片）
+   PASS · Gate 1 · 原生字段 · 封面路径 · 待传图片 全对
+⑫ 真实缺陷回归（数值/路径/剪贴板边界/上传/坏稿0网络）
+   PASS · 零值不造2%长度，小值保持比例
+   PASS · 坏bars无崩溃并报具体错误：-2
+   PASS · 坏bars无崩溃并报具体错误：NaN
+   PASS · 坏bars无崩溃并报具体错误：多
+   PASS · 坏bars无崩溃并报具体错误：99999999
+   PASS · 来源短写主体＋日期被接受
+   PASS · 来源仅主体无日期无地址被拦
+   PASS · 链接保留href而不追加长地址
+   PASS · 裸地址仍原样可见（要就整行写）
+   PASS · 来源/口径行过长被提醒
+   PASS · 来源与口径两行内（一行来源一行口径）
+   PASS · 来源与口径三行被拦
+   PASS · 地址单独一行不占来源行数
+   PASS · 标签点明来源，正文不重复「来源」
+   PASS · 来源与口径标签剥两个前缀
+   PASS · 代码内CSS字面量不误判
+   PASS · 事件与协议相对图片被拦
+   PASS · Gate 1 拦截错序或未闭合标签
+   PASS · img/br不泄漏等宽状态
+   PASS · 首屏引文来源不丢失
+   PASS · data 不静默吞标签
+   PASS · 中文逗号不变成分号
+   PASS · 表格转义管道保住列
+   PASS · 不合法输入显式失败
+   PASS · 不合法输入显式失败
+   PASS · 不合法输入显式失败
+   PASS · 裸URL含数字/标点不被中文化
+   PASS · 保留原引号不制造引言
+   PASS · 中文与混排自然左对齐，表头不拉字距
+   PASS · 表格列宽按内容分配，数值列不被挤窄
+   PASS · 四字中文表头在320px不形成单字孤行
+   PASS · 表格数值列小屏放不下时改为记录卡而非缩字号
+   PASS · 三列表格仍走表格并在 320px 放得下
+   PASS · 确实放得下的四列数值表保持表格
+   PASS · 纯数字单元格禁止断行
+   PASS · 近似数值与中文单位保持同线
+   PASS · 目录不外露行内标记
+   PASS · 引文侧线使用主题强调色而非发丝线
+   PASS · 引用原标点不被归一
+   PASS · 表格语义与正负单位保持
+   PASS · 表格行列不齐明确失败
+   PASS · BOM/CRLF不丢原生字段
+   PASS · 代码保留原空格不换全角，pre-wrap不误拦
+   PASS · 图表零轴与最长项解释可见
+   PASS · 空白职责不崩溃且拒绝
+   PASS · 深色重点加粗继承反色不变黑
+   PASS · frontmatter带引号的井号不截内容
+   PASS · 多重点和副题/导语由编辑判断，不机械阻断
+   PASS · 章标不叠加标题自带序号
+   PASS · 无序号标题仍获得章标
+   PASS · 目录行跟随同一套编号规则
+   PASS · 第X段式标题同样不叠加章标
+   PASS · 六人格真实组件输出在去色后仍各不相同
+   PASS · paper 重点是短强调线，与标题层级不同貌
+   PASS · bone 重点是衬线上下细线
+   PASS · frost 重点是加粗侧线
+   PASS · letter 重点是暖底色块，引文是无侧线的人声层级
+   PASS · folio 反色紧凑、ink 反色舒展
+   PASS · 来源 note 紧贴图示而非悬空
+   PASS · 证据图来源紧贴图片
+   PASS · 表头基线重于行线
+   PASS · 自动摘要在句末收口，不腰斩
+   PASS · 真实响应解析支持图片二进制
+   PASS · 二进制路径仍识别JSON错误
+   PASS · 跨目录正文/封面路径可预检
+   PASS · 预览本地嵌图，正文不含base64/工具栏
+   PASS · 实体路径/重复图片只上传一次
+   PASS · 权限错误不重传
+   PASS · 配置JSON类型拒绝
+   PASS · 配置JSON类型拒绝
+   PASS · 配置JSON类型拒绝
+   PASS · 空白CLI标题不能绕过原生标题转换
+   PASS · meta JSON非对象明确拒绝
+   PASS · pending_assets在真实预检阻断
+   PASS · 坏缓存形状不崩且重建
+   PASS · 真实入口预检阻断：待补
+   PASS · 真实入口预检阻断：超限
+   PASS · 真实入口预检阻断：旧正文
+   PASS · 真实入口预检阻断：空标题
+   PASS · 真实入口默认草稿且仅替换正文图
+   PASS · config 持久授权发布被拒绝
+   PASS · 正式发布缺单次确认被拦（0 网络）
+   PASS · 确认标题不符被拦
+   PASS · 单次确认后才走到发布
+   PASS · 单次查询不额外睡眠或轮询
+   PASS · 生成示意图不能担任证据职责
+   PASS · 证据图缺可核对来源被拦
+   PASS · 合成语料自带可见声明，不冒充事实
+⑬ 编辑智能（类型策略 · 承诺台账 · 事实比对 · 修改台账 · 判断类线索）
+   PASS · 六种文章类型策略完整
+   PASS · 中文类型名解析到同一策略
+   PASS · 未识别类型被指出而不是静默套用
+   PASS · 标题数量承诺不符被拦（must）
+   PASS · 承诺台账给出期望/可见与位置
+   PASS · 「一个」不被当成数量承诺
+   PASS · 问题型标题缺回答结构被提示
+   PASS · 标题中的对象未在正文出现被拦
+   PASS · 标题对象在正文出现则不报
+   PASS · 评论无反例被指出（判断类）
+   PASS · 教程缺前提与失败路径被指出
+   PASS · 新闻首屏先给主张而不是事实被指出
+   PASS · 新闻首屏给事实则不报
+   PASS · 空章节是必须修（must）
+   PASS · 结尾引入未论证的新证据被指出
+   PASS · 机械类与判断类分层且判断类标明需要谁test_boundaries (__main__.DeliveryTests.test_boundaries) ... ok
+test_composition_and_lossy_lists (__main__.DeliveryTests.test_composition_and_lossy_lists) ... ok
+test_docx_complex_table_refused_before_output (__main__.DeliveryTests.test_docx_complex_table_refused_before_output) ... ok
+test_docx_link_and_loss (__main__.DeliveryTests.test_docx_link_and_loss) ... ok
+test_editorial_and_input (__main__.DeliveryTests.test_editorial_and_input) ... ok
+test_integrity (__main__.DeliveryTests.test_integrity) ... ok
+test_plaintext_and_personality (__main__.DeliveryTests.test_plaintext_and_personality) ... ok
+test_readback (__main__.DeliveryTests.test_readback) ... ok
+test_readback_blocks_submission (__main__.DeliveryTests.test_readback_blocks_submission) ... ok
+test_render_rejects_escaping_cover (__main__.DeliveryTests.test_render_rejects_escaping_cover) ... ok
+
+----------------------------------------------------------------------
+Ran 10 tests in 2.054s
+
+OK
+
+   PASS · 事实单元含日期/单位数值/中文倍数/链接
+   PASS · 裸数字与量词不算事实单元
+   PASS · 无年份日期与带年份同一天视为保留
+   PASS · 丢失的事实单元被列出（不静默）
+   PASS · 台账缺收益被判不合格
+   PASS · 台账能解析出动作与保留检查
+⑭ 构图与素材（记录卡降级 · 图片职责模式 · 首屏重心）
+   PASS · 五列数值表在 320px 放不下
+   PASS · 四列数值表在 320px 放得下（不误判成记录卡）
+   PASS · 可用宽度变窄后同一张表判为放不下（人格留白与表格内距共同参与判定）
+   PASS · 两列短表放得下
+   PASS · 放不下时降级为记录卡且数值不丢
+   PASS · 记录卡不使用表格布局硬塞
+   PASS · hero/inset/默认三者的版式不同
+   PASS · 图片只改变版式，不裁切也不合成
+   PASS · 首屏重元素计数（副题+导语+首图=3）
+   PASS · 首屏层数记录顺序
+⑮ 输入转换（docx 脚注/批注必须报错，页眉页脚只警告）
+   PASS · 脚注有内容必须报错
+   PASS · 批注有内容必须报错
+   PASS · 页眉只警告并列出，不静默
+⑰ V5 真实缺陷回归（解析/事实限定/门禁/对比度/配置/回读/DOCX）
+   PASS · frontmatter/H1 冲突拒绝
+   PASS · frontmatter/H1 冲突拒绝
+   PASS · frontmatter/H1 冲突拒绝
+   PASS · frontmatter/H1 冲突拒绝
+   PASS · frontmatter/H1 冲突拒绝
+   PASS · 数量承诺不把背景/结语算作方法
+   PASS · 编辑 must 进入真实 Gate 2
+   PASS · URL 百分号编码不拆成统计数值
+   PASS · 正负号变化被识别
+   PASS · 近似限定删除被识别
+   PASS · 直接引语增删被识别
+   PASS · 同段多次出现逐次检查限定
+   PASS · 坏台账行不静默跳过
+   PASS · 台账位置不接受任意含标题字样
+   PASS · 六人格全部文字/底色组合对比≥4.5
+   PASS · 长数值改纵向而不是固定34%列
+   PASS · AI 修饰词不能绕过证据职责
+   PASS · 发布配置错键/错型拒绝
+   PASS · 发布配置错键/错型拒绝
+   PASS · 发布配置错键/错型拒绝
+   PASS · 回读证据落盘且真机仍未验证
+   PASS · DOCX 空批注不冒充正文丢失
+⑯ 交付包（--deliver 产物齐全且互相一致）
+   PASS · 交付包六类产物齐全
+   PASS · 预览与 meta 一并生成
+   PASS · 素材被复制进交付目录
+   PASS · 修改记录含事实比对与台账校验
+   PASS · 日期与单位差异不被误报为事实丢失
+   PASS · 验收记录写明 Gate 结果与未验证项
+   PASS · 退出码反映 Gate（PASS 时为 0）
+
+Gate 3 截图证据（390px · 2x · 4宽度元素级与复制样式检查）：/home/user/wechat-article-skill/assets/shots
+   composition.png
+   skills.png
+   portrait.png
+   visual.png
+   brief.png
+   longread.png
+   personality_paper.png
+   personality_letter.png
+   personality_ink.png
+   personality_frost.png
+   personality_bone.png
+   personality_folio.png
+   compose_matrix.png
+   eval_draft-handoff.png
+   证据清单 → REVIEW.md（截图是审阅输入，不是视觉合格证）
+
+回归：全部通过

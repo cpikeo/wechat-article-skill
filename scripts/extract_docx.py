@@ -15,6 +15,7 @@
 
 import argparse
 import os
+import posixpath
 import re
 import sys
 import zipfile
@@ -52,8 +53,11 @@ def load_rels(z):
         return rels
     for rel in root:
         target = rel.get("Target") or ""
-        if "media/" in target:
-            rels[rel.get("Id")] = "word/" + target.lstrip("/").replace("../", "")
+        if rel.get("TargetMode") == "External":
+            continue
+        resolved = posixpath.normpath(posixpath.join("word", target))
+        if resolved.startswith("word/media/") and ".." not in resolved.split("/"):
+            rels[rel.get("Id")] = resolved
     return rels
 
 
@@ -153,10 +157,17 @@ def extract(docx_path, out_md):
         print("✗ 转换会丢失语义，未写出成稿；请先在 Word 展平或另附材料：\n" + "\n".join(problems), file=sys.stderr)
         return 1
     # 脚注／尾注／批注是正文内容的一部分：静默丢掉就是改稿。必须阻断，让作者先展平。
-    content_parts = {name: z.read(name).decode("utf-8", "ignore")
-                     for name in z.namelist()
-                     if re.match(r"word/(?:footnotes|endnotes|comments).*\.xml$", name)}
-    with_text = [name for name, xml in content_parts.items() if "<w:t" in xml]
+    with_text = []
+    for name in z.namelist():
+        if re.match(r"word/(?:footnotes|endnotes|comments).*\.xml$", name):
+            try:
+                note_root = ET.fromstring(z.read(name))
+            except ET.ParseError:
+                z.close()
+                print(f"✗ 注释部件 XML 无效，未写出成稿：{name}", file=sys.stderr)
+                return 1
+            if any((node.text or "").strip() for node in note_root.iter(f"{W}t")):
+                with_text.append(name)
     if with_text:
         z.close()
         print("✗ 文档含脚注／尾注／批注正文，转换会丢失内容；请先在 Word 中把它们并入正文：\n  "
@@ -168,7 +179,29 @@ def extract(docx_path, out_md):
     if furniture:
         print("  注意：仅提取正文；页眉页脚未转换，请人工核对是否含正文信息："
               + ", ".join(furniture), file=sys.stderr)
+    planned_images = []
+    image_index = 0
+    for p in body.iter(f"{W}p"):
+        for blip in p.iter(f"{A}blip"):
+            src = media_of.get(blip.get(f"{R}embed"))
+            if not src:
+                continue
+            image_index += 1
+            fname = f"{image_index:02d}-" + os.path.basename(src)
+            target = os.path.join(img_dir, fname)
+            data = z.read(src)
+            if os.path.exists(target):
+                with open(target, "rb") as existing:
+                    if existing.read() != data:
+                        z.close()
+                        print(f"✗ 输出图片同名不同内容，拒绝覆盖：{target}", file=sys.stderr)
+                        return 1
+            planned_images.append((target, data))
     os.makedirs(out_dir, exist_ok=True)
+    for target, data in planned_images:
+        os.makedirs(img_dir, exist_ok=True)
+        with open(target, "wb") as f:
+            f.write(data)
     for el in body:
         tag = el.tag
         if tag == f"{W}tbl":
@@ -198,11 +231,8 @@ def extract(docx_path, out_md):
             src = media_of.get(rid)
             if not src:
                 continue
-            os.makedirs(img_dir, exist_ok=True)
             img_n += 1
             fname = f"{img_n:02d}-" + os.path.basename(src)
-            with open(os.path.join(img_dir, fname), "wb") as f:
-                f.write(z.read(src))
             lines.append(f"![](images/{fname})")
             lines.append("")
         text = para_text(p, links).strip()

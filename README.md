@@ -1,12 +1,13 @@
-# wechat-article · V4.0.0
+# wechat-article · V5.0.0
 
-把 Markdown／Word／纯文本编辑为公众号正文 HTML、独立嵌图预览、发布字段与可核验交付记录。它是 **Editorial Intelligence × Editorial Design × WeChat Publishing**，不是网页模板库。
+把 Markdown／Word／纯文本编辑为公众号正文 HTML、独立嵌图预览、发布字段与可核验交付记录。它是 **AI Skill：Editorial Intelligence × Editorial Design × WeChat Publishing**，不是网页模板库、SaaS 或微信编辑器。
 
-V4 的重点不是功能变多，而是三个判断变准：编辑问题能被定位到段落并区分「机器可查」与「需要判断」；六种人格拥有各自完整的网格、字体与组件语法；窄屏不再靠缩字号硬塞，而是换一种信息形态交付同样的内容。
+V5 在 V4 的安全/DOCX/发布保护上做最小改造：编辑 must 真正进入退出码；六类型给出不同保护项与语义工作单；事实比对覆盖正负号、日期精度、限定和直接引语；小字对比双重检查；长数值/比较图在窄屏换形态；开发评估与运行时隔离。
 
-- 唯一编辑与设计判断入口：[SKILL.md](SKILL.md)
-- V4 审计、优化前后对照、测试与未验证项：[AUDIT.md](AUDIT.md)
-- 六人格与四宽度截图：`python3 tests/run.py --shots`（产物写入被忽略的 `assets/shots/`，含 `REVIEW.md`）
+- 唯一判断入口：[SKILL.md](SKILL.md)
+- 审计、文件账、实测与未验证项：[AUDIT.md](AUDIT.md)
+- 六类真实来源编辑评估：[evaluation/RESULTS.md](evaluation/RESULTS.md)
+- 截图证据：`python3 tests/run.py --shots`；编辑前后对照：`python3 tests/visuals.py`
 
 ## 运行
 
@@ -18,97 +19,63 @@ python3 scripts/render.py 文章.md --theme frost -o 交付/正文.html
 python3 scripts/render.py 文章.md --against 原稿.md --ledger 修改台账.md
 python3 scripts/render.py 文章.md --deliver 交付/
 python3 scripts/extract_docx.py 文章.docx -o 文章.md
-python3 scripts/render.py --specimen       # 可复现 assets/themes.html
 ```
 
-`render.py` 输出：
-
-- **正文 HTML**：不重印微信原生标题／作者；只含保守内联样式。
-- **`*_预览.html`**：模拟原生字段、嵌入本地图片、封面 2.35:1／1:1 裁切和资产表；工具栏不进正文。
-- **`.meta.json`**：字段、文章类型、编辑审计（承诺台账／问题清单／类别）、设计决策、网格、首屏结构、主题配置指纹、源稿／正文／素材哈希和阻断项。
-- **`--deliver` 交付包**：`源稿.md`、`正文.html`、`*_预览.html`、`*.meta.json`、`修改记录.md`、`验收.md` 与 `images/`。
-
-退出码 1 表示 Gate 1/2 有必须修复的问题。`todo` 可生成待补预览，但发布预检拒绝待补稿。跨目录输出会复制素材到交付目录；同名不同内容拒绝覆盖。
+输出：正文 HTML（不重印原生标题/作者）、`*_预览.html`（模拟原生字段、嵌图、封面两裁切、资产表）、`.meta.json`（字段、审计、设计决策、网格、对比检查、完整性哈希、阻断项）。`--deliver` 另含源稿、修改记录、验收与素材。退出码 1 表示 Gate 1/2 有必须修；`todo` 可待补预览但发布预检拒绝。
 
 ## 编辑智能
 
-- **六种类型策略**：新闻、分析、教程、人物、评论、长文，各自规定入口、结构、证据要求与常见失败。类型决定改法，而不是所有文章一套处理。
-- **标题承诺台账**：数量承诺（“三个方法”）、对象承诺（书名号对象）、问题型标题，逐项列出期望／可见／状态／位置。
-- **事实单元比对**：`--against 原稿.md` 比对改写前后的数字+单位、日期与链接；消失必须声明，新增必须就近可核。
-- **修改台账校验**：`--ledger` 逐行检查五列齐全，且位置能回到正文。
-- **边界诚实**：每条问题都标注 `mechanical`（机器可查）或 `judgment`（需人或模型判断）与 `needs`（none／editor／fact-check）。脚本不做语义判决，也不改稿。
+六类型策略：新闻、分析、教程、人物、评论、长文。`argument_map` 定位主张/证据/边界候选，推导关系、反例回应、信息增量初始 `UNVERIFIED`，由编辑填写。标题承诺台账区分结构候选与语义兑现。`--against` 做事实字面保留检查，不做核真；`--ledger` 校验五列与位置。编辑 must 进入 Gate 2。
 
-## 六种编辑人格
+## 六种人格
 
-固定保留六种，每种的网格、字体关系与组件形态都不同（细节见 [SKILL.md §4](SKILL.md)）：
+paper 静纸／letter 暖信笺／ink 酌墨／frost 北霜／bone 素作／folio 特稿。差异落在网格、正文字体、导语、章节、引文、重点、数据、表格、列表、图片与图注，不只是颜色。参数唯一来源 `assets/themes.json`；概念与选择理由见 SKILL.md。开发样张在 `tests/fixtures.py::PERSONALITY_MD`，不进入运行时。
 
-|人格|语法核心|适合|
-|---|---|---|
-|`paper` 静纸|工作纸：索引章标、开放表格、三列数据|理性分析、开放基线|
-|`letter` 暖信笺|长信：**段首缩进**、无编号、人声引文|温暖叙事、人物声音|
-|`ink` 酌墨|书页：圆章、**首字下沉**、账簿数据|东方评论、论辩|
-|`frost` 北霜|电讯稿：`01 /` 章标、**15px 紧凑正文**|新闻报道、事实分层|
-|`bone` 素作|台纸：`SECTION` 小标、**17px 舒展正文**、规格表|器物工艺、细节|
-|`folio` 特稿|杂志开篇：**40px 红编号**、按句分行的 24px 导语、反色表头|国际特稿、强视觉重心|
+## 移动端与证据
 
-差异真实落在导语、标题、H3、引文、重点、分隔、图片、数据、表格、列表与网格上。`assets/themes.json` 是参数单一来源，`assets/themes.html` 由真实渲染器生成；回归会逐轴检查六者不重复，并检查展示板可精确再生成。
+320／360／390／430px 四宽度截图、元素溢出、最小字号、中文每行字数、首屏可见字符、所有叶子文字对比、数值原子拆行检查。表格按320px判一次，放不下改记录卡；长数值data纵向降级；comparison默认纵向同宽，显式parallel才并列；sequence编号并入图注。浏览器通过不等于微信真机通过。
 
-## 移动端
-
-- 320／360／390／430px 四宽度截图与逐元素溢出检查。
-- 实测**最小字号**与**中文每行字数**，写入截图证据包的 `REVIEW.md`（12px 以下、320px 每行少于 12 字或超过 20 字都会被标出来）。
-- 表格按 320px 判一次：放得下就保持表格（短标签与数字不折行），放不下就改为**记录卡**——一行一条记录，字段名与值成对，信息不丢、字号不缩。微信剥离媒体查询，所以不做响应式断点。
-- 每个主题按自己的左右留白与表格内距计算可用宽度：`paper/ink/frost/folio` 在 320px 仍用表格，`bone` 因 6px 内衬改用记录卡。
-
-## 回归与截图
+## 回归与评估
 
 ```bash
 python3 tests/run.py
-```
-
-Gate 3 截图是可选开发依赖，不进入 Skill 运行包：
-
-```bash
-pip install playwright
+python3 tests/editorial_eval.py --check-report evaluation/RESULTS.md
+pip install playwright pillow
 python3 -m playwright install --with-deps chromium
 python3 tests/run.py --shots --shoot examples/draft-handoff.md
+python3 tests/visuals.py
 ```
 
-截图覆盖四宽度、复制内容与内联样式、分组构图、同稿六人格，以及**排版测量表**；产物写入被忽略的 `assets/shots/` 并由 CI 上传，需要时一条命令重出。仓库不保存截图基线，因此"六人格差在哪"必须以本次渲染结果为准。截图成功不等于视觉通过。
+当前回归：185 条打印断言 + 10 个 unittest 用例；V4 基线 163 条打印断言 + 10 个用例。六类真实来源评估覆盖商业分析、新闻、教程、人物、评论、长文；独立外部盲选、逐项第二来源核真、真实微信账号/真机仍为 `UNVERIFIED`。
 
-## 发布与授权边界
+## 发布与授权
 
 ```bash
 cp config.example.json config.json
-# 推荐用 WECHAT_APPID / WECHAT_APPSECRET；config.json 已忽略
 python3 scripts/publish.py --html 正文.html --meta 正文.meta.json --preflight
-# 只有本次明确授权才继续正式发布：
-python3 scripts/publish.py --html 正文.html --meta 正文.meta.json \
-  --submit --confirm-title "逐字一致的标题"
+python3 scripts/publish.py --html 正文.html --meta 正文.meta.json --evidence-dir 交付/微信证据
+# 仅本次明确授权：
+python3 scripts/publish.py --html 正文.html --meta 正文.meta.json --submit --confirm-title "逐字标题"
 ```
 
-默认止于草稿；`config.json` 不接受 `submit:true`。真实入口先做同一预检，检查正文、源稿、素材、渲染版本与主题配置一致性，再上传封面／正文图、建稿并回读核心字段。发布不是群发。
-
-没有目标账号时，不得声称微信兼容或发布验证完成。Gate 4 必须单独记录：API 草稿回读、后台退出重开、手机端样式／图片、封面裁切。详见 [references/publish.md](references/publish.md)。
+默认止于草稿；config 不接受 `submit:true`。预检检查正文、源稿、素材、渲染版本、主题指纹与哈希。真实入口上传封面/正文图、建稿、严格回读核心字段；可选保存脱敏回读对照。后台退出重开、手机端样式/图片、封面裁切仍须单独验收。没有目标账号不得声称微信兼容或发布验证完成。详见 [references/publish.md](references/publish.md)。
 
 ## 文件职责
 
 |路径|职责|
 |---|---|
 |`SKILL.md`|唯一编辑、视觉、事实与验收判断入口|
-|`assets/themes.json`|六人格参数（色彩 + 结构轴 + 网格）单一来源|
-|`assets/themes.html`|渲染器生成的六人格对照板|
-|`scripts/editorial.py`|类型策略、文本度量、承诺台账、事实单元、修改台账|
-|`scripts/render.py`|解析、六套组件、Gate 2、预览、meta 与交付包|
+|`assets/themes.json`|六人格参数单一来源|
+|`scripts/editorial.py`|类型策略、文本度量、承诺/论证工作单、事实字面、台账|
+|`scripts/render.py`|解析、组件、Gate 2、预览、meta、交付|
 |`scripts/check.py`|Gate 1 保守 HTML 检查|
-|`scripts/publish.py`|预检、素材、草稿回读与单次发布授权|
-|`scripts/extract_docx.py`|零依赖 Word 抽取与丢失阻断|
-|`scripts/safety.py`|路径边界、哈希和对比度共享实现|
-|`tests/run.py`|16 组工程／渲染／编辑／接口／浏览器回归（163 条断言）|
-|`tests/fixtures.py`|运行时生成的合成语料（含六种图片职责）与图片|
-|`references/`|按需读取的素材、平台与发布边界|
-|`AUDIT.md`|V4 变更、优化前后评估、文件账、测试与未验证项|
+|`scripts/publish.py`|预检、素材、草稿回读、单次授权、脱敏证据|
+|`scripts/extract_docx.py`|Word 抽取与丢失阻断|
+|`scripts/safety.py`|路径边界、哈希、对比度|
+|`tests/`|合成回归、浏览器证据、开发评估工具|
+|`evaluation/`|六类真实来源原稿/优化稿、许可、台账、结果|
+|`references/`|素材、平台、发布边界（按需读取）|
+|`examples/`|可渲染交接示例|
+|`AUDIT.md`|V5 变更、删除/合并/保留账、实测与未验证项|
 
-运行时仍保留 Markdown 唯一成稿、素材路径安全、发布单次授权、草稿回读和完整性校验。SHA-256 用于发现变化，不是签名或来源认证。
-
-[MIT](LICENSE.txt) © 2026 cpikeo
+[MIT](LICENSE.txt) © 2026 cpikeo。第三方评估摘录遵守各自许可，见 evaluation/README.md。

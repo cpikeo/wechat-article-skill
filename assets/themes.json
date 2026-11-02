@@ -1,11 +1,9 @@
 {
   "paper": {
     "name": "静纸 Silent Paper",
-    "intent": "理性分析：用编号、基线与开放留白呈现论点和证据",
-    "concept": "编辑部工作纸。信息靠对齐与基线分级，不靠装饰；首屏是一个带短基线的主张入口。",
     "text": "#1F1D1A",
     "sub": "#6A6560",
-    "muted": "#776F66",
+    "muted": "#6B645C",
     "line": "#E6E1D8",
     "field": "#F4F1EB",
     "accent": "#4F5B4C",
@@ -17,7 +15,6 @@
     "toc_label": "目录",
     "grid": {
       "inset": 0,
-      "paragraph": "space",
       "indent": 0,
       "chapter_gap": 34,
       "paragraph_gap": 20,
@@ -34,22 +31,24 @@
     "data": "columns",
     "table": "open",
     "list": "index",
-    "seal": "",
     "type": {
       "heading_size": 20,
       "heading_weight": 600,
       "heading_leading": 1.5,
-      "chapter_gap": 34,
-      "paragraph_gap": 20
-    }
+      "lead_size": 22,
+      "lead_weight": 700,
+      "lead_leading": 1.5,
+      "quote_size": 18,
+      "h3_size": 16,
+      "data_size": 24
+    },
+    "body_font": "sans"
   },
   "letter": {
     "name": "暖信笺 Warm Letter",
-    "intent": "温暖叙事：让人物声音、段落呼吸和柔和转场承担情绪",
-    "concept": "一封写得好的长信。段首缩进代替空行，段落连续呼吸；没有编号，只有人声和停顿。",
     "text": "#3A2C22",
     "sub": "#7A6353",
-    "muted": "#846D59",
+    "muted": "#765F4D",
     "line": "#EDDCC8",
     "field": "#F7EDE1",
     "accent": "#A24A33",
@@ -61,7 +60,6 @@
     "toc_label": "这篇想和你聊聊",
     "grid": {
       "inset": 0,
-      "paragraph": "indent",
       "indent": 2,
       "chapter_gap": 40,
       "paragraph_gap": 8,
@@ -78,22 +76,24 @@
     "data": "stack",
     "table": "warm",
     "list": "dash",
-    "seal": "",
     "type": {
       "heading_size": 21,
       "heading_weight": 500,
       "heading_leading": 1.6,
-      "chapter_gap": 40,
-      "paragraph_gap": 8
-    }
+      "lead_size": 19,
+      "lead_weight": 500,
+      "lead_leading": 1.9,
+      "quote_size": 19,
+      "h3_size": 17,
+      "data_size": 22
+    },
+    "body_font": "sans"
   },
   "ink": {
     "name": "酌墨 Wine Ink",
-    "intent": "东方评论：以衬线、圆章、首字与收束的反色强调建立书卷气",
-    "concept": "书页，不是网页。留白收进两侧，首字撑开入口，章节以圆章起头，主张以反色收束。",
     "text": "#17140F",
     "sub": "#6A6058",
-    "muted": "#7A6E64",
+    "muted": "#6B6057",
     "line": "#E4D8CE",
     "field": "#F3EBE4",
     "accent": "#6E2B26",
@@ -104,8 +104,7 @@
     "radius": 0,
     "toc_label": "本期内容",
     "grid": {
-      "inset": 4,
-      "paragraph": "space",
+      "inset": 8,
       "indent": 0,
       "chapter_gap": 42,
       "paragraph_gap": 24,
@@ -122,22 +121,24 @@
     "data": "ledger",
     "table": "ink",
     "list": "chinese",
-    "seal": "酌",
     "type": {
       "heading_size": 22,
       "heading_weight": 700,
       "heading_leading": 1.5,
-      "chapter_gap": 42,
-      "paragraph_gap": 24
-    }
+      "lead_size": 19,
+      "lead_weight": 400,
+      "lead_leading": 1.95,
+      "quote_size": 18,
+      "h3_size": 18,
+      "data_size": 22
+    },
+    "body_font": "serif"
   },
   "frost": {
     "name": "北霜 North Frost",
-    "intent": "新闻报道：以报表式章标、紧凑行距和清晰数据层级保持冷静",
-    "concept": "电讯稿与报表。每一节以编号与横线编号，小一号正文换取更高信息密度，数据靠右对齐。",
     "text": "#161C20",
     "sub": "#5A656D",
-    "muted": "#66737A",
+    "muted": "#58656C",
     "line": "#D5DEE2",
     "field": "#E9EFF1",
     "accent": "#2F4B4F",
@@ -149,7 +150,6 @@
     "toc_label": "本期要点",
     "grid": {
       "inset": 0,
-      "paragraph": "space",
       "indent": 0,
       "chapter_gap": 28,
       "paragraph_gap": 18,
@@ -166,25 +166,27 @@
     "data": "ticker",
     "table": "report",
     "list": "report",
-    "seal": "",
     "type": {
       "heading_size": 19,
       "heading_weight": 700,
       "heading_leading": 1.45,
-      "chapter_gap": 28,
-      "paragraph_gap": 18
-    }
+      "lead_size": 17,
+      "lead_weight": 500,
+      "lead_leading": 1.75,
+      "quote_size": 17,
+      "h3_size": 15,
+      "data_size": 24
+    },
+    "body_font": "sans"
   },
   "bone": {
     "name": "素作 Atelier Bone",
-    "intent": "器物工艺：以台纸图版、衬线标题和细密规格线呈现材质与细节",
-    "concept": "标本台纸。材料放在有边界的浅色台面上，说明文字用衬线细排，节奏是六套里最慢的。",
     "text": "#2A2723",
     "sub": "#6D675E",
-    "muted": "#797164",
+    "muted": "#6B6459",
     "line": "#E2DBCC",
     "field": "#F0ECE3",
-    "accent": "#8B7A58",
+    "accent": "#6F6043",
     "dark": "#2A2723",
     "on_dark": "#F5F1E9",
     "display": "serif",
@@ -193,7 +195,6 @@
     "toc_label": "目录",
     "grid": {
       "inset": 6,
-      "paragraph": "space",
       "indent": 0,
       "chapter_gap": 46,
       "paragraph_gap": 26,
@@ -210,22 +211,24 @@
     "data": "specimen",
     "table": "atelier",
     "list": "atelier",
-    "seal": "",
     "type": {
       "heading_size": 22,
       "heading_weight": 500,
       "heading_leading": 1.65,
-      "chapter_gap": 46,
-      "paragraph_gap": 26
-    }
+      "lead_size": 18,
+      "lead_weight": 400,
+      "lead_leading": 1.95,
+      "quote_size": 18,
+      "h3_size": 17,
+      "data_size": 24
+    },
+    "body_font": "sans"
   },
   "folio": {
     "name": "特稿 Feature Folio",
-    "intent": "国际特稿：用强章标、图片边缘和紧凑反色制造标题与内容的张力",
-    "concept": "杂志开篇。入口是一句近标题级的主张，章节由超大编号压场，信息块用硬边与反色制造张力。",
     "text": "#0F0F0F",
     "sub": "#5A5A58",
-    "muted": "#71716B",
+    "muted": "#62625C",
     "line": "#DFDAD1",
     "field": "#EFECE6",
     "accent": "#8B3029",
@@ -237,7 +240,6 @@
     "toc_label": "特稿目录",
     "grid": {
       "inset": 0,
-      "paragraph": "space",
       "indent": 0,
       "chapter_gap": 38,
       "paragraph_gap": 20,
@@ -254,13 +256,17 @@
     "data": "folio",
     "table": "feature",
     "list": "folio",
-    "seal": "",
     "type": {
       "heading_size": 24,
       "heading_weight": 700,
       "heading_leading": 1.35,
-      "chapter_gap": 38,
-      "paragraph_gap": 20
-    }
+      "lead_size": 24,
+      "lead_weight": 700,
+      "lead_leading": 1.55,
+      "quote_size": 20,
+      "h3_size": 18,
+      "data_size": 30
+    },
+    "body_font": "sans"
   }
 }

@@ -47,7 +47,7 @@ CORPUS = {
     "composition": {
         "baseline": {"theme": "folio", "imgs": 7, "peak": False, "toc": False, "layers": 2},
         "md": """---
-title: 合成用例|六种图片职责
+title: 合成用例|图片职责矩阵
 theme: folio
 density: standard
 author: 回归作者
@@ -304,3 +304,52 @@ if __name__ == "__main__":
     import tempfile
     d = build(sys.argv[1] if len(sys.argv) > 1 else tempfile.mkdtemp(prefix="wechat-fixtures-"))
     print(d)
+
+
+# 开发专用同稿人格对照；不是运行时模板。
+PERSONALITY_MD = """---
+title: 留下的东西|比发出去的更重要
+author: 甲木
+bio: 六人格同稿对照；数值与图示均为演示
+---
+
+> 一篇文章的气质，不在配色，而在什么被允许发出声音。
+
+## 判断在主题之前
+
+主题是人格，不是皮肤。同一段文字换人格，标题、引文、信息结构与留白都应改变；如果只换了颜色，判断没有发生。
+
+> 能不用就不用，能弱化就弱化。
+> —— 编辑台
+
+### 三个动作
+
+1. 先确认读者要解决的问题。
+2. 再安排主张、证据和限制。
+3. 最后选择图像与版式。
+
+## 视觉权重服从信息权重
+
+::: data
+3｜可删元素
+2｜证据层级
+4｜移动端检查宽度
+:::
+
+::: note 演示口径
+样张计数仅测试信息结构，非统计结果。
+:::
+
+| 信息 | 该回答的问题 |
+|---|---|
+| 主张 | 文章要读者理解什么 |
+| 证据 | 这项判断凭什么成立 |
+
+![抽象构图示意；非真实数据](specimen.svg "解释 plate")
+
+---
+
+::: peak
+克制不是少，是每一处都有职责。
+:::
+"""

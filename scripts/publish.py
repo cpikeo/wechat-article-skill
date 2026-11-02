@@ -317,6 +317,28 @@ def verify_draft(data, title, content, thumb_media_id):
 
 # ---------- 5. 发布（须核对实际账号权限） ----------
 
+def write_readback_evidence(directory, media_id, data, expected):
+    """保存脱敏回读对照；只证明 API 字段，后台重开/手机端仍 UNVERIFIED。"""
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", media_id or ""):
+        raise ValueError("media_id 不能用作证据目录名")
+    item = (data.get("news_item") or [{}])[0] if isinstance(data, dict) else {}
+    fields = {}
+    for name, want in expected.items():
+        got = item.get(name)
+        fields[name] = {"match": got == want, "expected_sha256": hashlib.sha256(str(want).encode()).hexdigest(),
+                        "observed_sha256": hashlib.sha256(str(got).encode()).hexdigest(),
+                        "observed": got if name in ("title", "author", "digest", "thumb_media_id", "content_source_url", "need_open_comment", "only_fans_can_comment") else None}
+    root = os.path.join(directory, media_id)
+    os.makedirs(root, exist_ok=True)
+    payload = {"media_id": media_id, "time": datetime.now(timezone.utc).isoformat(),
+               "api_readback": "PASS" if all(f["match"] for f in fields.values()) else "FAIL",
+               "fields": fields, "backend_save_reopen": "UNVERIFIED", "wechat_mobile": "UNVERIFIED",
+               "note": "仅本地保存的 API 回读对照；不含 token；不等于后台或真机验收。"}
+    with open(os.path.join(root, "draft-readback.json"), "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+    return payload
+
+
 def submit_publish(access_token, media_id):
     """提交发布；48001提示接口未授权，按实际账号核对，不推断认证身份。"""
     url = f"{API_BASE}/freepublish/submit?access_token={access_token}"
@@ -438,10 +460,10 @@ def preflight(html_path, s):
             ok = False
             print("  必须改 · 一致性校验失败：", e)
     elif os.path.isfile(side_path):
-        print("  注意 · 旧版记录缺少 V3 渲染器／主题配置一致性记录，建议重渲染")
+        print("  注意 · 旧版记录缺少当前渲染器／主题配置一致性记录，建议重渲染")
         if s["submit"]:
             ok = False
-            print("  必须改 · 正式提交前须用 V3 重渲染")
+            print("  必须改 · 正式提交前须用当前版本重渲染")
     print("预检（不调用接口）")
     for m in must:
         print("  必须改 ·", m)
@@ -485,7 +507,8 @@ def preflight(html_path, s):
 def publish_html_article(appid, secret, html_path, cover_path, title, author=None, digest=None,
                          source_url=None, open_comment=True, fans_only=False,
                          material_cache=MATERIAL_CACHE_DEFAULT,
-                         do_submit=False, submit_confirm=None, poll_timeout=600, auto_enable_switch=False, audit=None):
+                         do_submit=False, submit_confirm=None, poll_timeout=600, auto_enable_switch=False, audit=None,
+                         evidence_dir=None):
     audit = audit or (lambda event, **fields: None)
     if do_submit and api_title(submit_confirm or "") != api_title(title):
         raise ValueError(f"正式发布需要本次运行的单次确认：--confirm-title 必须与本次标题逐字一致"
@@ -531,7 +554,11 @@ def publish_html_article(appid, secret, html_path, cover_path, title, author=Non
     print(f"  草稿 media_id = {media_id}")
 
     try:
-        differences = verify_draft(read_draft(token, media_id), title, html, thumb_media_id)
+        readback = read_draft(token, media_id)
+        differences = verify_draft(readback, title, html, thumb_media_id)
+        if evidence_dir:
+            write_readback_evidence(evidence_dir, media_id, readback,
+                                    {"title": api_title(title), "content": html, "thumb_media_id": thumb_media_id})
     except Exception as e:
         raise RuntimeError(f"草稿已创建 media_id={media_id}，回读失败；请先在后台核对，勿重复建稿：{type(e).__name__}") from None
     if differences:
@@ -581,6 +608,15 @@ def load_config(explicit=None):
                 cfg = json.load(f)
                 if not isinstance(cfg, dict):
                     raise ValueError("config 必须是JSON对象")
+                allowed = {"_说明", "appid", "secret", "author", "source_url", "need_open_comment", "only_fans_can_comment", "submit"}
+                unknown = set(cfg) - allowed
+                if unknown:
+                    raise ValueError(f"config 非法字段：{', '.join(sorted(unknown))}")
+                for key in ("appid", "secret", "author", "source_url"):
+                    if key in cfg and not isinstance(cfg[key], str):
+                        raise ValueError(f"{key} 必须是字符串")
+                if "_说明" in cfg and not isinstance(cfg["_说明"], (str, dict)):
+                    raise ValueError("_说明 必须是字符串或对象")
                 for key in ("submit", "need_open_comment", "only_fans_can_comment"):
                     if key in cfg and not isinstance(cfg[key], bool):
                         raise ValueError(f"{key} 必须是true/false，不能是字符串")
@@ -650,6 +686,7 @@ def main():
     ap.add_argument("--delete-material", default=None, metavar="MEDIA_ID",
                     help="只删除指定永久素材（不可恢复；先用 --list-materials 核对 media_id）")
     ap.add_argument("--audit-log", default=".wechat_publish_audit.jsonl", help="本地操作审计 JSONL，不含凭证和正文；默认当前目录")
+    ap.add_argument("--evidence-dir", default=None, help="可选：保存脱敏草稿回读对照 JSON；后台重开与手机端仍须单独验收")
     ap.add_argument("--no-reuse-cover", action="store_true", help="不复用缓存的永久素材，封面强制重传")
     ap.add_argument("--material-cache", default=MATERIAL_CACHE_DEFAULT,
                     help=f"封面复用映射文件（sha256→media_id），默认 {MATERIAL_CACHE_DEFAULT}")
@@ -745,6 +782,7 @@ def main():
             poll_timeout=args.poll_timeout,
             auto_enable_switch=args.enable_draft_switch,
             audit=audit,
+            evidence_dir=args.evidence_dir,
         )
         audit("completed")
     except (WeChatAPIError, ValueError, OSError, RuntimeError) as e:

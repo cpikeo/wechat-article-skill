@@ -5,3 +5,6 @@ assets/shots/
 config.json
 
 .wechat_publish_audit.jsonl
+
+# local review evidence
+wechat-v5-blind/

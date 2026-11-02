@@ -4,7 +4,6 @@
     render.py article.md [--theme paper|letter|ink|frost|bone|folio] [-o out.html]
     render.py article.md --against 原稿.md     改写前后的事实单元与台账比对
     render.py article.md --deliver 交付目录     一次产出源稿/正文/预览/meta/修改记录/验收
-    render.py --specimen [-o assets/themes.html] 六格人格对照板（入库，--specimen 重新生成）
 
 产出 {stem}_{theme}.html 与 {stem}_{theme}_预览.html（预览另含封面两种裁切）。
 语法见 SKILL.md。退出码 1 = 存在「必须改」。
@@ -31,7 +30,7 @@ from editorial import (audit, compare_facts, doc_len,  # noqa: E402
                        plain, peak_text, render_report, strategy_notes)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-SKILL_VERSION = "4.0.0"
+SKILL_VERSION = "5.0.0"
 THEMES_PATH = os.path.join(HERE, "..", "assets", "themes.json")
 with open(THEMES_PATH, "rb") as _theme_file:
     THEME_CONFIG_BYTES = _theme_file.read()
@@ -42,7 +41,7 @@ SERIF = "'Songti SC','STSong','SimSun','Noto Serif CJK SC',serif"
 MONO = "'SF Mono',Menlo,Consolas,monospace"
 CJK = "\u4e00-\u9fff\u3400-\u4dbf"
 # 默认阅读字号，非必须遵守的审美配额
-MICRO, SMALL, BODY, LEAD, DISPLAY, TITLE = 13, 14, 16, 18, 20, 24
+MICRO, SMALL, BODY, DISPLAY, TITLE = 13, 14, 16, 20, 24
 
 # 正文视觉职责（封面单独由 frontmatter 承担）。说不出职责 → 删。
 ROLES = {"锚点", "解释", "证据", "对比", "结构", "场景", "隐喻", "停顿", "数据",
@@ -72,19 +71,41 @@ def typo(s):
         re.split(r"(`[^`]+`|\[[^\]]+\]\([^)\s]+\)|https?://[^\s<>\u3000，；。！？）\"]+)", s)))
 
 
+FRONTMATTER_FIELDS = {
+    "title", "theme", "density", "article_type", "audience", "reading_context", "purpose", "thesis",
+    "composition", "visual_concept", "information_shape", "asset_strategy", "mobile_risk", "design_rationale",
+    "cover", "kicker", "deck", "author", "date", "toc", "source", "removed_facts", "digest", "bio", "cta",
+}
+
+
 def parse(md):
     md = md.lstrip("\ufeff").replace("\r\n", "\n").replace("\r", "\n")
     meta, blocks = {}, []
-    m = re.match(r"^---\n(.*?)\n---\n", md, re.S)
-    if m:
-        for ln in m.group(1).splitlines():
-            if ":" in ln:
-                k, v = ln.split(":", 1)
-                # 行内注释（# 前须有空白，不伤 URL fragment）；文档样张带注释，照抄不能炸
-                v = v.strip()
-                quoted = re.fullmatch(r"([\"'])(.*?)\1(?:\s+#.*)?", v)
-                v = quoted[2] if quoted else re.sub(r"\s+#.*$", "", v).strip()
-                meta[k.strip()] = v
+    if md.startswith("---\n"):
+        m = re.match(r"^---\n(.*?)\n---(?:\n|$)", md, re.S)
+        if not m:
+            raise ValueError("frontmatter 未闭合")
+        for line_no, ln in enumerate(m.group(1).splitlines(), 2):
+            if not ln.strip() or ln.lstrip().startswith("#"):
+                continue
+            if ln[:1].isspace() or not re.match(r"^[a-z_]+:", ln):
+                raise ValueError(f"frontmatter 第 {line_no} 行只支持顶格 key: 单行值；不支持嵌套 YAML")
+            k, v = ln.split(":", 1)
+            if k not in FRONTMATTER_FIELDS:
+                raise ValueError(f"frontmatter 第 {line_no} 行非法字段：{k}")
+            if k in meta:
+                raise ValueError(f"frontmatter 第 {line_no} 行重复字段：{k}")
+            v = v.strip()
+            quoted = re.fullmatch(r"([\"'])(.*?)\1(?:\s+#.*)?", v)
+            if quoted:
+                v = quoted[2]
+            else:
+                if v.startswith(("[", "{", "|", ">")):
+                    raise ValueError(f"frontmatter 字段 {k} 不支持数组、对象或多行 YAML；请使用单行文本")
+                v = re.sub(r"\s+#.*$", "", v).strip()
+            meta[k] = v
+        if "toc" in meta and meta["toc"].lower() not in ("true", "false", "yes", "no", "1", "0"):
+            raise ValueError("frontmatter toc 只接受 true/false/yes/no/1/0")
         md = md[m.end():]
     lines, i, para = md.splitlines(), 0, []
 
@@ -124,6 +145,8 @@ def parse(md):
             flush()
             lvl, text = len(s.split(" ")[0]), s.split(" ", 1)[1].strip()
             if lvl == 1:
+                if meta.get("title") and meta["title"] != text:
+                    raise ValueError(f"第 {i + 1} 行：H1 与 frontmatter title 不一致，不能静默丢弃标题")
                 meta.setdefault("title", text)
             else:
                 blocks.append(("h2" if lvl == 2 else "h3", text))
@@ -245,6 +268,7 @@ class R:
         self.cap = self.grid.get("caption", MICRO)
         self.inset = self.grid.get("inset", 0)
         self.font = SERIF if t["display"] == "serif" else SANS
+        self.reading_font = SERIF if t.get("body_font") == "serif" else SANS
 
     def g(self, px):
         return round(px * self.k)
@@ -252,12 +276,29 @@ class R:
     def leaf(self, s):
         return BR if not s else f'<span leaf="">{H.escape(s, quote=False)}</span>'
 
+    def prose_leaf(self, s):
+        atoms = re.compile(r"(?:(?:19|20)\d{2}年)?(?:\d{1,2}月)?(?:\d{1,2}日)?|[+\-−]?\d[\d.,，]*(?:%|％|个百分点|亿元|万元|亿美元|美元|小时|分钟|万人|元|倍|年|天|人|家|件|台|公里|千米|米)?")
+        out, pos = [], 0
+        for m in atoms.finditer(s):
+            token = m.group()
+            if not re.search(r"\d", token) or text_px(token, self.body) > 240:
+                continue
+            # URL/资源地址不是 prose 数值；整段保护，避免把 query 数字包成不可断行原子。
+            if re.search(r"https?://[^\s<>]*$", s[:m.start()]):
+                continue
+            if m.start() > pos:
+                out.append(self.leaf(s[pos:m.start()]))
+            out.append(f'<span leaf="" style="white-space:nowrap;">{H.escape(token)}</span>')
+            pos = m.end()
+        out.append(self.leaf(s[pos:]))
+        return "".join(out)
+
     def inline(self, s, normalize=True):
         t, out, pos = self.t, [], 0
         s = typo(s) if normalize else s
         for m in INLINE.finditer(s):
             if m.start() > pos:
-                out.append(self.leaf(s[pos:m.start()]))
+                out.append(self.prose_leaf(s[pos:m.start()]))
             code, mark, bold, u, strike, ltext, url = m.groups()
             if code:
                 out.append(f'<span style="font-family:{MONO};font-size:{SMALL}px;background:{t["field"]};'
@@ -277,7 +318,7 @@ class R:
                 out.append(f'<a href="{H.escape(url, quote=True)}" style="color:{t["text"]};text-decoration:underline;">{self.leaf(ltext)}</a>')
             pos = m.end()
         if pos < len(s):
-            out.append(self.leaf(s[pos:]))
+            out.append(self.prose_leaf(s[pos:]))
         return "".join(out)
 
     def p(self, inner, size=None, color=None, extra=""):
@@ -307,7 +348,7 @@ class R:
         hs = self.type["heading_size"]
         style = (f"font-weight:{self.type['heading_weight']};line-height:{self.type['heading_leading']};"
                  f"font-family:{self.font};")
-        gap = f'margin:{self.g(self.grid.get("chapter_gap", self.type["chapter_gap"]))}px 0 {self.g(14)}px;'
+        gap = f'margin:{self.g(self.grid["chapter_gap"])}px 0 {self.g(14)}px;'
         if mode == "index" and numbered:
             # 工作纸索引：小号编号与标题同基线，不做装饰线。
             head = (f'<span style="font-size:{SMALL}px;color:{t["muted"]};font-weight:500;'
@@ -339,18 +380,18 @@ class R:
 
     def h3(self, text):
         t, mode = self.t, self.t["h3"]
-        size, weight, extra = self.body, 700, f"font-family:{self.font};"
+        size, weight, extra = self.type["h3_size"], 700, f"font-family:{self.font};"
         if mode == "soft":
-            size, weight, extra = 17, 500, f"font-family:{self.font};color:{t['sub']};"
+            weight, extra = 500, f"font-family:{self.font};color:{t['sub']};"
         elif mode == "serif":
-            size, weight = 18, 600
+            weight = 600
         elif mode == "report":
             extra += f"padding-bottom:6px;border-bottom:1px solid {t['line']};"
         elif mode == "atelier":
-            size, weight = 17, 500
+            weight = 500
             extra += "letter-spacing:0.04em;"
         elif mode == "folio":
-            size, weight = 18, 700
+            weight = 700
             extra += f"padding-left:10px;border-left:3px solid {t['accent']};"
         return (f'<section style="margin:{self.g(26)}px 0 {self.g(10)}px;">'
                 + self.p(self.inline(text), size, t["text"], f"font-weight:{weight};{extra}") + "</section>")
@@ -361,7 +402,7 @@ class R:
         if indent:
             # 段首缩进是「文本流」的人格：段间不再用空行切开，靠缩进与行距分句。
             extra += f"text-indent:{indent:g}em;"
-        gap = self.grid.get("paragraph_gap", self.type["paragraph_gap"])
+        gap = self.grid["paragraph_gap"]
         return (f'<section style="margin:0 0 {self.g(gap)}px;">'
                 + self.p(self.inline(text), extra=extra) + "</section>")
 
@@ -396,36 +437,40 @@ class R:
         t = self.t
         if weight == "lead":
             inner = self.inline(text, normalize=False)
+            lead_size = self.type["lead_size"]
+            if len(plain(text)) > 48:
+                lead_size = min(lead_size, 22)
+            lead_style = f'line-height:{self.type["lead_leading"]};font-weight:{self.type["lead_weight"]};'
             cite = (self.p(self.leaf("—— " + src), self.cap, t["muted"], "margin-top:10px;")
                     if src else "")
             mode = t["lead"]
             if mode == "brief":
                 return (f'<section style="margin:{self.g(8)}px 0 {self.g(26)}px;padding-top:14px;'
                         f'border-top:2px solid {t["accent"]};">'
-                        + self.p(inner, 22, t["text"], f"line-height:1.5;font-weight:700;font-family:{self.font};")
+                        + self.p(inner, lead_size, t["text"], lead_style + f"font-family:{self.font};")
                         + cite + "</section>")
             if mode == "letter":
                 return (f'<section style="margin:{self.g(4)}px 0 {self.g(30)}px;padding:0 2px;">'
                         f'<section style="width:22px;height:1px;background:{t["accent"]};margin-bottom:12px;">{BR}</section>'
-                        + self.p(inner, 19, t["text"], f"line-height:2;font-family:{self.font};font-weight:500;")
+                        + self.p(inner, lead_size, t["text"], lead_style + f"font-family:{self.font};font-weight:500;")
                         + cite + "</section>")
             if mode == "ink":
                 return (f'<section style="margin:{self.g(8)}px 0 {self.g(30)}px;padding:16px 0;'
                         f'border-top:1px solid {t["line"]};border-bottom:1px solid {t["line"]};">'
-                        + self.p(self._dropcap(text), 19, t["text"], f"line-height:1.95;font-family:{SERIF};")
+                        + self.p(self._dropcap(text), lead_size, t["text"], lead_style + f"font-family:{SERIF};")
                         + cite + "</section>")
             if mode == "report":
                 return (f'<section style="margin:{self.g(8)}px 0 {self.g(22)}px;padding-bottom:14px;'
                         f'border-bottom:1px solid {t["text"]};">'
-                        + self.p(inner, 17, t["text"], "line-height:1.75;font-weight:500;") + cite + "</section>")
+                        + self.p(inner, lead_size, t["text"], lead_style) + cite + "</section>")
             if mode == "plate":
                 return (f'<section style="margin:{self.g(8)}px 0 {self.g(30)}px;padding:18px 16px;'
                         f'background:{t["field"]};">'
-                        + self.p(inner, 18, t["text"], f"line-height:1.95;font-family:{SERIF};") + cite + "</section>")
+                        + self.p(inner, lead_size, t["text"], lead_style + f"font-family:{SERIF};") + cite + "</section>")
             return (f'<section style="margin:{self.g(6)}px 0 {self.g(30)}px;">'
                     f'<section style="width:56px;height:4px;background:{t["accent"]};margin-bottom:16px;">{BR}</section>'
-                    + self.p(self._lead_lines(text, 24), 24, t["text"],
-                             f"line-height:1.55;font-weight:700;font-family:{self.font};"
+                    + self.p(self._lead_lines(text, lead_size), lead_size, t["text"],
+                             lead_style + f"font-family:{self.font};"
                              f"letter-spacing:-0.01em;") + cite + "</section>")
         if weight == "quote":
             cite = (self.p(self.leaf(f"—— {src}"), self.cap, t["muted"], "margin-top:10px;")
@@ -434,30 +479,30 @@ class R:
             body = self.inline(text, normalize=False)
             if mode == "voice":
                 return (f'<section style="margin:{self.g(28)}px 0;padding:0 4px;">'
-                        + self.p(body, 19, t["text"], "font-weight:500;line-height:1.95;"
+                        + self.p(body, self.type["quote_size"], t["text"], "font-weight:500;line-height:1.95;"
                                                      "text-indent:-1em;padding-left:1em;") + cite + "</section>")
             if mode == "serif":
                 return (f'<section style="margin:{self.g(28)}px 0;padding:4px 2px 4px 16px;'
                         f'border-left:2px solid {t["accent"]};">'
-                        + self.p(body, 18, t["sub"], f"font-weight:500;line-height:2;font-family:{SERIF};")
+                        + self.p(body, self.type["quote_size"], t["sub"], f"font-weight:500;line-height:2;font-family:{SERIF};")
                         + cite + "</section>")
             if mode == "report":
                 return (f'<section style="margin:{self.g(24)}px 0;padding:12px 0;'
                         f'border-top:1px solid {t["line"]};border-bottom:1px solid {t["line"]};">'
-                        + self.p(body, 17, t["text"], "font-weight:600;line-height:1.8;") + cite + "</section>")
+                        + self.p(body, self.type["quote_size"], t["text"], "font-weight:600;line-height:1.8;") + cite + "</section>")
             if mode == "atelier":
                 return (f'<section style="margin:{self.g(30)}px 8%;padding:14px 0;'
                         f'border-top:1px solid {t["line"]};">'
-                        + self.p(body, 18, t["sub"], f"font-weight:500;line-height:2;font-family:{SERIF};"
+                        + self.p(body, self.type["quote_size"], t["sub"], f"font-weight:500;line-height:2;font-family:{SERIF};"
                                                      f"letter-spacing:0.02em;") + cite + "</section>")
             if mode == "folio":
                 return (f'<section style="margin:{self.g(30)}px 0;padding-top:14px;'
                         f'border-top:4px solid {t["text"]};">'
-                        + self.p(body, 20, t["text"], f"font-weight:700;line-height:1.6;font-family:{self.font};")
+                        + self.p(body, self.type["quote_size"], t["text"], f"font-weight:700;line-height:1.6;font-family:{self.font};")
                         + cite + "</section>")
             return (f'<section style="margin:{self.g(26)}px 0;padding:0 4px 0 14px;'
                     f'border-left:2px solid {t["accent"]};">'
-                    + self.p(body, 18, t["sub"], "font-weight:500;line-height:1.9;") + cite + "</section>")
+                    + self.p(body, self.type["quote_size"], t["sub"], "font-weight:500;line-height:1.9;") + cite + "</section>")
         style, fam = t["peak"], f"font-family:{self.font};"
         if style in ("dark", "compact"):
             inner = self.p(self.inline(text, normalize=False), DISPLAY, t["on_dark"],
@@ -500,8 +545,13 @@ class R:
             value, _, label = line.replace("|", "｜").partition("｜")
             items.append((value.strip(), label.strip()))
         mode, chunks = t["data"], []
-        if mode == "columns":
-            per = len(items) if 0 < len(items) <= 3 else 2
+        size = self.type["data_size"]
+        avail = MOBILE_TABLE_PX - 2 * self.inset
+        per = len(items) if 0 < len(items) <= 3 else 2
+        column_room = (avail - 16 * (per - 1)) / per
+        wide_value = any(text_px(v, size) + 4 > avail * 0.34 for v, _ in items)
+        if mode in ("columns", "specimen") and any(text_px(v, size) + 4 > column_room for v, _ in items):
+            mode = "stack"
             for i in range(0, len(items), per):
                 cells = "".join(
                     f'<section style="flex:1;min-width:0;padding-top:12px;border-top:1px solid {t["text"]};">'
@@ -514,7 +564,7 @@ class R:
             for value, label in items:
                 chunks.append(f'<section style="display:flex;gap:14px;align-items:baseline;padding:13px 0;'
                               f'border-top:1px solid {t["line"]};">'
-                              + self.p(self.leaf(value), 22, t["accent"],
+                              + self.p(self.leaf(value), size, t["accent"],
                                        f"width:34%;flex-shrink:0;font-weight:600;line-height:1.35;font-family:{self.font};font-variant-numeric:tabular-nums;")
                               + self.p(self.inline(label), SMALL, t["sub"], "flex:1;min-width:0;line-height:1.8;") + "</section>")
         elif mode == "ledger":
@@ -522,13 +572,13 @@ class R:
                 chunks.append(f'<section style="display:flex;gap:16px;align-items:baseline;padding:12px 0;'
                               f'border-bottom:1px solid {t["line"]};">'
                               + self.p(self.inline(label), SMALL, t["sub"], "flex:1;min-width:0;")
-                              + self.p(self.leaf(value), 22, t["text"],
+                              + self.p(self.leaf(value), size, t["text"],
                                        f"flex-shrink:0;font-weight:600;line-height:1.3;font-family:{SERIF};font-variant-numeric:tabular-nums;") + "</section>")
         elif mode == "ticker":
             for value, label in items:
                 chunks.append(f'<section style="display:flex;gap:12px;align-items:center;padding:10px 0;'
                               f'border-top:1px solid {t["text"]};">'
-                              + self.p(self.leaf(value), 24, t["text"],
+                              + self.p(self.leaf(value), size, t["text"],
                                        f"width:38%;flex-shrink:0;font-weight:700;line-height:1.2;font-family:{self.font};font-variant-numeric:tabular-nums;")
                               + self.p(self.inline(label), SMALL, t["sub"], "flex:1;min-width:0;line-height:1.7;") + "</section>")
         elif mode == "specimen":
@@ -537,7 +587,7 @@ class R:
                 cells = "".join(
                     f'<section style="flex:1;min-width:0;padding:16px 10px 14px;'
                     f'border-top:1px solid {t["line"]};border-bottom:1px solid {t["line"]};">'
-                    + self.p(self.leaf(value), 24, t["text"],
+                    + self.p(self.leaf(value), size, t["text"],
                              f"font-weight:500;line-height:1.3;font-family:{SERIF};font-variant-numeric:tabular-nums;")
                     + self.p(self.inline(label), self.cap, t["muted"], "margin-top:8px;") + "</section>"
                     for value, label in items[i:i + per])
@@ -546,9 +596,17 @@ class R:
             for value, label in items:
                 chunks.append(f'<section style="display:flex;gap:16px;align-items:flex-end;padding:14px 0;'
                               f'border-top:3px solid {t["text"]};">'
-                              + self.p(self.leaf(value), 30, t["accent"],
+                              + self.p(self.leaf(value), size, t["accent"],
                                        f"width:42%;flex-shrink:0;font-weight:700;line-height:1;font-family:{self.font};font-variant-numeric:tabular-nums;letter-spacing:-0.02em;")
                               + self.p(self.inline(label), SMALL, t["text"], "flex:1;min-width:0;font-weight:600;line-height:1.65;") + "</section>")
+        if wide_value:
+            chunks = []
+            for value, label in items:
+                border = f"border-top:{3 if mode == 'folio' else 1}px solid {t['text' if mode in ('ticker', 'folio') else 'line']};"
+                chunks.append(f'<section style="padding:12px 0;{border}">'
+                    + self.p(self.leaf(value), size, t["accent"] if mode in ("stack", "folio") else t["text"],
+                             f"font-weight:{self.type['lead_weight']};line-height:1.35;font-family:{self.font};font-variant-numeric:tabular-nums;white-space:nowrap;")
+                    + self.p(self.inline(label), SMALL, t["sub"], "margin-top:6px;line-height:1.7;") + "</section>")
         return (f'<section style="margin:{self.g(36)}px 0 '
                 f'{below if below is not None else self.g(36)}px;">{"".join(chunks)}</section>')
 
@@ -644,18 +702,20 @@ class R:
     def table_stack(self, rows, below=None):
         """窄屏记录卡：一行一条记录，字段名与值成对，顺序与表格一致。"""
         t, head = self.t, rows[0]
+        mode = t["table"]
+        record_label = {"open": "条目", "warm": "第", "ink": "项", "report": "记录", "atelier": "规格", "feature": "焦点"}.get(mode, "记录")
         blocks = []
         for n, row in enumerate(rows[1:], 1):
             cells = []
             for label, value in zip(head, row):
                 cells.append(
-                    f'<section style="display:flex;gap:12px;padding:5px 0;">'
-                    + self.p(self.leaf(label), self.cap, t["muted"], "width:30%;flex-shrink:0;line-height:1.7;")
+                    f'<section style="display:flex;gap:12px;padding:{8 if mode == 'atelier' else 5}px 0;">'
+                    + self.p(self.leaf(label), self.cap, t["muted"], "width:30%;flex-shrink:0;min-width:0;line-height:1.7;")
                     + self.p(self.inline(value), SMALL, t["text"],
                              "flex:1;min-width:0;line-height:1.7;font-variant-numeric:tabular-nums;") + "</section>")
             blocks.append(f'<section style="padding:12px 0 10px;border-top:1px solid {t["line"]};">'
-                          + self.p(self.leaf(f"记录 {n:02d}"), self.cap, t["muted"],
-                                  "margin-bottom:6px;letter-spacing:0.08em;") + "".join(cells) + "</section>")
+                          + self.p(self.leaf(f"{record_label} {n:02d}" + (" 则" if mode == "warm" else "")), self.cap, t["accent"] if mode == "feature" else t["muted"],
+                                  f"margin-bottom:6px;font-weight:{700 if mode == 'feature' else 500};font-family:{self.font};") + "".join(cells) + "</section>")
         return (f'<section style="margin:{self.g(24)}px 0 {below if below is not None else self.g(24)}px;">'
                 + "".join(blocks) + "</section>")
 
@@ -689,21 +749,21 @@ class R:
     def code(self, lang, body):
         t = self.t
         rows = "".join(
-            f'<p style="margin:0;font-family:{MONO};font-size:{SMALL}px;line-height:1.7;white-space:pre-wrap;tab-size:4;color:{t["text"]};">'
+            f'<p style="margin:0;font-family:{MONO};font-size:{SMALL}px;line-height:1.7;white-space:pre-wrap;overflow-wrap:anywhere;word-break:normal;tab-size:4;color:{t["text"]};">'
             + (self.leaf(ln) if ln.strip() else BR)
             + "</p>" for ln in body)
         label = self.micro(lang.upper(), extra=f"margin-bottom:10px;font-family:{MONO};") if lang else ""
         return (f'<section style="margin:{self.g(24)}px 0;padding:16px 18px;background:{t["field"]};'
                 f'border-radius:{t["radius"]}px;">{label}{rows}</section>')
 
-    def img(self, alt, src, role, below=None):
+    def img(self, alt, src, role, below=None, above=None):
         """图片版式：人格给默认处理，表达方式覆盖它；只排列，不裁切、不合成、不推测内容。
 
         每条边只声明一次：人格的底线与 hero 的强调线不会叠加成双线。
         """
         t = self.t
         role0 = next(iter((role or "").split()), "")   # 无职责的图不该崩：Gate 2 会判「必须改」
-        mt = self.g(26)
+        mt = self.g(26) if above is None else above
         mb = below if below is not None else mt
         if not src or TODO.match(src):
             return (f'<section style="margin:{mt}px 0 {mb}px;padding:36px 16px;border:1px dashed {t["muted"]};'
@@ -751,7 +811,8 @@ class R:
             wrap += f"padding:{' '.join(pad)};"
         if rule:
             wrap += f"border-bottom:{rule[0]}px solid {rule[1]};"
-        cap = ("GIF · " if src.lower().endswith(".gif") else "") + (alt or "")
+        ai = bool(set(x.lower() for x in parts[2:]) & {"ai", "generated"})
+        cap = ("AI 生成示意 · " if ai and "AI" not in (alt or "") else "") + ("GIF · " if src.lower().endswith(".gif") else "") + (alt or "")
         cap_size = SMALL if role0 in FACT else self.cap
         cap_color = t["sub"] if role0 in FACT else t["muted"]
         cap_extra = "margin-top:9px;"
@@ -836,13 +897,13 @@ NUMERIC = re.compile(
 MOBILE_TABLE_PX = 288  # 320px 视口减正文左右各 16px
 
 
-def text_px(s):
+def text_px(s, size=14):
     """14px 表格字下的单行文字宽：ASCII≈0.556em、CJK≈1em、空格≈0.28em。
 
     常数来自 Chromium 实测（Noto Sans CJK：数字 7.78px、汉字 14px、字号 14px）。
     早期版本按 0.5em 估算并统一加 20px 内距，把「其实放得下」的四列数值表误判成记录卡。
     """
-    return sum(0.28 if ch == " " else 0.556 if ord(ch) < 128 else 1.0 for ch in s) * 14
+    return sum(0.28 if ch == " " else 0.556 if ord(ch) < 128 else 1.0 for ch in s) * size
 
 
 def cell_min_px(s, pad=12):
@@ -970,13 +1031,18 @@ def compose_gate(meta, blocks, base=".", key=None):
         tokens = role.split()
         if len(tokens) > 1 and tokens[1].lower() not in {"hero", "full-width", "inset", "plate", "sequence", "comparison", "detail", "evidence", "editorial", "explainer", "data"}:
             should.append(f"图片表达方式未识别：{tokens[1]}；按主题默认处理")
+        unknown_mods = set(x.lower() for x in tokens[2:]) - {"ai", "generated", "parallel"}
+        if unknown_mods:
+            must.append(f"图片修饰词未识别：{'、'.join(sorted(unknown_mods))}")
+        if "parallel" in tokens[2:] and (len(tokens) < 2 or tokens[1] != "comparison"):
+            must.append("parallel 只用于 comparison；默认纵向同宽对照")
         if role0 in FACT and not (alt or "").strip():
             must.append("证据类图必须写清出处 / 口径 / 时间；解释图也需说明")
         if not src or TODO.match(src):
             continue
         if role0 in {"证据", "数据", "evidence", "data"}:
-            context = (alt or "") + " " + (" ".join(blocks[idx + 1][1][1]) if idx + 1 < len(blocks) and blocks[idx + 1][0] == "note" else "")
-            if re.search(r"AI.*示意|生成.*示意", context):
+            context = (alt or "") + " " + role + " " + (" ".join(blocks[idx + 1][1][1]) if idx + 1 < len(blocks) and blocks[idx + 1][0] == "note" else "")
+            if re.search(r"AI.*示意|生成.*示意|(?:^|\s)(?:ai|generated)(?:\s|$)", context, re.I):
                 must.append("生成示意图不能承担证据/数据职责")
             elif not re.search(r"https?://\S+", context):
                 must.append("证据/数据图片缺少可核对来源链接")
@@ -1028,6 +1094,12 @@ def compose_gate(meta, blocks, base=".", key=None):
                     must.append("data 必须有数值与标签")
             if not b[1]:
                 must.append("data 不能为空")
+            th = THEMES.get(key or meta.get("theme", "paper"), THEMES["paper"])
+            room = MOBILE_TABLE_PX - 2 * th["grid"]["inset"]
+            for line in b[1]:
+                value = line.replace("|", "｜").partition("｜")[0].strip()
+                if text_px(value, th["type"]["data_size"]) + 4 > room:
+                    must.append(f"data 数值在 320px 无法完整显示：{value[:24]}；改用文字或重新组织口径，不缩字号")
             continue
         if not b[0]:
             must.append("bars 必须声明单一单位/口径：写在 ::: bars 后")
@@ -1042,6 +1114,8 @@ def compose_gate(meta, blocks, base=".", key=None):
                     must.append("bars 的值必须是有限数字")
                 else:
                     nums.append(num)
+                    if text_px(v, THEMES.get(key or meta.get("theme", "paper"), THEMES["paper"])["grid"]["body"]) > 110:
+                        must.append(f"bars 数值过长：{v[:24]}；改用开放表格或文字，避免挤压标签")
             if not lab:
                 must.append(f"bars 的 {v} 缺少标签：数值没有口径等于没有信息")
         if len(items) < 2:
@@ -1078,13 +1152,10 @@ def compose_gate(meta, blocks, base=".", key=None):
             must.append(f"{field} 超过发布上限 {cap}：请编辑，不静默截断")
     if meta.get("density", "standard") not in ("dense", "standard", "airy"):
         must.append(f"density「{meta['density']}」不存在：dense / standard / airy（必须修正）")
-
+    for issue in audit(meta, blocks)["issues"]:
+        if issue["severity"] == "must":
+            must.append(f"编辑必须修 · {issue['code']} · {issue['location']}：{issue['problem']} → {issue['action']}")
     return must, should
-
-
-def editorial_review(meta, blocks):
-    """兼容入口：编辑审计的唯一实现在 editorial.audit，渲染器不另存一份规则。"""
-    return audit(meta, blocks)
 
 
 def evidence(meta, blocks, base="."):
@@ -1197,7 +1268,7 @@ def render(md, theme=None):
     meta, blocks = parse(md)
     key = theme or meta.get("theme", "paper")
     if key not in THEMES:
-        sys.exit(f"未知主题 {key}，可选：{', '.join(THEMES)}")
+        raise ValueError(f"未知主题 {key}，可选：{', '.join(THEMES)}")
     r = R(THEMES[key], meta.get("density", "standard"))
     out, n = [], 0
     if meta.get("kicker"):
@@ -1259,15 +1330,16 @@ def render(md, theme=None):
                     end += 1
                 if len(group) >= 2:
                     out.append(f'<section style="margin:{r.g(24)}px 0;">' + ''.join(
-                        r.micro(f"顺序 {n}", extra="margin-top:12px;") + r.img(*image, below=8)
+                        r.img(f"{n:02d} · {image[0]}", image[1], image[2], below=18, above=0 if n == 1 else 18)
                         for n, image in enumerate(group, 1)) + '</section>')
                     consumed.update(range(i + 1, end))
                     continue
-            if mode == "comparison" and i + 1 < len(blocks) and blocks[i + 1][0] == "img":
+            if mode == "comparison" and "parallel" in parts[2:] and i + 1 < len(blocks) and blocks[i + 1][0] == "img":
                 other = blocks[i + 1][1]
                 op = (other[2] or "").split()
-                if len(op) > 1 and op[1].lower() == "comparison":
-                    cells = [r.img(*image, below=0) for image in (b, other)]
+                if len(op) > 1 and op[1].lower() == "comparison" and "parallel" in op[2:]:
+                    cells = [r.img(f"对照 {n} · {image[0]}", image[1], image[2], below=0)
+                             for n, image in enumerate((b, other), 1)]
                     out.append('<table style="width:100%;table-layout:fixed;border-collapse:collapse;">'
                                '<tr>' + ''.join('<td style="width:50%;vertical-align:top;padding:0 4px;overflow-wrap:anywhere;">' + cell + '</td>' for cell in cells) + '</tr></table>')
                     consumed.add(i + 1)
@@ -1280,111 +1352,20 @@ def render(md, theme=None):
     out.append(r.signature(meta))
     t = THEMES[key]
     pad = f"padding-left:{r.inset}px;padding-right:{r.inset}px;" if r.inset else ""
-    body = (f'<section style="font-family:{SANS};font-size:{r.body:g}px;color:{t["text"]};line-height:{t["leading"]};'
+    body = (f'<section style="font-family:{r.reading_font};font-size:{r.body:g}px;color:{t["text"]};line-height:{t["leading"]};'
             f'letter-spacing:normal;text-align:left;line-break:strict;overflow-wrap:anywhere;{pad}">'
             + "".join(out) + "</section>")
     return key, meta, blocks, body
 
 
-SPECIMEN_MD = """---
-title: 留下的东西|比发出去的更重要
-author: 甲木
-bio: 六人格同稿对照；数值与图示均为演示
----
-
-> 一篇文章的气质，不在配色，而在什么被允许发出声音。
-
-## 判断在主题之前
-
-主题是人格，不是皮肤。同一段文字换人格，标题、引文、信息结构与留白都应改变；如果只换了颜色，判断没有发生。
-
-> 能不用就不用，能弱化就弱化。
-> —— 编辑台
-
-### 三个动作
-
-1. 先确认读者要解决的问题。
-2. 再安排主张、证据和限制。
-3. 最后选择图像与版式。
-
-## 视觉权重服从信息权重
-
-::: data
-3｜可删元素
-2｜证据层级
-4｜移动端检查宽度
-:::
-
-::: note 演示口径
-样张计数仅测试信息结构，非统计结果。
-:::
-
-| 信息 | 该回答的问题 |
-|---|---|
-| 主张 | 文章要读者理解什么 |
-| 证据 | 这项判断凭什么成立 |
-
-![抽象构图示意；非真实数据](specimen.svg "解释 plate")
-
----
-
-::: peak
-克制不是少，是每一处都有职责。
-:::
-"""
-
-SPECIMEN_IMAGE_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 500">
-<rect width="900" height="500" fill="#E9E5DC"/><rect x="56" y="58" width="480" height="32" fill="#242321"/>
-<rect x="56" y="112" width="680" height="12" fill="#969087"/><rect x="56" y="142" width="590" height="12" fill="#B6B0A6"/>
-<circle cx="704" cy="302" r="116" fill="#7B4038"/><rect x="56" y="230" width="420" height="18" fill="#242321"/>
-<rect x="56" y="274" width="500" height="11" fill="#9C968D"/><rect x="56" y="306" width="438" height="11" fill="#B6B0A6"/>
-<rect x="56" y="338" width="468" height="11" fill="#B6B0A6"/><rect x="56" y="410" width="788" height="2" fill="#242321"/>
-</svg>"""
-
-
-SPECIMEN_HTML = """<!DOCTYPE html>
-<html lang="zh-CN"><head><meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1"><title>Six Editorial Modes</title>
-<style>*{{box-sizing:border-box}}
-body{{margin:0;background:#D8D3CA;color:#2B2824;font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB",sans-serif}}
-header{{padding:56px 40px 12px}}
-.k{{font-size:11px;letter-spacing:2.4px;font-weight:600;color:#8A847A}}
-h1{{font-size:28px;font-weight:600;letter-spacing:.4px;margin:10px 0 8px;line-height:1.3}}
-.lede{{font-size:14px;color:#6E6860;line-height:1.7;max-width:560px;margin:0}}
-.board{{display:flex;gap:32px;overflow-x:auto;padding:28px 40px 88px;align-items:flex-start}}
-.col{{flex:0 0 390px}}
-.name{{font-size:13px;font-weight:700;letter-spacing:.3px}}
-.intent{{font-size:12px;color:#6E6860;line-height:1.6;min-height:38px;margin-top:6px}}
-.swatches{{display:flex;gap:7px;margin:10px 0 16px}}
-.sw{{display:block;width:16px;height:16px;border-radius:50%;box-shadow:inset 0 0 0 1px rgba(40,30,20,.12)}}
-.phone{{background:#fff;padding:28px 18px 48px;border:1px solid #D6D0C5}}</style>
-</head><body>
-<header><div class="k">EDITORIAL MODES · V3 · 生成物，勿手改（render.py --specimen）</div>
-<h1>六种编辑人格，不是六套配色</h1>
-<p class="lede">同一篇样张同时检验导语、章节、引文、列表、数据、表格、图片与重点。用途与判断见 SKILL.md；此板只用于对照与回归。</p></header>
-<div class="board">
-{cols}
-</div></body></html>
-"""
-
-
-def specimen(path):
-    """六格对照板由真实渲染器生成，避免与人手维护的样本漂移。入库 assets/themes.html，--specimen 重新生成。"""
-    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-    cols = []
-    image_uri = "data:image/svg+xml;base64," + base64.b64encode(SPECIMEN_IMAGE_SVG.encode()).decode()
-    for key, t in THEMES.items():
-        _, _, _, body = render(SPECIMEN_MD, key)
-        body = body.replace('src="specimen.svg"', f'src="{image_uri}"')
-        sw = "".join(f'<i class="sw" style="background:{t[k]}"></i>' for k in ("text", "field", "accent", "line", "dark"))
-        cols.append(f'<div class="col"><div class="name">{t["name"]}</div>'
-                    f'<div class="intent">{t["intent"]}</div>'
-                    f'<div class="swatches">{sw}</div><div class="phone">{body}</div></div>')
-    generated = (f"<!-- generated by wechat-article {SKILL_VERSION}; "
-                 f"themes sha256 {THEME_CONFIG_SHA256} -->\n"
-                 + SPECIMEN_HTML.format(cols="".join(cols)))
-    open(path, "w", encoding="utf-8").write(generated)
-    print(f"气候对照板 → {path}（对照用，不进公众号）")
+def contrast_checks(theme):
+    t = THEMES[theme]
+    pairs = [(role, "#FFFFFF") for role in ("text", "sub", "muted", "accent")]
+    pairs += [(role, t["field"]) for role in ("text", "sub", "muted")]
+    pairs.append(("on_dark", t["dark"]))
+    return [{"foreground_role": role, "foreground": t[role], "background": bg,
+             "ratio": round(contrast(t[role], bg), 3), "required": 4.5,
+             "pass": contrast(t[role], bg) >= 4.5} for role, bg in pairs]
 
 
 def build(md_path, theme=None, out=None):
@@ -1440,11 +1421,10 @@ def build(md_path, theme=None, out=None):
     m1, s1 = check(body)
     m2, s2 = compose_gate(meta, blocks, base, key)
     palette = THEMES[key]
-    for fg, bg in (("text", "#FFFFFF"), ("sub", "#FFFFFF"), ("muted", "#FFFFFF"),
-                   ("text", palette["field"]), ("on_dark", palette["dark"])):
-        ratio = contrast(palette[fg], bg)
-        if ratio < 4.5:
-            s2.append(f"色彩对比提示：{fg} / {bg} 为 {ratio:.2f}:1；核对真实使用位置与背景")
+    contrasts = contrast_checks(key)
+    for pair in contrasts:
+        if not pair["pass"]:
+            m2.append(f"色彩对比不足：{pair['foreground_role']} / {pair['background']} 为 {pair['ratio']:.2f}:1，要求 ≥4.5")
     fs = first_screen(meta, blocks)
     if fs["weight"] > 1:
         s2.append(f"首屏有 {fs['weight']} 个重元素（{'、'.join(fs['layers'])}）：只保留一个入口，"
@@ -1463,10 +1443,12 @@ def build(md_path, theme=None, out=None):
         "theme_profile": {axis: THEMES[key][axis] for axis in
                           ("lead", "heading", "h3", "quote", "peak", "divider", "image", "data", "table", "list")},
         "grid": dict(THEMES[key].get("grid", {})),
+        "contrast_checks": contrasts,
         "decision": review["decision"],
         "article_type": review["type"]["key"],
         "composition_evidence": {"first_screen_layers": fs["layers"], "first_screen_weight": fs["weight"],
-                                 "h2_count": sum(k == "h2" for k, _ in blocks), "body_characters": doc_len(blocks)},
+                                 "h2_count": sum(k == "h2" for k, _ in blocks), "body_characters": doc_len(blocks),
+                                 "scope": "源文开篇结构，不是像素首屏；实际首屏见浏览器测量"},
         "editorial_review": review,
         "integrity_version": 2,
         "source": {"path": os.path.abspath(md_path), "sha256": sha256(md_path)},
@@ -1496,13 +1478,9 @@ def main():
     ap.add_argument("--against", help="原稿 .md：比对改写前后的事实单元（不改稿，只报告）")
     ap.add_argument("--ledger", help="修改台账 .md：五列表格，逐行校验收益与位置")
     ap.add_argument("--deliver", help="交付目录：一次产出源稿/正文/预览/meta/修改记录/验收")
-    ap.add_argument("--specimen", action="store_true", help="生成六格人格对照板")
     a = ap.parse_args()
-    if a.specimen:
-        specimen(a.out or os.path.join(HERE, "..", "assets", "themes.html"))
-        return
     if not a.md:
-        ap.error("需要一个 markdown 文件，或使用 --specimen")
+        ap.error("需要一个 markdown 文件")
     if os.path.splitext(a.md)[1].lower() not in (".md", ".markdown", ".txt"):
         ap.error("仅支持 UTF-8 Markdown/纯文本；DOCX 请先用 extract_docx.py 转换")
 
@@ -1519,17 +1497,21 @@ def main():
     facts_diff = None
     if a.against:
         with open(a.against, encoding="utf-8") as f:
-            _, original_blocks = parse(f.read())
-        facts_diff = compare_facts(original_blocks, blocks)
+            original_meta, original_blocks = parse(f.read())
+        facts_diff = compare_facts(original_blocks, blocks, original_meta, meta)
         loose = introduced_without_source(blocks, facts_diff["introduced"])
         declared = {x.strip() for x in (meta.get("removed_facts") or "").replace("，", ",").split(",") if x.strip()}
         for item in facts_diff["dropped"]:
             if item not in declared:
-                s2.append(f"原稿事实单元在改稿中消失：{item}；确认是删除还是改写，"
+                m2.append(f"原稿事实单元在改稿中消失：{item}；确认是删除还是改写，"
                           f"确属删除请写入 frontmatter removed_facts")
         for item in loose:
             m2_hint = f"改稿新增事实单元「{item}」附近没有可核对来源：补出处，或说明它来自何处"
-            s2.append(m2_hint)
+            m2.append(m2_hint)
+        for change in facts_diff["precision_changes"] + facts_diff["qualifier_changes"]:
+            m2.append(f"事实精度或限定变化需回源确认：{change}（有链接不等于已核真）")
+        for quote in facts_diff["dropped_quotes"] + facts_diff["introduced_quotes"]:
+            m2.append(f"直接引语变化需逐字回源：{quote[:40]}；恢复原话或明确改为间接转述")
         side["fact_diff"] = facts_diff
         side["render_errors"] = m1 + m2
 
