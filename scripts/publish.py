@@ -27,7 +27,7 @@ import urllib.error
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from render import api_title, img_size, SKILL_VERSION, THEME_CONFIG_SHA256  # noqa: E402
-from check import check, image_sources  # noqa: E402
+from check import check, image_sources, safe_http_url  # noqa: E402
 from safety import local_path, sha256
 
 API_BASE = "https://api.weixin.qq.com/cgi-bin"
@@ -477,7 +477,7 @@ def preflight(html_path, s):
         print(f"  {label}  {v or '（空）'}（{len(v)}/{cap}）"
               + (f"  ⚠ 超过官方上限 {cap}，拒绝上行，请编辑" if len(v) > cap else ""))
     print(f"  原文链接  {s['source'] or '（无）'}")
-    if s["source"] and not re.match(r"^https?://[^/\s]+", s["source"], re.I):
+    if s["source"] and not safe_http_url(s["source"]):
         ok = False
         print("  必须改 · 原文链接不是有效的 HTTP(S) URL")
     cover = s["cover"]

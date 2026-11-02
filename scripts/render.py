@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Composed Markdown → 公众号 HTML + 390px 预览 + Gate 1/2（一次调用）。
+"""Composed Markdown → 公众号 HTML + 移动预览 + Gate 1/2（一次调用）。
 
     render.py article.md [--theme paper|letter|ink|frost|bone|folio] [-o out.html]
     render.py article.md --against 原稿.md     改写前后的事实单元与台账比对
@@ -31,7 +31,7 @@ from editorial import (audit, block_text, classify_fact_change, compare_facts,  
                        plain, peak_text, render_report, strategy_notes)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-SKILL_VERSION = "7.0.0"
+SKILL_VERSION = "8.0.0"
 THEMES_PATH = os.path.join(HERE, "..", "assets", "themes.json")
 with open(THEMES_PATH, "rb") as _theme_file:
     THEME_CONFIG_BYTES = _theme_file.read()
@@ -66,6 +66,7 @@ def validate_themes(themes):
     """
     problems = []
     for name, t in themes.items():
+        before = len(problems)
         for axis, allowed in THEME_AXES.items():
             value = t.get(axis)
             if value not in allowed:
@@ -79,7 +80,7 @@ def validate_themes(themes):
         for key in TYPE_KEYS:
             if key not in t.get("type", {}):
                 problems.append(f"{name}.type 缺少 {key}")
-        if problems:
+        if len(problems) > before:
             continue
         ty, grid = t["type"], t["grid"]
         if not ty["heading_size"] > ty["lead_size"]:
@@ -106,11 +107,11 @@ SERIF = "'Songti SC','STSong','SimSun','Noto Serif CJK SC',serif"
 MONO = "'SF Mono',Menlo,Consolas,monospace"
 CJK = "\u4e00-\u9fff\u3400-\u4dbf"
 # 默认阅读字号，非必须遵守的审美配额
-MICRO, SMALL, BODY, DISPLAY, TITLE = 13, 14, 16, 20, 24
+MICRO, SMALL, BODY, DISPLAY = 13, 14, 16, 20
 
 # 正文视觉职责（封面单独由 frontmatter 承担）。说不出职责 → 删。
-ROLES = {"锚点", "解释", "证据", "对比", "结构", "场景", "隐喻", "停顿", "数据", "资料", "实拍",
-         "anchor", "explain", "evidence", "compare", "structure", "context", "metaphor", "rhythm",
+ROLES = {"入口", "锚点", "解释", "证据", "对比", "结构", "场景", "叙事", "隐喻", "停顿", "数据", "资料", "实拍",
+         "entry", "anchor", "explain", "evidence", "compare", "structure", "context", "narrative", "metaphor", "rhythm",
          "data", "archival", "photo"}
 # 资料图（馆藏扫描、档案、截图）与实拍照片：读者会默认它们「拍到了现场」，
 # 所以图注必须写明来源与授权状态，而不只是写内容。
@@ -494,7 +495,7 @@ class R:
         return (f'<section style="margin:0 0 {self.g(gap)}px;">'
                 + self.p(self.inline(text), extra=extra) + "</section>")
 
-    def _lead_lines(self, s, size):
+    def _lead_lines(self, s):
         """把导语的每一句渲染成一行：中文长句在手机上最容易“读到一半换行”。
 
         只有标了些句号级句末标点才分行；用块级 span 而不是 <br>，微信清洗后两种都成立。
@@ -557,7 +558,7 @@ class R:
                         + self.p(inner, lead_size, t["text"], lead_style + f"font-family:{SERIF};") + cite + "</section>")
             return (f'<section style="margin:{self.g(6)}px 0 {self.g(30)}px;">'
                     f'<section style="width:56px;height:4px;background:{t["accent"]};margin-bottom:16px;">{BR}</section>'
-                    + self.p(self._lead_lines(text, lead_size), lead_size, t["text"],
+                    + self.p(self._lead_lines(text), lead_size, t["text"],
                              lead_style + f"font-family:{self.font};"
                              f"letter-spacing:-0.01em;") + cite + "</section>")
         if weight == "quote":
@@ -642,86 +643,87 @@ class R:
         return f'<section style="margin:{self.g(10) if tight else self.g(16)}px 0 {self.g(16)}px;">{head}{body}</section>'
 
     def data(self, lines, below=None):
-        """离散数值组。关系不变，六人格通过值/标签次序和基线组织信息。"""
+        """离散数值组：先兑现数值宽度，再选择分栏或纵向记录。
+
+        布局只计算一次：回退必须真正改变数值与标签的关系，不能名为 stack、
+        实际仍输出三列。所有固定宽度都先留出字体误差。
+        """
         t = self.t
         items = []
         for line in lines:
             value, _, label = line.replace("|", "｜").partition("｜")
             items.append((value.strip(), label.strip()))
-        mode, chunks = t["data"], []
-        size = self.type["data_size"]
+        mode, size = t["data"], self.type["data_size"]
         avail = MOBILE_TABLE_PX - 2 * self.inset
-        per = len(items) if 0 < len(items) <= 3 else 2
-        column_room = (avail - 16 * (per - 1)) / per
-        wide_value = any(text_px(v, size) + 4 > avail * 0.34 for v, _ in items)
-        if mode in ("columns", "specimen") and any(text_px(v, size) + 4 > column_room for v, _ in items):
-            mode = "stack"
-            for i in range(0, len(items), per):
-                cells = "".join(
-                    f'<section style="flex:1;min-width:0;padding-top:12px;border-top:1px solid {t["text"]};">'
-                    + self.p(self.leaf(value), TITLE, t["text"],
-                             f"font-weight:600;line-height:1.3;font-family:{self.font};font-variant-numeric:tabular-nums;")
-                    + self.p(self.inline(label), self.cap, t["muted"], "margin-top:6px;") + "</section>"
-                    for value, label in items[i:i + per])
-                chunks.append(f'<section style="display:flex;gap:16px;margin-top:{16 if i else 0}px;">{cells}</section>')
-        elif mode == "stack":
+        slack = DATA_VALUE_SLACK
+
+        def values_fit(width):
+            return all(text_px(value, size) + slack <= width for value, _ in items)
+
+        per = 2 if mode == "specimen" or len(items) > 3 else max(1, len(items))
+        if mode in ("columns", "specimen"):
+            gap = 18 if mode == "columns" else 12
+            column_room = (avail - gap * (per - 1)) / per
+            if not values_fit(column_room):
+                mode = "stack"
+        share = {"stack": .34, "ticker": .38, "folio": .42}.get(mode)
+        vertical = bool((share and not values_fit(avail * share))
+                        or (mode == "ledger" and not values_fit(avail * .62)))
+        chunks = []
+
+        if vertical:
+            # 数值与标签改为上下关系；不再保留一个看似分栏、实际折行的外壳。
             for value, label in items:
-                chunks.append(f'<section style="display:flex;gap:14px;align-items:baseline;padding:13px 0;'
-                              f'border-top:1px solid {t["line"]};">'
-                              + self.p(self.leaf(value), size, t["accent"],
-                                       f"width:34%;flex-shrink:0;font-weight:600;line-height:1.35;font-family:{self.font};font-variant-numeric:tabular-nums;")
-                              + self.p(self.inline(label), SMALL, t["sub"], "flex:1;min-width:0;line-height:1.8;") + "</section>")
+                border = f"border-top:{3 if mode == 'folio' else 1}px solid {t['text' if mode in ('ticker', 'folio') else 'line']};"
+                nowrap = "white-space:nowrap;" if values_fit(avail) else ""
+                chunks.append(f'<section style="padding:12px 0;{border}">'
+                    + self.p(self.leaf(value), size, t["accent"] if mode in ("stack", "folio") else t["text"],
+                             f"font-weight:{700 if mode in ('ticker', 'folio') else 600};line-height:1.35;"
+                             f"font-family:{self.font};font-variant-numeric:tabular-nums;{nowrap}")
+                    + self.p(self.inline(label), SMALL, t["sub"], "margin-top:6px;line-height:1.7;") + "</section>")
+        elif mode in ("stack", "ticker", "folio"):
+            # 三种左右记录共享宽度计算，但保留各自字重、比例、规则线与阅读节奏。
+            gap = {"stack": 14, "ticker": 12, "folio": 16}[mode]
+            border = t["text"] if mode in ("ticker", "folio") else t["line"]
+            for value, label in items:
+                value_style = (f"width:{round(share * 100)}%;flex-shrink:0;font-weight:{700 if mode in ('ticker', 'folio') else 600};"
+                               f"line-height:{1 if mode == 'folio' else 1.35};font-family:{self.font};"
+                               "font-variant-numeric:tabular-nums;white-space:nowrap;")
+                if mode == "folio":
+                    value_style += "letter-spacing:-0.02em;"
+                chunks.append(f'<section style="display:flex;gap:{gap}px;align-items:{"flex-end" if mode == "folio" else "center" if mode == "ticker" else "baseline"};'
+                              f'padding:{14 if mode == "folio" else 13 if mode == "stack" else 10}px 0;'
+                              f'border-top:{3 if mode == "folio" else 1}px solid {border};">'
+                              + self.p(self.leaf(value), size, t["accent"] if mode in ("stack", "folio") else t["text"], value_style)
+                              + self.p(self.inline(label), SMALL, t["text"] if mode == "folio" else t["sub"],
+                                       f"flex:1;min-width:0;line-height:{1.65 if mode == 'folio' else 1.7};"
+                                       f"font-weight:{600 if mode == 'folio' else 400};") + "</section>")
         elif mode == "ledger":
             for value, label in items:
                 chunks.append(f'<section style="display:flex;gap:16px;align-items:baseline;padding:12px 0;'
                               f'border-bottom:1px solid {t["line"]};">'
                               + self.p(self.inline(label), SMALL, t["sub"], "flex:1;min-width:0;")
                               + self.p(self.leaf(value), size, t["text"],
-                                       f"flex-shrink:0;font-weight:600;line-height:1.3;font-family:{SERIF};font-variant-numeric:tabular-nums;") + "</section>")
-        elif mode == "ticker":
-            for value, label in items:
-                chunks.append(f'<section style="display:flex;gap:12px;align-items:center;padding:10px 0;'
-                              f'border-top:1px solid {t["text"]};">'
+                                       f"flex-shrink:0;font-weight:600;line-height:1.3;font-family:{SERIF};"
+                                       "font-variant-numeric:tabular-nums;white-space:nowrap;") + "</section>")
+        else:
+            # columns / specimen：数值在上、标签在下；只有全部值都放得下才进入这里。
+            gap = 18 if mode == "columns" else 12
+            for i in range(0, len(items), per):
+                cells = ""
+                for value, label in items[i:i + per]:
+                    edge = (f"border-top:1px solid {t['text']};" if mode == "columns" else
+                            f"border-top:1px solid {t['line']};border-bottom:1px solid {t['line']};")
+                    padding = "12px 0 0" if mode == "columns" else "16px 10px 14px"
+                    cells += (f'<section style="flex:1;min-width:0;padding:{padding};{edge}">'
                               + self.p(self.leaf(value), size, t["text"],
-                                       f"width:38%;flex-shrink:0;font-weight:700;line-height:1.2;font-family:{self.font};font-variant-numeric:tabular-nums;")
-                              + self.p(self.inline(label), SMALL, t["sub"], "flex:1;min-width:0;line-height:1.7;") + "</section>")
-        elif mode == "specimen":
-            per = 2
-            for i in range(0, len(items), per):
-                cells = "".join(
-                    f'<section style="flex:1;min-width:0;padding:16px 10px 14px;'
-                    f'border-top:1px solid {t["line"]};border-bottom:1px solid {t["line"]};">'
-                    + self.p(self.leaf(value), size, t["text"],
-                             f"font-weight:500;line-height:1.3;font-family:{SERIF};font-variant-numeric:tabular-nums;")
-                    + self.p(self.inline(label), self.cap, t["muted"], "margin-top:8px;") + "</section>"
-                    for value, label in items[i:i + per])
-                chunks.append(f'<section style="display:flex;gap:12px;margin-top:{12 if i else 0}px;">{cells}</section>')
-        elif mode == "columns":
-            # 工作纸式数值栏：等宽分栏，值在上、标签在下，与 specimen 的差别在留白与分隔线。
-            per = len(items) if 0 < len(items) <= 3 else 2
-            for i in range(0, len(items), per):
-                cells = "".join(
-                    f'<section style="flex:1;min-width:0;padding-top:12px;border-top:1px solid {t["text"]};">'
-                    + self.p(self.leaf(value), size, t["text"],
-                             f"font-weight:600;line-height:1.25;font-family:{self.font};font-variant-numeric:tabular-nums;")
-                    + self.p(self.inline(label), SMALL, t["sub"], "margin-top:6px;") + "</section>"
-                    for value, label in items[i:i + per])
-                chunks.append(f'<section style="display:flex;gap:18px;margin-top:{18 if i else 0}px;">{cells}</section>')
-        elif mode == "folio":
-            for value, label in items:
-                chunks.append(f'<section style="display:flex;gap:16px;align-items:flex-end;padding:14px 0;'
-                              f'border-top:3px solid {t["text"]};">'
-                              + self.p(self.leaf(value), size, t["accent"],
-                                       f"width:42%;flex-shrink:0;font-weight:700;line-height:1;font-family:{self.font};font-variant-numeric:tabular-nums;letter-spacing:-0.02em;")
-                              + self.p(self.inline(label), SMALL, t["text"], "flex:1;min-width:0;font-weight:600;line-height:1.65;") + "</section>")
-        if wide_value:
-            chunks = []
-            for value, label in items:
-                border = f"border-top:{3 if mode == 'folio' else 1}px solid {t['text' if mode in ('ticker', 'folio') else 'line']};"
-                chunks.append(f'<section style="padding:12px 0;{border}">'
-                    + self.p(self.leaf(value), size, t["accent"] if mode in ("stack", "folio") else t["text"],
-                             f"font-weight:{self.type['lead_weight']};line-height:1.35;font-family:{self.font};font-variant-numeric:tabular-nums;white-space:nowrap;")
-                    + self.p(self.inline(label), SMALL, t["sub"], "margin-top:6px;line-height:1.7;") + "</section>")
+                                       f"font-weight:{600 if mode == 'columns' else 500};line-height:1.3;"
+                                       f"font-family:{self.font if mode == 'columns' else SERIF};"
+                                       "font-variant-numeric:tabular-nums;white-space:nowrap;")
+                              + self.p(self.inline(label), self.cap if mode == "specimen" else SMALL,
+                                       t["muted"] if mode == "specimen" else t["sub"], "margin-top:6px;line-height:1.7;")
+                              + "</section>")
+                chunks.append(f'<section style="display:flex;gap:{gap}px;margin-top:{gap if i else 0}px;">{cells}</section>')
         return (f'<section style="margin:{self.g(36)}px 0 '
                 f'{below if below is not None else self.g(36)}px;">{"".join(chunks)}</section>')
 
@@ -754,7 +756,7 @@ class R:
 
         320px 下确实放不下时改为“记录卡”堆叠：标签与数值仍成对出现，
         信息不丢、字号不缩。删列是编辑决定，渲染器只保证不靠牺牲可读性硬塞。
-        微信会剥离媒体查询，所以判定只按最窄的 320px 做一次，六宽度共用同一形态。
+        微信会剥离媒体查询，所以判定只按最窄的 320px 做一次，四个回归宽度共用同一形态。
         """
         t, out, mode = self.t, [], self.t["table"]
         if not rows or any(len(row) != len(rows[0]) for row in rows):
@@ -1013,6 +1015,7 @@ NUMERIC = re.compile(
     r"(?:个百分点|小时|分钟|美元|亿元|万元|%|％|元|万|亿|年|天|人|家|件|倍)?"
 )
 MOBILE_TABLE_PX = 288  # 320px 视口减正文左右各 16px
+DATA_VALUE_SLACK = 8   # 数值字形与 flex 取整余量；渲染和 Gate 2 共用
 
 
 def text_px(s, size=14):
@@ -1103,21 +1106,22 @@ def auto_digest(meta, blocks, limit=120):
     if end >= 0:
         return cut[:end + 1]
     end = max(cut.rfind(ch) for ch in "，；、：")          # 其次在停顿处收口并标省略
-    return (cut[:end] + "…") if end > 0 else cut + "…"
+    return (cut[:end] + "…") if end > 0 else src[:limit - 1] + "…"
 
 
 def resolve(src, base):
     return local_path(src, base)
 
 
-def compose_gate(meta, blocks, base=".", key=None):
-    """Gate 2：可确定的结构与资产检查。审美判断留给 Gate 3。"""
+def _asset_gate(meta, blocks, base):
+    """图片与封面的职责、来源和本地文件边界。"""
     must, should = [], []
-    kinds = [b[0] for b in blocks]
     imgs = [(i, b[1]) for i, b in enumerate(blocks) if b[0] == "img"]
     for idx, (alt, src, role) in imgs:
-        tokens0 = (role or "").split()
-        if len(tokens0) > 1 and tokens0[1].lower() == "comparison":
+        role = (role or "").strip()
+        tokens = role.split()
+        role0 = next(iter(tokens), "")
+        if len(tokens) > 1 and tokens[1].lower() == "comparison":
             def is_comparison(j):
                 if not 0 <= j < len(blocks) or blocks[j][0] != "img":
                     return False
@@ -1129,8 +1133,6 @@ def compose_gate(meta, blocks, base=".", key=None):
                     end += 1
                 if end - idx != 2:
                     must.append("comparison 必须恰好两张相邻图片；多组之间用文字分隔")
-        role = (role or "").strip()
-        role0 = next(iter(role.split()), "")
         if not role0:
             must.append("图片没有声明职责")
         elif role0 not in ROLES:
@@ -1143,20 +1145,19 @@ def compose_gate(meta, blocks, base=".", key=None):
                 must.append(f"图片 {src}：{mode} 需要相邻同组图片；单图请改表达方式")
             if not alt:
                 must.append(f"图片 {src}：{mode} 必须在图注写明顺序或比较对象与口径")
-        tokens = role.split()
         if len(tokens) > 1 and tokens[1].lower() not in {"hero", "full-width", "inset", "plate", "sequence", "comparison", "detail", "evidence", "editorial", "explainer", "data"}:
             should.append(f"图片表达方式未识别：{tokens[1]}；按主题默认处理")
         unknown_mods = set(x.lower() for x in tokens[2:]) - {"ai", "generated", "parallel"}
         if unknown_mods:
             must.append(f"图片修饰词未识别：{'、'.join(sorted(unknown_mods))}")
-        if "parallel" in tokens[2:] and (len(tokens) < 2 or tokens[1] != "comparison"):
+        if "parallel" in tokens[2:] and (len(tokens) < 2 or tokens[1].lower() != "comparison"):
             must.append("parallel 只用于 comparison；默认纵向同宽对照")
         if role0 in FACT and not (alt or "").strip():
             must.append("证据类图必须写清出处 / 口径 / 时间；解释图也需说明")
         if not src or TODO.match(src):
             continue
         # 说明/证据类图片必须紧邻它的解释对象：孤零零一张图不承担信息职责。
-        if role0 in FACT and not TODO.match(src or ""):
+        if role0 in FACT:
             neighbours = [blocks[j] for j in (idx - 1, idx + 1) if 0 <= j < len(blocks)]
             explained = any(k in ("p", "note", "quote", "table", "data", "bars") and block_text(k, v).strip()
                             for k, v in neighbours)
@@ -1208,6 +1209,13 @@ def compose_gate(meta, blocks, base=".", key=None):
                 if not COVER_BAND[0] <= ratio <= COVER_BAND[1]:
                     should.append(f"封面 {w}×{h}（{ratio:.2f}:1）：微信会裁成 {COVER_RATIO}:1，确认主体在中央安全区，"
                                   f"不要靠烧字补意思")
+    return must, should
+
+
+def _data_gate(meta, blocks, key):
+    """data / bars 的字段、来源与确定性数值边界。"""
+    must, should = [], []
+    th = THEMES.get(key or meta.get("theme", "paper"), THEMES["paper"])
     for i, (k, b) in enumerate(blocks):
         if k not in ("bars", "data"):
             continue
@@ -1223,17 +1231,15 @@ def compose_gate(meta, blocks, base=".", key=None):
                     must.append("data 必须有数值与标签")
             if not b[1]:
                 must.append("data 不能为空")
-            th = THEMES.get(key or meta.get("theme", "paper"), THEMES["paper"])
             room = MOBILE_TABLE_PX - 2 * th["grid"]["inset"]
             for line in b[1]:
                 value = line.replace("|", "｜").partition("｜")[0].strip()
-                if text_px(value, th["type"]["data_size"]) + 4 > room:
+                if text_px(value, th["type"]["data_size"]) + DATA_VALUE_SLACK > room:
                     must.append(f"data 数值在 320px 无法完整显示：{value[:24]}；改用文字或重新组织口径，不缩字号")
             continue
         if not b[0]:
             must.append("bars 必须声明单一单位/口径：写在 ::: bars 后")
         items = [(v.strip(), lab.strip()) for v, _, lab in (x.replace("|", "｜").partition("｜") for x in b[1])]
-        nums = []
         for v, lab in items:
             if not re.fullmatch(r"\d+(\.\d+)?", v):
                 must.append(f"bars 的值必须是数字：{v or '（空）'}")
@@ -1241,23 +1247,28 @@ def compose_gate(meta, blocks, base=".", key=None):
                 num = float(v)
                 if not math.isfinite(num):
                     must.append("bars 的值必须是有限数字")
-                else:
-                    nums.append(num)
-                    if text_px(v, THEMES.get(key or meta.get("theme", "paper"), THEMES["paper"])["grid"]["body"]) > 110:
-                        must.append(f"bars 数值过长：{v[:24]}；改用开放表格或文字，避免挤压标签")
+                elif text_px(v, th["grid"]["body"]) > 110:
+                    must.append(f"bars 数值过长：{v[:24]}；改用开放表格或文字，避免挤压标签")
             if not lab:
                 must.append(f"bars 的 {v} 缺少标签：数值没有口径等于没有信息")
         if len(items) < 2:
             must.append("bars 至少 2 项：单项对比不成立，直接用文字")
+    return must, should
+
+
+def _structure_gate(meta, blocks, key):
+    """章节、表格、注释与平台原生字段的结构检查。"""
+    must, should = [], []
+    kinds = [b[0] for b in blocks]
+    th = THEMES.get(key or meta.get("theme", "paper"), THEMES["paper"])
+    inset = th.get("grid", {}).get("inset", 0)
     for i, (k, b) in enumerate(blocks):
         if k in ("h2", "h3") and (i + 1 == len(kinds) or kinds[i + 1] in ("h2", "h3")):
             must.append("标题后缺少内容")
         if k == "table" and (not b or any(len(row) != len(b[0]) for row in b)):
             must.append("表格行列数不一致，不能对齐数据")
-        th = THEMES.get(key or meta.get("theme", "paper"), THEMES["paper"])
-        inset = th.get("grid", {}).get("inset", 0)
         if k == "table" and b and not table_fits(b, inset, table_pad(th)):
-            # V4：不再以「必须改」阻断。窄屏确实放不下时渲染为记录卡（标签与值成对、字号不缩），
+            # 宽表不以「必须改」阻断。窄屏确实放不下时渲染为记录卡（标签与值成对、字号不缩），
             # 让读者仍能取到全部信息；是否应删列仍是编辑决定。
             should.append(f"表格 {len(b[0])} 列在 320px 放不下，已改为记录卡堆叠；"
                           f"若这些列本可省略，请删低价值列")
@@ -1281,13 +1292,25 @@ def compose_gate(meta, blocks, base=".", key=None):
             must.append(f"{field} 超过发布上限 {cap}：请编辑，不静默截断")
     if meta.get("density", "standard") not in ("dense", "standard", "airy"):
         must.append(f"density「{meta['density']}」不存在：dense / standard / airy（必须修正）")
-    for issue in audit(meta, blocks)["issues"]:
+    return must, should
+
+
+def compose_gate(meta, blocks, base=".", key=None, review=None):
+    """Gate 2 编排：各子检查只报告确定性风险，审美判断留给 Gate 3。"""
+    must, should = [], []
+    results = (_asset_gate(meta, blocks, base), _data_gate(meta, blocks, key),
+               _structure_gate(meta, blocks, key))
+    for m, s in results:
+        must.extend(m)
+        should.extend(s)
+    review = review or audit(meta, blocks)
+    for issue in review["issues"]:
         if issue["severity"] == "must":
             must.append(f"编辑必须修 · {issue['code']} · {issue['location']}：{issue['problem']} → {issue['action']}")
     return must, should
 
 
-def evidence(meta, blocks, base="."):
+def evidence(meta, blocks, key=None):
     """只报告需对照的结构/资产与数据状态，不推测阅读质量。"""
     kinds = [k for k, _ in blocks]
     imgs = [b for k, b in blocks if k == "img"]
@@ -1301,7 +1324,7 @@ def evidence(meta, blocks, base="."):
         if k in ("bars", "data"):
             note = blocks[i + 1][1] if i + 1 < len(blocks) and blocks[i + 1][0] == "note" else ("", [])
             out.append(f"图示 · {k} · {b[0]} · {len(b[1])}项 · {note[0] or '来源待补'}（声明不等于核真）")
-        th = THEMES.get(meta.get("theme", "paper"), THEMES["paper"])
+        th = THEMES.get(key or meta.get("theme", "paper"), THEMES["paper"])
         inset = th.get("grid", {}).get("inset", 0)
         if k == "table" and not table_fits(b, inset, table_pad(th)):
             out.append(f"表格 · {len(b)}行×{len(b[0])}列 · 320px 放不下 → 已按记录卡堆叠")
@@ -1345,7 +1368,9 @@ def preview_image(src, base):
     mime = mimetypes.guess_type(path)[0] or "application/octet-stream"
     if mime not in ("image/jpeg", "image/png", "image/gif", "image/webp"):
         return src
-    return f"data:{mime};base64," + base64.b64encode(open(path, "rb").read()).decode("ascii")
+    with open(path, "rb") as f:
+        encoded = base64.b64encode(f.read()).decode("ascii")
+    return f"data:{mime};base64," + encoded
 
 
 def cover_block(meta, base):
@@ -1362,7 +1387,7 @@ def cover_block(meta, base):
             f'<img src="{H.escape(src)}" alt="封面裁切预览" style="aspect-ratio:2.35/1;object-fit:cover">'
             f'<h4 style="margin:16px 0 8px">1:1 缩略（信息流 / 会话卡片）</h4>'
             f'<img src="{H.escape(src)}" alt="封面缩略预览" style="width:132px;height:132px;object-fit:cover">'
-            f'<p class="hint">默认不放文字。{warn}</p></div>')
+            f'<p class="hint">默认不放文字。{warn} 本地裁切仅为模拟；主体识别与微信入口安全区 UNVERIFIED。</p></div>')
 
 
 def asset_sheet(blocks, base="."):
@@ -1389,8 +1414,8 @@ def asset_sheet(blocks, base="."):
         rows.append(f'<div class="as"><p class="hint">{H.escape(src)} · {tag} · {info}<br>{H.escape(alt or "（无说明）")}</p></div>')
     return (f'<div class="cv"><h4>正文资产 · {len(imgs)} 张（图片见正文上下文）</h4>'
             + "".join(rows)
-            + '<p class="hint">逐张只问三句：合这套语法吗？比正文多给什么？390px 上主语还站得住吗？'
-              '→ 留下 / 重做 / 删除。留下的要能说出「为什么是这张」。</p></div>')
+            + '<p class="hint">主体、景别、图文增量、授权与安全区均为 UNVERIFIED，须看原图和上下文逐项填写。'
+              '纯文字已足够就删；多图须能解释顺序与比较口径。只留下能回答「为什么是这张」的图。</p></div>')
 
 
 def render(md, theme=None):
@@ -1528,7 +1553,8 @@ def build(md_path, theme=None, out=None):
 
     body = re.sub(r'(<img\b[^>]*src=")([^"]+)(")',
                   lambda m: m[1] + H.escape(output_src(H.unescape(m[2]))) + m[3], body)
-    open(out, "w", encoding="utf-8").write(body)
+    with open(out, "w", encoding="utf-8") as f:
+        f.write(body)
     prev = os.path.splitext(out)[0] + "_预览.html"
     # 预览模拟平台原生标题栏 / 作者行：title、author 只进原生字段，正文不再重印。
     # 复制按钮只复制 #c，模拟标题栏不会被带进编辑器。
@@ -1545,12 +1571,14 @@ def build(md_path, theme=None, out=None):
     preview = re.sub(r'(<img\b[^>]*src=")([^"]+)(")',
                      lambda m: m[1] + H.escape(preview_image(H.unescape(m[2]), out_base)) + m[3]
                      + ' data-local="' + m[2] + '"', preview)
-    open(prev, "w", encoding="utf-8").write(preview)
+    with open(prev, "w", encoding="utf-8") as f:
+        f.write(preview)
 
     # 发布字段 sidecar：publish.py --meta 直接消费，保证草稿原生字段与预览所见一致。
     cover = (meta.get("cover") or "").strip()
     m1, s1 = check(body)
-    m2, s2 = compose_gate(meta, blocks, base, key)
+    review = audit(meta, blocks)
+    m2, s2 = compose_gate(meta, blocks, base, key, review)
     # Gate 1 的建议级结论过去算完就丢；并进 Gate 2 的建议里，读者才看得到。
     s2 = [f"平台层建议：{x}" for x in s1] + s2
     contrasts = contrast_checks(key)
@@ -1561,7 +1589,6 @@ def build(md_path, theme=None, out=None):
     if fs["weight"] > 1:
         s2.append(f"首屏有 {fs['weight']} 个重元素（{'、'.join(fs['layers'])}）：只保留一个入口，"
                   f"其余降级为限定或证据")
-    review = audit(meta, blocks)
     side = {
         "title": meta.get("title", ""),
         "api_title": api_title(meta.get("title", "")),
@@ -1636,17 +1663,17 @@ def main():
         for item in facts_diff["dropped"]:
             if item in declared:
                 continue
-            change, why = classify_fact_change(original_blocks, blocks, "num", item) \
+            change, why = classify_fact_change(blocks, "num", item) \
                 if re.search(r"\d", item) else ("lost", "")
             if change == "lost":
-                change, why = classify_fact_change(original_blocks, blocks, "date", item)
+                change, why = classify_fact_change(blocks, "date", item)
             message = f"原稿事实单元在改稿中消失：{item}"
             if change in ("moved", "rounded"):
                 s2.append(f"{message}；{why}（结构性搬家/概括不等于删除，但口径需确认）")
             else:
                 m2.append(f"{message}；确认是删除还是改写，确属删除请写入 frontmatter removed_facts")
         for item in loose:
-            change, why = classify_fact_change(original_blocks, blocks, "date", item) \
+            change, why = classify_fact_change(blocks, "date", item) \
                 if not re.search(r"[^\d\-\s]", item) else ("added", "")
             if change == "rounded":
                 s2.append(f"改稿新增「{item}」；{why}（概括式表述，确认没有替代精确值）")
@@ -1684,7 +1711,7 @@ def main():
     print(f"{THEMES[key]['name']} → {res['out']}\n预览 → {res['preview']}\n"
           f"发布字段 → {res['meta_path']}（publish.py --meta 直接消费）\n")
     print("\nGate 3 证据（可核对的都摆在这里；结论与艺术判断由通读的人 / 视觉模型给）")
-    for line in evidence(meta, blocks, os.path.dirname(os.path.abspath(a.md))):
+    for line in evidence(meta, blocks, key):
         print("  " + line)
     for gate, must, should in res["gates"]:
         print(f"\n{gate}: {'FAIL' if must else 'PASS'}")
@@ -1705,7 +1732,8 @@ def main():
             report += "\n## 修改台账（已校验）\n\n| 位置 | 问题 | 动作 | 收益 | 保留检查 |\n|---|---|---|---|---|\n"
             report += "\n".join(f"| {r['位置']} | {r['问题']} | {r['动作']} | {r['收益']} | {r['保留检查']} |"
                                 for r in ledger_rows) + "\n"
-        open(os.path.join(deliver, "修改记录.md"), "w", encoding="utf-8").write(report)
+        with open(os.path.join(deliver, "修改记录.md"), "w", encoding="utf-8") as f:
+            f.write(report)
         acceptance = ["# 验收结果", "",
                       f"- 生成时间：本机运行 `render.py --deliver`（{SKILL_VERSION}）",
                       f"- 主题：`{key}`（{THEMES[key]['name']}）", ""]
@@ -1726,11 +1754,12 @@ def main():
                        "- Gate 4 真实微信：见上表；三者互不替代",
                        "- 事实逐项第二来源核真：本地脚本不做核真",
                        "- 独立外部读者 A/B 盲选：未执行"]
-        open(os.path.join(deliver, "验收.md"), "w", encoding="utf-8").write("\n".join(acceptance) + "\n")
+        with open(os.path.join(deliver, "验收.md"), "w", encoding="utf-8") as f:
+            f.write("\n".join(acceptance) + "\n")
         shutil.copyfile(a.md, os.path.join(deliver, "源稿.md"))
         print(f"\n交付包 → {deliver}（源稿/正文/预览/meta/修改记录/验收/素材）")
 
-    print("\nGate 3 Art Direction：对照上面证据通读 390px 预览。"
+    print("\nGate 3 Art Direction：对照四宽度证据通读预览；390px 只是其中一档。"
           "CONTENT / EDITORIAL / VISUAL / MOBILE / FINAL JUDGMENT —— 保留 / 修改 / 删除并说明理由，可以无需修改。")
     if not meta.get("author"):
         print("未提供 author：草稿作者栏将留空（作者名只走原生字段，正文不印）")

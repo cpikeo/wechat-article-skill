@@ -91,6 +91,16 @@ EDIT_WORK = {
 for key, work in EDIT_WORK.items():
     TYPES[key]["editorial_work"] = work
 
+# 语义验收也按类型分化；这些是需要编辑回答的问题，不是机器评分项。
+SEMANTIC_REVIEW = {
+    "news": ["标题兑现与事实归属", "时间线和消息来源", "事实/推断/未知边界", "影响与逐节信息增量", "原意、引语与作者声音"],
+    "analysis": ["标题兑现与比较口径", "证据→机制→推断链", "最强反例与适用边界", "逐节信息增量", "原意与作者声音"],
+    "tutorial": ["任务与完成标准", "版本、前提与执行顺序", "可观察的成功校验", "失败条件与回退", "命令、参数与原意保留"],
+    "profile": ["时间线、场景与引语出处", "人物选择与转折", "事实/评价/心理边界", "逐节叙事增量", "细节与作者声音"],
+    "opinion": ["主张与价值前提", "理由与最强反例", "回应、代价与结论限定", "事实/推断/观点边界", "作者立场与声音"],
+    "longform": ["主线与标题兑现", "伏笔、转折与回收", "时间线与章节信息增量", "结尾不引入未论证新证据", "原意与叙事声音"],
+}
+
 # 中文类型别名：frontmatter 允许写中文，解析到同一策略，避免作者被迫记英文键。
 TYPE_ALIASES = {
     "新闻": "news", "报道": "news", "新闻报道": "news",
@@ -259,11 +269,20 @@ def fact_occurrences(blocks):
 
 
 def quoted_spans(text):
-    """只把有说话/引用归属的引号当直接引语；强调性引号不冒充引语。"""
+    """只把有说话/引用归属的引号当直接引语；强调性引号不冒充引语。
+
+    中文既常写「他说：“……”」，也常写「“……”他说」。归属动词在引号后时
+    同样是直接引语，不能在改稿比对中被误报为新增或删除。
+    """
     out = []
+    attribution_after = re.compile(
+        r"^[\s，,：:]*(?:[\u4e00-\u9fff]{1,8})?(?:说|称|问|道|表示|宣布|写道|回答|补充|解释|强调|回忆)"
+    )
     for m in _QUOTED.finditer(text):
         before = text[max(0, m.start() - 14):m.start()]
-        if re.search(r"说|称|问|道|引述|引用|信中|古语|俗语|写道|回答|宣布|表示", before):
+        after = text[m.end():m.end() + 18]
+        if (re.search(r"说|称|问|道|引述|引用|信中|古语|俗语|写道|回答|宣布|表示", before)
+                or attribution_after.search(after)):
             out.append(next(g for g in m.groups() if g))
     return out
 
@@ -340,7 +359,7 @@ def compare_voice(original_blocks, edited_blocks):
             "status": "UNVERIFIED", "scope": "形态计数，不是声音相似度评分"}
 
 
-def classify_fact_change(original_blocks, edited_blocks, kind, value):
+def classify_fact_change(edited_blocks, kind, value):
     """一条事实「消失/新增」的性质：真丢失、结构性搬家，还是精度概括。
 
     - `moved`：数值被搬进 data / bars 块（值在行里、单位写在块标题），字面不再相邻。
@@ -348,15 +367,25 @@ def classify_fact_change(original_blocks, edited_blocks, kind, value):
     - `rounded`：只出现在导语/标题的年份概括，而同一年的精确日期仍在正文别处。
     - `lost` / `added`：其余情况——默认保守处理，必须人工回查。
     """
-    digits = re.findall(r"\d+", value)
-    if kind == "num" and digits:
-        core = digits[0]
+    if kind == "num":
+        number = re.match(r"\d[\d,]*(?:\.\d+)?", value)
         for block_kind, block in edited_blocks:
             if block_kind not in ("data", "bars"):
                 continue
-            if any(re.sub(r"[^\d]", "", line.replace("|", "｜").partition("｜")[0]) == core
-                   for line in block[1]):
-                return "moved", f"数值 {value} 现在位于 {block_kind} 块，单位写在块标题"
+            unit, body = block if isinstance(block, tuple) else ("", block)
+            lines = body if isinstance(body, list) else body.splitlines()
+            for raw_line in lines:
+                cells = [cell.strip() for cell in raw_line.replace("|", "｜").split("｜")]
+                # data 是「值｜标签」，bars 是「标签｜值｜满分」。
+                cell = cells[0] if block_kind == "data" else (cells[1] if len(cells) > 1 else "")
+                if not cell:
+                    continue
+                if value in {cell, cell + unit, unit + cell}:
+                    return "moved", f"数值 {value} 现在位于 {block_kind} 块，完整值与单位仍可对应"
+                if number and cell == number.group(0):
+                    suffix = value[number.end():]
+                    if not suffix or suffix in f"{unit} {raw_line}":
+                        return "moved", f"数值 {value} 现在位于 {block_kind} 块，值与单位分栏保留"
     if kind == "date":
         year = re.match(r"(\d{4})", value)
         precise = re.compile(rf"{year.group(1)}年\d{{1,2}}月\d{{1,2}}日") if year else None
@@ -500,9 +529,15 @@ def _add(issues, code, cls, severity, location, problem, action, benefit, eviden
         "code": code, "class": cls, "severity": severity, "location": location,
         "problem": problem, "action": action, "benefit": benefit, "evidence": evidence,
         "preservation": preservation, "needs": needs,
-        # V2/V3 消费者兼容：reason 曾是唯一说明字段。
+        # 兼容旧台账：reason 曾是唯一说明字段。
         "reason": evidence,
     })
+
+
+SUPERLATIVE = re.compile(
+    r"最(?!近|终|后|先|初|多(?:\d|[一二三四五六七八九十百千万]))|"
+    r"唯一|首次|没有之一|第一(?!部分|篇|章|节|课|步|阶段|季度|页|天|次|印象|人称|时间|顺位|梯队|期|卷|集|回|代)"
+)
 
 
 def promise_ledger(title, blocks, thesis=""):
@@ -523,7 +558,7 @@ def promise_ledger(title, blocks, thesis=""):
         raw = m.group(1)
         expected = int(raw) if raw.isdigit() else words[raw]
         # 所有有序列表的长度都要参与核对：作者可能把「三个参数」写在某一节里，
-        # 而全文最长的有序列表是另一节的四步自查（V7 评估实测的误判）。
+        # 而全文最长的有序列表可能是另一节的自查步骤。
         ordered_lists = [len(v[1]) for k, v in blocks if k == "list" and v[0]]
         ordered = max(ordered_lists, default=0)
         noun = re.search(r"方法|步骤|原因|问题|建议|误区|原则|技巧|理由|教训", m.group(0) + text[m.end():m.end()+4])
@@ -531,7 +566,7 @@ def promise_ledger(title, blocks, thesis=""):
                     or (noun and noun.group() in h and re.search(r"[一二三四五六七八九十\d]", h))]
         # 三处信号任一对得上就算兑现：显式编号标题、全部 H2、最长有序列表。
         # 旧实现固定取「explicit → heads → ordered」的先后顺序，会把「三个参数」这种
-        # 由有序列表（3 项）兑现、但章节数不同的标题误判成未兑现（V7 评估实测）。
+        # 由有序列表兑现、但章节数不同的标题不能因此判成未兑现。
         candidates = ([(len(explicit), "explicit")] if explicit else []) \
             + ([(len(heads), "heads")] if heads else []) \
             + [(n, "list") for n in sorted(set(ordered_lists)) if n]
@@ -570,11 +605,11 @@ def promise_ledger(title, blocks, thesis=""):
                     "observed": len(answer),
                     "status": "needs-judgment" if answer else "unclear",
                     "verification": "UNVERIFIED", "locations": answer})
-    if re.search(r"最|唯一|第一|首次|没有之一", text):
-        out.append({"kind": "superlative", "promise": "最高级断言", "expected": 1,
-                    "observed": 1 if re.search(r"最|唯一|第一|首次", body) else 0,
+    if SUPERLATIVE.search(text):
+        out.append({"kind": "superlative", "promise": "最高级或首次断言", "expected": 1,
+                    "observed": 1 if SUPERLATIVE.search(body) else 0,
                     "status": "needs-judgment",
-                    "locations": ["标题使用最高级；正文须给出比较范围与依据"]})
+                    "locations": ["标题使用最高级或首次断言；正文须给出比较范围、时间与依据"]})
     return out
 
 
@@ -643,9 +678,9 @@ def prose_clues(blocks):
 
     paragraphs = [(i, k, plain(v) if k in ("p", "h2", "h3") else block_text(k, v))
                   for i, (k, v) in enumerate(blocks, 1)]
+    last_prose = max((i for i, kind, text in paragraphs if kind == "p" and text.strip()), default=-1)
     template_hits = {name: [] for name in TEMPLATES}
     meta_hits, restate_blocks = [], []
-    abstract_blocks = []
 
     for index, kind, text in paragraphs:
         if not text.strip():
@@ -671,19 +706,24 @@ def prose_clues(blocks):
                         "读者每读一句都拿到新内容",
                         f"「{s1[:18]}…」与「{s2[:18]}…」相似度 ≥0.72")
                     break
-        # 4) 主语复读：同段连续三句同一开头，是机械扩写的典型痕迹
+        # 4) 主语复读：只比较有效中文开头；数字时间线不是主语复读。
         if len(sentences) >= 3:
-            heads = [plain(s)[:2] for s in sentences if len(plain(s)) >= 4]
-            run, best = 1, 1
+            heads = [_head_token(plain(s)) if len(plain(s)) >= 4 else "" for s in sentences]
+            run, best, best_token = 1, 1, ""
             for x, y in zip(heads, heads[1:]):
-                run = run + 1 if x == y else 1
-                best = max(best, run)
+                eligible = x and x not in _HEAD_STOP and not _is_number_token(x)
+                if eligible and x == y:
+                    run += 1
+                    if run > best:
+                        best, best_token = run, x
+                else:
+                    run = 1
             if best >= 3:
                 add("REPEAT-SUBJECT", "should", f"块 {index}",
                     "同段连续多句以相同两字开头，读起来像逐句改写而非推进",
                     "改为主语一次、其余句子承接；或按信息重新分句",
                     "段落从重复句式回到真正的推进",
-                    f"连续 {best} 句同一开头「{heads[0]}…」")
+                    f"连续 {best} 句同一开头「{best_token}…」")
         # 5) 句长过齐：五句以上且长度几乎相同，节奏失去疏密
         lens = [len(plain(s)) for s in sentences if plain(s)]
         if len(lens) >= 5 and statistics.pstdev(lens) < 3.5:
@@ -699,7 +739,6 @@ def prose_clues(blocks):
         if (len(abstract) >= 3 or (len(abstract) >= 2 and len(abstract_hits) >= 4)) \
                 and not re.search(r"\d", text) \
                 and not ATTRIB.search(text) and not quoted_spans(text) and len(text) >= 60:
-            abstract_blocks.append((index, abstract))
             add("EMPTY-ABSTRACT", "should", f"块 {index}",
                 "抽象名词密集且没有数字、来源或引语，读者拿不到可核内容",
                 "把其中一个抽象名词换成一个具体的人、数、动作或时间",
@@ -765,7 +804,7 @@ def prose_clues(blocks):
                 f"本段「{best_token}…」连续 {best} 次")
         # 11) 空洞呼吁收尾：结尾段靠号召与愿景收束，没有可执行动作
         hollow = HOLLOW_CALL.findall(text)
-        if hollow and len(hollow) >= HOLLOW_CALL_MIN and not re.search(r"\d", text) \
+        if index == last_prose and hollow and len(hollow) >= HOLLOW_CALL_MIN and not re.search(r"\d", text) \
                 and not ATTRIB.search(text) and not quoted_spans(text):
             add("HOLLOW-CLOSE", "should", f"块 {index}",
                 "段落以号召/愿景收束，但没有具体动作、对象或时间",
@@ -792,7 +831,7 @@ def prose_clues(blocks):
             "检查每次换说是否真的更清楚；若只是复述，删掉后一次",
             "解释只在不清楚之处出现",
             "命中：" + "、".join(sorted({w for _, w in restate_blocks})[:4]))
-    return out, abstract_blocks
+    return out
 
 
 def section_gain(blocks):
@@ -888,13 +927,12 @@ def _section_stats(blocks):
     return sections
 
 
-def audit(meta, blocks):
-    """返回完整审计结果：brief / strategy / claim_map / promise / issues / ledger。"""
-    issues, paragraphs, seen = [], [], {}
-    title = meta.get("title", "").replace("|", "｜")
-    type_key, type_ok = resolve_type(meta.get("article_type", ""))
-    strategy = TYPES.get(type_key)
+EVIDENCE_KINDS = {"note", "table", "data", "bars", "quote", "code"}
 
+
+def _text_issues(blocks, sections=None):
+    """逐段文字与整体结构线索；每条自己的 class 决定它是形态还是判断入口。"""
+    issues, paragraphs, seen = [], [], {}
     # --- 形态检查（mechanical） ---
     for index, (kind, value) in enumerate(blocks, 1):
         text = block_text(kind, value)
@@ -919,7 +957,8 @@ def audit(meta, blocks):
                     break
             nearby = blocks[max(0, index - 2):min(len(blocks), index + 1)]
             has_source = any(k == "note" for k, _ in nearby) or bool(re.search(r"https?://", text))
-            if kind == "p" and re.search(r"\d+(?:\.\d+)?(?:%|％|亿元|万元|万人|倍|年|月|日|小时|美元)", text) and not has_source:
+            # 日历日期本身不是统计证据需求；人物叙事中的「1990年」不应与「37%」同规则。
+            if kind == "p" and re.search(r"\d+(?:\.\d+)?(?:%|％|亿元|万元|万人|倍|小时|美元)", text) and not has_source:
                 _add(issues, "NUM-NO-SOURCE", "mechanical", "should", f"块 {index}",
                      "关键数字附近未见可核对依据", "核查数字并就近补口径",
                      "读者可判断时间、口径与结论力度", "相邻块未见来源 note 或 HTTP(S) 链接",
@@ -973,7 +1012,7 @@ def audit(meta, blocks):
              "重点重新变得可辨", f"段落内强调标记 {marks} 处 / 段落 {len(paragraphs)} 个")
 
     # --- 台账与整体结构 ---
-    sections = _section_stats(blocks)
+    sections = _section_stats(blocks) if sections is None else sections
     total = sum(s["chars"] for s in sections)
     if len(sections) >= 2 and total:
         for section in sections:
@@ -994,14 +1033,24 @@ def audit(meta, blocks):
                  "结尾出现前文未论证的新数字", "把该证据移到对应章节，或删去", "结尾只收束已论证的内容",
                  f"新出现：{'、'.join(f[1] for f in fresh[:3])}", needs="editor")
 
+    issues.extend(prose_clues(blocks))
+    return issues
+
+
+def _judgment_issues(meta, blocks, type_key, sections=None):
+    """只为编辑/模型定位论证与类型疑点；严重级别不得高于其证据。"""
+    issues = []
+    sections = _section_stats(blocks) if sections is None else sections
+    strategy = TYPES.get(type_key)
+    evidence_kinds = EVIDENCE_KINDS
     # --- 论证层（judgment）：只定位，不判决 ---
-    evidence_kinds = {"note", "table", "data", "bars", "quote", "code"}
     for index, (kind, value) in enumerate(blocks, 1):
         if kind != "p":
             continue
         text = plain(value)
         claim_like = bool(re.search(r"应该|必须|意味着|说明|证明|表明|因此|所以|结论|关键|本质", text))
-        window = blocks[max(0, index - 2):min(len(blocks), index + 2)]
+        # index 为 1-based；当前块在数组 index-1。覆盖前两块、当前块与后两块。
+        window = blocks[max(0, index - 3):min(len(blocks), index + 2)]
         backed = any(k in evidence_kinds for k, _ in window) or bool(re.search(r"https?://|\d{4}", text))
         if claim_like and not backed and len(text) > 40:
             _add(issues, "ORPHAN-CLAIM", "judgment", "should", f"块 {index}",
@@ -1031,8 +1080,7 @@ def audit(meta, blocks):
                  "评论没有处理最强反例", "写出反例并回应，或缩小主张范围",
                  "读者能判断作者是否考虑过相反证据", "全文未见转折/反例/局限表述", needs="editor")
     if type_key == "news":
-        head = blocks[:2]
-        if head and head[0][0] not in ("lead", "p", "data", "table"):
+        if blocks and blocks[0][0] not in ("lead", "p", "data", "table"):
             _add(issues, "OPENING-TYPE", "judgment", "should", "首屏",
                  "新闻稿首屏没有先给事实", f"先给：{strategy['opening']}",
                  "读者在首屏拿到可核对的事实", "首个正文块为引文或图片", needs="editor")
@@ -1047,9 +1095,52 @@ def audit(meta, blocks):
                  "教程只写成功路径", "补失败条件与回退方式",
                  "读者在出问题时能自行判断", "全文未见失败/回退表述", needs="fact-check")
 
-    # --- 文风与机械扩写线索（mechanical，只指位置） ---
-    style_issues, _abstract_blocks = prose_clues(blocks)
-    issues.extend(style_issues)
+    return issues
+
+
+def _promise_issues(promises):
+    """把标题结构候选转成复核事项；语义兑现不由关键词或 H2 数量认证。"""
+    issues = []
+    for p in promises:
+        if p["kind"] == "number" and p["status"] == "absent":
+            _add(issues, "PROMISE-NUMBER", "mechanical", "should", "标题与全文",
+                 f"标题里的数值「{p['promise']}」在正文没有同值出现",
+                 "正文补出该数值（含口径与期间），或改标题",
+                 "标题的数字承诺能被逐字核对",
+                 f"标题承诺 {p['promise']}；正文未见同值")
+        if p["kind"] == "count" and p["status"] != "fulfilled":
+            _add(issues, "PROMISE-COUNT", "judgment", "should", "标题与全文",
+                 "标题数量承诺尚未在可见结构中逐项对齐", "通读正文确认分项；需要时补定位或收窄标题",
+                 "避免把普通段落中的真实回答误判为未兑现，也避免漏掉缺失分项",
+                 f"标题承诺 {p['expected']} 项；H2/有序列表可见 {p['observed']} 项；普通段落未由机器计数",
+                 needs="editor")
+        if p["kind"] == "object" and p["status"] == "absent":
+            _add(issues, "PROMISE-OBJECT", "judgment", "should", "标题与全文",
+                 "标题中的明确对象未以同一名称在正文出现", "确认是否使用简称或已实际兑现；必要时补定位或收窄标题",
+                 "让标题对象能被读者定位，同时允许合理的名称变化",
+                 f"标题对象“{p['promise']}”未以同一名称出现；语义等价需编辑确认", needs="editor")
+        if p["kind"] == "question" and p["status"] == "unclear":
+            _add(issues, "PROMISE-QUESTION", "judgment", "should", "标题与全文",
+                 "问题型标题缺少可定位的回答结构", "标出核心回答与推导步骤",
+                 "读者能确认标题问题在何处被回答", "未提供 thesis，且 H2 未见回答性表述；关键词命中也不等于回答成立", needs="editor")
+        if p["kind"] == "superlative":
+            _add(issues, "PROMISE-SUPERLATIVE", "judgment", "note", "标题",
+                 "最高级断言需要比较范围与依据", "写明比较范围、时间与来源",
+                 "读者能核对最高级或首次断言是否成立", "标题含明确的最高级/首次断言语素；最近、最终等普通词不计", needs="fact-check")
+
+    return issues
+
+
+def audit(meta, blocks):
+    """返回完整审计结果：brief / strategy / claim_map / promise / issues / ledger。"""
+    title = meta.get("title", "").replace("|", "｜")
+    type_key, type_ok = resolve_type(meta.get("article_type", ""))
+    strategy = TYPES.get(type_key)
+
+    sections = _section_stats(blocks)
+    issues = _text_issues(blocks, sections)
+    issues.extend(_judgment_issues(meta, blocks, type_key, sections))
+    evidence_kinds = EVIDENCE_KINDS
 
     # --- 未知项：新闻/分析必须给「还不知道什么」，否则读者会把推断当已确认 ---
     if type_key in ("news", "analysis"):
@@ -1080,34 +1171,7 @@ def audit(meta, blocks):
 
     # --- 标题承诺 ---
     promises = promise_ledger(title, blocks, meta.get("thesis", ""))
-    for p in promises:
-        if p["kind"] == "number" and p["status"] == "absent":
-            _add(issues, "PROMISE-NUMBER", "mechanical", "should", "标题与全文",
-                 f"标题里的数值「{p['promise']}」在正文没有同值出现",
-                 "正文补出该数值（含口径与期间），或改标题",
-                 "标题的数字承诺能被逐字核对",
-                 f"标题承诺 {p['promise']}；正文未见同值")
-        if p["kind"] == "count" and p["status"] != "fulfilled" and p["observed"]:
-            _add(issues, "PROMISE-COUNT", "mechanical", "must", "标题与全文",
-                 "标题的数量承诺与可见结构不一致", "逐项核对标题承诺",
-                 "避免点击后发现正文没有兑现标题",
-                 f"标题承诺 {p['expected']} 项；可见 {p['observed']} 项")
-        if p["kind"] == "count" and p["status"] == "absent":
-            _add(issues, "PROMISE-COUNT", "judgment", "must", "标题与全文",
-                 "标题承诺的分项在正文没有可定位结构", "补分项标题或收窄标题",
-                 "标题与目录能对上", "标题含数量承诺，正文无 H2 或有序列表", needs="editor")
-        if p["kind"] == "object" and p["status"] == "absent":
-            _add(issues, "PROMISE-OBJECT", "mechanical", "must", "标题与全文",
-                 "标题中的明确对象未在正文出现", "补兑现位置或收窄标题",
-                 "让标题对象能在正文被定位", f"标题对象“{p['promise']}”未出现在正文")
-        if p["kind"] == "question" and p["status"] == "unclear":
-            _add(issues, "PROMISE-QUESTION", "judgment", "should", "标题与全文",
-                 "问题型标题缺少可定位的回答结构", "标出核心回答与推导步骤",
-                 "读者能确认标题问题在何处被回答", "未提供 thesis，且 H2 未见回答性表述；关键词命中也不等于回答成立", needs="editor")
-        if p["kind"] == "superlative":
-            _add(issues, "PROMISE-SUPERLATIVE", "judgment", "note", "标题",
-                 "最高级断言需要比较范围与依据", "写明比较范围、时间与来源",
-                 "读者能核对最高级是否成立", "标题含“最/唯一/第一”", needs="fact-check")
+    issues.extend(_promise_issues(promises))
 
     # --- brief ---
     brief_keys = ("audience", "reading_context", "purpose", "thesis")
@@ -1158,11 +1222,11 @@ def audit(meta, blocks):
         "claim_map": claim_map,
         "argument_map": argument_map,
         "semantic_review": {"status": "UNVERIFIED", "questions": strategy["editorial_work"]["questions"] if strategy else [],
-                            "required": ["标题兑现", "逐节信息增量", "证据到结论的推导", "最强反例", "结论适用范围", "原意与声音保留"]},
+                            "required": SEMANTIC_REVIEW.get(type_key, ["标题兑现", "信息增量", "事实边界", "原意与作者声音"])},
         "promise": promises,
         "issues": issues,
         "summary": summary,
-        # V7：分歧必须显式分开——机器线索 / 编辑判断 / 未验证的语义结论。
+        # 分歧必须显式分开——机器线索 / 编辑判断 / 未验证的语义结论。
         "evidence_classes": {
             "mechanical": "只表示形态命中，不表示写得好或坏；每条的 evidence 字段给出命中依据",
             "judgment": "只定位疑点并写明「需要谁判断」，结论由编辑或模型给出，脚本不下结论",
@@ -1211,6 +1275,7 @@ def render_report(result, facts_diff=None, ledger_problems=None, voice_diff=None
     s = result["summary"]
     lines.append(f"- 形态问题 {s['mechanical']} 项 · 判断类问题 {s['judgment']} 项 · 必须修 {s['must']} 项")
     lines.append(f"- 缺 brief 字段：{'、'.join(result['missing_brief']) or '无'}")
+    lines.append("- 本类语义验收（均 UNVERIFIED）：" + " / ".join(result["semantic_review"]["required"]))
     if result["promise"]:
         lines += ["", "## 标题承诺", "", "| 类型 | 承诺 | 期望 | 可见 | 状态 |", "|---|---|---:|---:|---|"]
         for p in result["promise"]:

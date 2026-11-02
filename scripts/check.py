@@ -177,7 +177,7 @@ def _parse_style(style):
     return props, issues
 
 
-def _safe_http_url(value):
+def safe_http_url(value):
     if not isinstance(value, str) or not value or value != value.strip():
         return False
     if any(ord(c) < 0x20 for c in value) or any(c.isspace() for c in value) or "\\" in value:
@@ -240,7 +240,7 @@ class Leaf(HTMLParser):
         if "style" in a:
             props, problems = _parse_style(a.get("style"))
             self.must.extend(problems)
-        if tag == "a" and not _safe_http_url(a.get("href")):
+        if tag == "a" and not safe_http_url(a.get("href")):
             self.must.append("a href 只允许带有效主机名的 HTTP(S) URL")
         if tag == "img":
             src = a.get("src") or ""
@@ -316,7 +316,8 @@ def check(html):
 def main():
     if len(sys.argv) != 2:
         sys.exit("用法：python3 scripts/check.py 正文.html")
-    must, should = check(open(sys.argv[1], encoding="utf-8").read())
+    with open(sys.argv[1], encoding="utf-8") as f:
+        must, should = check(f.read())
     for level, msgs in (("必须改", must), ("建议改", should)):
         for msg in msgs:
             print(level, "·", msg)
