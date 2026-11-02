@@ -54,7 +54,7 @@ description: 将 Markdown、Word 或纯文本编辑为可信、克制、适合�
 
 命中不等于写得差：必要复现、公版原文、术语串不属于缺陷。**每条线索只是「回原文看一眼」的地址。**
 
-自检口径：`tests/v7.py` 用**两份**负例——一份按规则写，一份只看「常见 AI 文风」独立写；再用六类 18 篇与六组案例做反向检查（真实稿件上出现这些线索即视为误报）。只对第一份负例有效的规则会红。
+自检口径：线索必须有**判别力**而不是自洽——负例一份按规则写、一份只看「常见 AI 文风」独立写，再用真实稿件做反向检查（真实稿件上出现这些线索即视为误报）。只对自造负例有效的规则不算规则。
 
 ### 事实、推断、观点、未知
 
@@ -101,7 +101,7 @@ description: 将 Markdown、Word 或纯文本编辑为可信、克制、适合�
 
 去色后仍要能凭字号、字重、对齐、空间、规则线和组件关系读出结构；若差异只剩颜色，主题尚未成立。主题推荐须解释“为什么适合这篇”，而非颜色偏好。
 
-主题轴（`lead/heading/h3/peak/divider/quote/image/data/table/list`）的取值全集登记在 `render.py` 的 `THEME_AXES`，载入时校验：写错的取值直接报错，不会静默落回默认样式；新增取值必须同时有渲染分支。字号层级是硬约束而非偏好——**导语必须小于章节标题**（否则首屏两个同级入口），导语大于正文，H2 大于 H3，正文 15–17px，最小 12px；`validate_themes()` 与 `tests/visuals.py` 的浏览器层级断言各自把关一次。章节标记（01 /、SECTION 之类）不得同一形态连续复读三次以上。
+主题轴（`lead/heading/h3/peak/divider/quote/image/data/table/list`）的取值全集登记在 `render.py` 的 `THEME_AXES`，载入时校验：写错的取值直接报错，不会静默落回默认样式；新增取值必须同时有渲染分支。字号层级是硬约束而非偏好——**导语必须小于章节标题**（否则首屏两个同级入口），导语大于正文，H2 大于 H3，正文 15–17px，最小 12px；`validate_themes()` 在载入时把关；浏览器四宽度检查是对同一约束的第二道证据。章节标记（01 /、SECTION 之类）不得同一形态连续复读三次以上。
 
 ### 文字、首屏与节奏
 
@@ -140,11 +140,6 @@ python3 scripts/render.py 文章.md --theme frost -o 交付/正文.html
 python3 scripts/render.py 文章.md --against 原稿.md --ledger 台账.md
 python3 scripts/render.py 文章.md --deliver 交付目录/
 python3 scripts/extract_docx.py 文章.docx -o 文章.md
-python3 tests/run.py            # 回归（含 V7 编辑/主题/发布护栏）
-python3 tests/run.py --shots --shoot 文章.md
-python3 tests/visuals.py        # 六主题 × 四宽度 + 层级/标记断言
-python3 tests/model_eval.py --list          # 六类受控评估协议
-python3 tests/model_eval.py --report --run-dir evaluation/model-eval/runs/in-session-v7
 ```
 
 输出正文 HTML、独立浏览器预览、`.meta.json`、编辑/事实记录和验收状态；`--deliver` 会带上源稿与本地素材。Gate 1/2 有必须修事项时退出码为 1；待补素材可预览，但发布预检会阻断。
@@ -156,4 +151,4 @@ python3 tests/model_eval.py --report --run-dir evaluation/model-eval/runs/in-ses
 
 编辑审计把结论分成三类并分节呈现：`mechanical`（形态命中，附命中依据）/ `judgment`（只定位疑点并写明需要谁判断）/ `verification`（核真、语义兑现、审美与真机，一律 `UNVERIFIED`）。任何一类都不得冒用另一类的名义下结论。
 
-六类样稿和六主题同稿对照为开发评估，不进入 Skill 运行时。`tests/model_eval.py` 固定提示词、输入指纹、重复次数与采样参数声明，把六类文章的生成、逐项指标与重复间稳定性写进 `evaluation/model-eval/REPORT.md`；首轮失败与后续修正记在 `RUN-NOTES.md`，不做「一次就过」的包装。独立外部盲评包可由 `--blind` 生成（答案 key 单独存放、不入库），第三方回填前为 `UNVERIFIED`。逐项第二来源核真与微信真机无账号/设备时标为 `BLOCKED`，不得以合成测试冒充。发布默认止于草稿；正式发布必须本次显式 `--submit --confirm-title "逐字标题"`，config 不可持久授权。详见 `references/publish.md` 与 `references/platform.md`。
+六类样稿与六主题同稿对照属于开发评估，不进入 Skill 运行时；本包只含运行时文件，回归与评估资产在开发仓库。评估口径固定提示词、输入指纹、重复次数与采样参数，且**记录首轮失败**而不是只报最终结果。当前状态必须如实读作：独立外部盲评 `UNVERIFIED`（没有第三方回填前不给偏好结论）、逐项第二来源核真与微信真机在无账号/设备时为 `BLOCKED`，不得以合成测试冒充。发布默认止于草稿；正式发布必须本次显式 `--submit --confirm-title "逐字标题"`，config 不可持久授权。详见 `references/publish.md` 与 `references/platform.md`。

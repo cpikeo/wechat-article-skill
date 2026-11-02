@@ -1,10 +1,11 @@
+# 运行时与开发均在本地生成的输出，一律不入库
 __pycache__/
 *.pyc
+
+# 凭证与账号相关的本地状态
 config.json
-evaluation/visual-review/
 .wechat_material_cache.json
 .wechat_publish_audit.jsonl
 
-# Local blind-review packets; keep answer keys outside shared review folders.
-wechat-blind/
-evaluation/model-eval/blind/
+# 交付物与临时产物
+交付/

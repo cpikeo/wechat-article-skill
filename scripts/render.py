@@ -1717,7 +1717,7 @@ def main():
             acceptance.append("")
         acceptance += ["## 微信验收：三级必须分开记录", "",
                        "| 级别 | 能证明什么 | 本轮状态 |", "|---|---|---|",
-                       "| 浏览器 PASS | 本地 320/360/390/430px 无溢出、无数值拆行、最小字号达标 | UNVERIFIED（需 `tests/visuals.py` 实际执行证据） |",
+                       "| 浏览器 PASS | 本地 320/360/390/430px 无溢出、无数值拆行、最小字号达标 | UNVERIFIED（需四宽度实跑截图作为证据） |",
                        "| API 回读 PASS | 草稿字段与本地正文逐字一致（title/content/thumb_media_id） | UNVERIFIED（需授权账号执行 `publish.py`）|",
                        "| 微信真机 PASS | 客户端清洗后的样式、后台重开、iOS/Android 阅读、封面 2.35:1 与 1:1 裁切 | UNVERIFIED（需真机，脚本无法代劳） |",
                        "",
