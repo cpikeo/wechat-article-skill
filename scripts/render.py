@@ -31,7 +31,7 @@ from editorial import (audit, block_text, classify_fact_change, compare_facts,  
                        plain, peak_text, render_report, strategy_notes)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-SKILL_VERSION = "8.0.0"
+SKILL_VERSION = "9.0.0"
 THEMES_PATH = os.path.join(HERE, "..", "assets", "themes.json")
 with open(THEMES_PATH, "rb") as _theme_file:
     THEME_CONFIG_BYTES = _theme_file.read()
@@ -125,6 +125,7 @@ COVER_MIN_W = 900                     # 下方会被裁，再窄就糊
 
 BR = '<span leaf=""><br></span>'
 INLINE = re.compile(r"`([^`]+)`|==(.+?)==|\*\*(.+?)\*\*|<u>(.+?)</u>|~~(.+?)~~|\[([^\]]+)\]\(([^)\s]+)\)")
+INLINE_BRACKET_LINK = re.compile(r"\[(\[[^\]\n]*\])\]\(([^)\s]+)\)")
 # 标题自带序号（一、/（二）/第三章/1. /01 …）：章标是构成不是内容，不叠加第二套编号。
 ORDINAL = re.compile(r"^(?:[一二三四五六七八九十]{1,3}[、．.．]|[（(][一二三四五六七八九十0-9]{1,3}[）)]"
                      r"|第[一二三四五六七八九十0-9]{1,3}[章节回讲部篇期段条则辑卷问日]"
@@ -159,6 +160,81 @@ FRONTMATTER_FIELDS = {
     "composition", "visual_concept", "information_shape", "asset_strategy", "mobile_risk", "design_rationale",
     "cover", "kicker", "deck", "author", "date", "toc", "source", "removed_facts", "digest", "bio", "cta",
 }
+
+_LIST_LINE = re.compile(r"^( *)([-*]|[0-9]{1,9}[.、])\s+(.+?)\s*$")
+
+
+def _new_list_node(ordered, start=1):
+    return {"ordered": ordered, "start": start if ordered else 1, "items": []}
+
+
+def _list_node_accepts(node, ordered, number):
+    if node["ordered"] != ordered:
+        return False
+    if not ordered:
+        return True
+    expected = node["start"] + len(node["items"])
+    return number == expected
+
+
+def parse_list(lines, start_index):
+    """Parse nested ordered/unordered lists into a small tree, preserving restarts.
+
+    Two spaces are one nesting level. DOCX export uses this convention; ordinary
+    top-level Markdown remains standard. A visible ⟦marker⟧ prefix is an opt-in
+    renderer extension used only when Word's numbering format is not decimal.
+    """
+    roots, stack, owners = [], [], []
+    previous_level = -1
+    i = start_index
+    while i < len(lines):
+        raw = lines[i].rstrip()
+        match = _LIST_LINE.match(raw)
+        if not match:
+            break
+        indent, marker, content = match.groups()
+        if "\t" in indent or len(indent) % 2:
+            raise ValueError(f"第 {i + 1} 行：列表缩进须为 2 个空格的整数倍")
+        level = len(indent) // 2
+        if level > 8:
+            raise ValueError(f"第 {i + 1} 行：嵌套列表层级超过 8")
+        if level > previous_level + 1:
+            raise ValueError(f"第 {i + 1} 行：嵌套列表跳过父级条目")
+        ordered = bool(marker[0].isdigit())
+        number = int(marker[:-1]) if ordered else 1
+        if ordered and not 0 <= number <= 999999:
+            raise ValueError(f"第 {i + 1} 行：有序列表起始编号超出范围")
+        custom = re.match(r"^⟦([^⟧]{1,64})⟧(?:\s+|$)", content)
+        custom_marker = custom.group(1) if custom else None
+        if custom:
+            content = content[custom.end():]
+        if not content.strip():
+            raise ValueError(f"第 {i + 1} 行：列表项不能为空")
+
+        if level == 0:
+            if not roots or not _list_node_accepts(roots[-1], ordered, number):
+                roots.append(_new_list_node(ordered, number))
+            node = roots[-1]
+            stack, owners = [node], [None]
+        else:
+            if len(stack) < level:
+                raise ValueError(f"第 {i + 1} 行：嵌套列表没有对应的父项")
+            parent_node = stack[level - 1]
+            if not parent_node["items"]:
+                raise ValueError(f"第 {i + 1} 行：嵌套列表没有对应的父项")
+            parent_item = parent_node["items"][-1]
+            owner = id(parent_item)
+            node = stack[level] if len(stack) > level and owners[level] == owner else None
+            if node is None or not _list_node_accepts(node, ordered, number):
+                node = _new_list_node(ordered, number)
+                parent_item["children"].append(node)
+            stack = stack[:level] + [node]
+            owners = owners[:level] + [owner]
+
+        node["items"].append({"text": content.strip(), "marker": custom_marker, "children": []})
+        previous_level = level
+        i += 1
+    return roots, i
 
 
 def parse(md):
@@ -252,24 +328,11 @@ def parse(md):
             if not mm:
                 raise ValueError("图片语法错误：使用 ![说明](路径 \"职责\")，带空格路径请重命名")
             blocks.append(("img", mm.groups()))
-        elif re.match(r"([-*]|\d+[.、])\s", s):
-            if ln != ln.lstrip():
-                raise ValueError(f"第 {i + 1} 行：嵌套或缩进列表不支持，请显式展平并核对层级")
+        elif _LIST_LINE.match(ln):
             flush()
-            ordered, items = bool(re.match(r"\d", s)), []
-            while i < len(lines) and re.match(r"\s*([-*]|\d+[.、])\s", lines[i]):
-                raw = lines[i]
-                marker = re.match(r"\s*([-*]|\d+[.、])\s+", raw).group(1)
-                if raw != raw.lstrip():
-                    raise ValueError(f"第 {i + 1} 行：嵌套或缩进列表不支持，请显式展平并核对层级")
-                if bool(re.match(r"\d", marker)) != ordered:
-                    raise ValueError(f"第 {i + 1} 行：混合列表类型，请用空行分开")
-                if ordered and int(marker[:-1]) != len(items) + 1:
-                    raise ValueError(f"第 {i + 1} 行：有序列表必须从 1 连续编号，避免改变原顺序")
-                items.append(re.sub(r"^\s*([-*]|\d+[.、])\s+", "", raw))
-                i += 1
-            i -= 1
-            blocks.append(("list", (ordered, items)))
+            nodes, next_i = parse_list(lines, i)
+            blocks.extend(("list", node) for node in nodes)
+            i = next_i - 1
         elif s.startswith("|"):
             flush()
             rows = []
@@ -379,10 +442,19 @@ class R:
     def inline(self, s, normalize=True):
         t, out, pos = self.t, [], 0
         s = typo(s) if normalize else s
-        for m in INLINE.finditer(s):
+        matches = [(m, False) for m in INLINE.finditer(s)]
+        matches.extend((m, True) for m in INLINE_BRACKET_LINK.finditer(s))
+        matches.sort(key=lambda item: item[0].start())
+        for m, bracket_link in matches:
+            if m.start() < pos:
+                continue
             if m.start() > pos:
                 out.append(self.prose_leaf(s[pos:m.start()]))
-            code, mark, bold, u, strike, ltext, url = m.groups()
+            if bracket_link:
+                code = mark = bold = u = strike = None
+                ltext, url = m.groups()
+            else:
+                code, mark, bold, u, strike, ltext, url = m.groups()
             if code:
                 out.append(f'<span style="font-family:{MONO};font-size:{SMALL}px;background:{t["field"]};'
                            f'padding:1px 5px;border-radius:3px;color:{t["text"]};">{self.leaf(code)}</span>')
@@ -837,31 +909,48 @@ class R:
         return (f'<section style="margin:{self.g(24)}px 0 {below if below is not None else self.g(24)}px;">'
                 + "".join(blocks) + "</section>")
 
-    def lst(self, ordered, items):
-        t, out, mode = self.t, [], self.t["list"]
+    def lst(self, node, depth=0):
+        """Render a nested list tree; ordered starts and custom Word markers survive."""
+        t, mode = self.t, self.t["list"]
+        ordered = node["ordered"]
+        items = node["items"]
+        start = node.get("start", 1)
         chinese = "一二三四五六七八九十"
-        for n, item in enumerate(items, 1):
-            if ordered:
+        out = []
+        for index, item in enumerate(items):
+            number = start + index
+            if item.get("marker"):
+                marker = item["marker"]
+            elif ordered:
                 marker = {
-                    "index": f"{n:02d}",
-                    "dash": f"{n}.",
-                    "chinese": (chinese[n - 1] + "、") if n <= len(chinese) else f"{n}、",
-                    "report": f"{n:02d}",
-                    "atelier": (chinese[n - 1] + "　") if n <= len(chinese) else f"{n}　",
-                    "folio": f"{n:02d}/",
+                    "index": f"{number:02d}",
+                    "dash": f"{number}.",
+                    "chinese": (chinese[number - 1] + "、") if number <= len(chinese) else f"{number}、",
+                    "report": f"{number:02d}",
+                    "atelier": (chinese[number - 1] + "　") if number <= len(chinese) else f"{number}　",
+                    "folio": f"{number:02d}/",
                 }[mode]
             else:
                 marker = {"index": "·", "dash": "—", "chinese": "〇", "report": "—",
                           "atelier": "◇", "folio": "▪"}[mode]
-            marker_color = t["accent"] if mode in ("dash", "folio") else t["muted"]
+            marker_color = t["accent"] if item.get("marker") or mode in ("dash", "folio") else t["muted"]
             marker_family = SERIF if mode in ("chinese", "atelier") else self.font
-            marker_html = self.p(self.leaf(marker), SMALL if ordered else self.body, marker_color,
-                                 f"font-weight:{600 if mode in ('report', 'folio') else 500};font-family:{marker_family};")
-            width = 34 if mode in ("chinese", "atelier", "folio") else 28 if ordered else 20
+            marker_html = self.p(self.leaf(marker), SMALL if ordered or item.get("marker") else self.body,
+                                 marker_color,
+                                 f"font-weight:{600 if ordered or item.get('marker') else 500};"
+                                 f"font-family:{marker_family};")
+            width = (max(28, min(64, round(text_px(marker, SMALL) + 8))) if item.get("marker")
+                     else 34 if mode in ("chinese", "atelier", "folio")
+                     else 28 if ordered else 20)
             rule = f"border-top:1px solid {t['line']};padding-top:10px;" if mode == "report" else ""
+            children = "".join(self.lst(child, depth + 1) for child in item.get("children", []))
+            body = self.p(self.inline(item["text"])) + children
             out.append(f'<section style="display:flex;margin-bottom:{self.g(10)}px;{rule}">'
                        f'<section style="width:{width}px;flex-shrink:0;padding-top:2px;">{marker_html}</section>'
-                       f'<section style="flex:1;min-width:0;">{self.p(self.inline(item))}</section></section>')
+                       f'<section style="flex:1;min-width:0;">{body}</section></section>')
+        if depth:
+            return (f'<section style="margin:5px 0 0 {min(depth * 14, 42)}px;">'
+                    + "".join(out) + "</section>")
         return f'<section style="margin:{self.g(8)}px 0 {self.g(22)}px;">{"".join(out)}</section>'
 
     def code(self, lang, body):
@@ -1468,7 +1557,7 @@ def render(md, theme=None):
         elif kind == "table":
             out.append(r.table(b, below=below))
         elif kind == "list":
-            out.append(r.lst(*b))
+            out.append(r.lst(b))
         elif kind == "code":
             out.append(r.code(*b))
         elif kind == "img":

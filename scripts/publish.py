@@ -65,11 +65,19 @@ def _get_json(url):
     return body
 
 
+def _multipart_filename(filepath):
+    """Multipart filename is metadata, not the uploaded file itself; make it header-safe ASCII."""
+    original = os.path.basename(filepath)
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", original).strip("._")
+    return (safe[:120] or "upload")
+
+
 def _post_multipart_file(url, filepath, field_name="media", extra_fields=None):
     """手写 multipart/form-data，不依赖 requests 库。"""
     boundary = uuid.uuid4().hex
-    filename = os.path.basename(filepath)
-    mime_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+    original_filename = os.path.basename(filepath)
+    filename = _multipart_filename(filepath)
+    mime_type = mimetypes.guess_type(original_filename)[0] or "application/octet-stream"
 
     parts = []
     for key, val in (extra_fields or {}).items():
@@ -170,7 +178,7 @@ def rewrite_local_images(html, access_token, base_dir="."):
     def _replace(match):
         prefix, double, single, bare = match.groups()
         src = H.unescape(next(v for v in (double, single, bare) if v is not None))
-        if src.startswith("http://") or src.startswith("https://"):
+        if src.lower().startswith(("http://", "https://")):
             return match.group(0)
         local_file = local_path(src, base_dir)
         if not os.path.isfile(local_file):

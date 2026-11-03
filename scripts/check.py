@@ -308,7 +308,17 @@ def check(html):
     if p.stack:
         p.must.append("标签未闭合：" + " > ".join(x[0] for x in p.stack))
     should = [f"待人工核对的半角标点/直引号（URL/引文可保留）：{p.half[:3]}"] if p.half else []
-    if re.search(r"<(section|span)\b[^>]*>\s*</\1>", html, re.I):
+    empty_decoration = False
+    for match in re.finditer(r"<(section|span)\b([^>]*)>(.*?)</\1>", html, re.I | re.S):
+        tag, attrs, content = match.groups()
+        # Whitespace-only `leaf` spans separate adjacent prose/link leaves; they are
+        # intentional text, not empty decoration. Truly empty leaves remain an error.
+        if tag.lower() == "span" and re.search(r"\bleaf\s*=", attrs) and content:
+            continue
+        if not content.strip():
+            empty_decoration = True
+            break
+    if empty_decoration:
         p.must.append('空装饰元素缺少 <span leaf=""><br></span>')
     return list(dict.fromkeys(p.must)), should
 

@@ -152,6 +152,15 @@ def peak_text(b):
     return " ".join(b[1]) or b[0]
 
 
+def _list_node_text(node):
+    parts = []
+    for item in node.get("items", []):
+        parts.append(item.get("text", ""))
+        for child in item.get("children", []):
+            parts.extend(_list_node_text(child))
+    return parts
+
+
 def block_text(kind, value):
     """块的可读文字，用于审计与事实比对；不含标签与图注之外的元信息。"""
     if kind in ("p", "h2", "h3"):
@@ -163,7 +172,7 @@ def block_text(kind, value):
     if kind in ("note", "unknown"):
         return " ".join(value[1])
     if kind == "list":
-        return " ".join(value[1])
+        return " ".join(_list_node_text(value))
     if kind == "table":
         return " ".join(c for row in value for c in row)
     if kind == "code":
@@ -477,8 +486,6 @@ CLICHE = re.compile(r"随着.{0,12}(?:发展|普及|提升|加快|推进|深入|
                     r"总而言之|综上所述|总之[，,]|从某种意义上(?:来)?说")
 ABSOLUTE = re.compile(r"所有人|每个人|无一例外|从来如此|永远|绝对|毫无疑问|显然|"
                        r"只要我们[^。]{0,24}就(?:一定|必然)|就一定(?:能|可以|会)")
-EMPH = re.compile(r"==|</?u>|\*\*")
-
 # ---- 文风线索（mechanical）：全部只报「形态」，不下「写得差」的结论 --------------
 # 元话语：把写作过程写进正文，占掉首屏却不给信息。
 META_DISCOURSE = re.compile(r"本文将|本文试图|本文分为|本文将分|接下来我们(?:来看|聊聊)|下面我们(?:来)?看|"
@@ -559,7 +566,7 @@ def promise_ledger(title, blocks, thesis=""):
         expected = int(raw) if raw.isdigit() else words[raw]
         # 所有有序列表的长度都要参与核对：作者可能把「三个参数」写在某一节里，
         # 而全文最长的有序列表可能是另一节的自查步骤。
-        ordered_lists = [len(v[1]) for k, v in blocks if k == "list" and v[0]]
+        ordered_lists = [len(v["items"]) for k, v in blocks if k == "list" and v["ordered"]]
         ordered = max(ordered_lists, default=0)
         noun = re.search(r"方法|步骤|原因|问题|建议|误区|原则|技巧|理由|教训", m.group(0) + text[m.end():m.end()+4])
         explicit = [h for h in heads if re.match(r"^(?:第?[一二三四五六七八九十\d]+[、．.：:]?|[（(][一二三四五六七八九十\d]+[）)]|(?:方法|步骤|原因|问题|建议|误区|原则|技巧|理由|教训)[一二三四五六七八九十\d]+)", h)
@@ -683,7 +690,9 @@ def prose_clues(blocks):
     meta_hits, restate_blocks = [], []
 
     for index, kind, text in paragraphs:
-        if not text.strip():
+        # 逐句文风线索只看作者正文；不能把引语、代码、表格、列表或标题中的
+        # 必要复现当成正文同义反复/排比。需要审计那些块时应使用对应的结构规则。
+        if kind != "p" or not text.strip():
             continue
         sentences = _sentence_list(text)
         # 1) 元话语：写作过程写进正文
@@ -700,10 +709,10 @@ def prose_clues(blocks):
                 if len(s1) < 14 or len(s2) < 14:
                     continue
                 if difflib.SequenceMatcher(None, s1, s2, autojunk=False).ratio() >= 0.72:
-                    add("CIRCULAR", "should", f"块 {index}",
-                        "同段两句高度相似，后一句可能没有新增信息",
-                        "比较两句：合并、改写为递进，或删去重复的那句",
-                        "读者每读一句都拿到新内容",
+                    add("CIRCULAR", "note", f"块 {index}",
+                        "同段两句字面相似；可能是冗余，也可能是对照、术语定义或必要复现",
+                        "先核对两句的语义任务；只有后句没有新增信息时才合并/删除",
+                        "保留有用的重复，避免机械删掉引用、定义或对照项",
                         f"「{s1[:18]}…」与「{s2[:18]}…」相似度 ≥0.72")
                     break
         # 4) 主语复读：只比较有效中文开头；数字时间线不是主语复读。
@@ -719,10 +728,10 @@ def prose_clues(blocks):
                 else:
                     run = 1
             if best >= 3:
-                add("REPEAT-SUBJECT", "should", f"块 {index}",
-                    "同段连续多句以相同两字开头，读起来像逐句改写而非推进",
-                    "改为主语一次、其余句子承接；或按信息重新分句",
-                    "段落从重复句式回到真正的推进",
+                add("REPEAT-SUBJECT", "note", f"块 {index}",
+                    "同段连续多句以相同两字开头；可能是节奏、时间线或教学步骤的有意复现",
+                    "先确认每句是否增加新信息；只有重复妨碍推进时才合并或换主语",
+                    "保留有用的排比、时间线与步骤提示",
                     f"连续 {best} 句同一开头「{best_token}…」")
         # 5) 句长过齐：五句以上且长度几乎相同，节奏失去疏密
         lens = [len(plain(s)) for s in sentences if plain(s)]
@@ -770,20 +779,20 @@ def prose_clues(blocks):
                                  for k, _ in blocks[max(0, index - 3):index + 1]))
             if not backed:
                 out_window = s
-                add("WEAK-INFERENCE", "should", f"块 {index}",
-                    "句首以推断连接词承接，但本段与前一段没有可见依据",
-                    "补出依据，或把句子降级为推测并写出保留条件",
-                    "读者能区分「证据到结论」与「直接下结论」",
-                    f"「{out_window[:26]}…」；相邻块无数字、来源、引语或证据块", needs="editor")
+                add("WEAK-INFERENCE", "note", f"块 {index}",
+                    "句首以推断连接词承接，附近未定位到显式依据；上下文/修辞可能提供隐含依据",
+                    "核对推断链；只有读者无法还原依据时才补证据或限定语",
+                    "避免把逻辑提示误当事实证明义务",
+                    f"「{out_window[:26]}…」；相邻块未定位到数字、来源、引语或证据块", needs="editor")
             break
         restate_blocks.extend((index, m.group()) for m in RESTATE.finditer(text))
         # 9) 口语序号推进：一段里三个以上序号词，说明并列关系没有变成任何结构
         ordinals = PROSE_ORDINAL.findall(text)
         if len(ordinals) >= 3:
-            add("PROSE-ORDINAL", "should", f"块 {index}",
-                f"段落用「{'/'.join(ordinals[:4])}」推动，但没有成为可扫读的列表",
-                "要么改成真正的有序列表（顺序有意义时），要么删掉序号直接陈述",
-                "读者能一眼看出分几项、哪几项，而不是在句子里找序号",
+            add("PROSE-ORDINAL", "note", f"块 {index}",
+                f"段落用「{'/'.join(ordinals[:4])}」推进；可能需要列表，也可能是清楚的时间线",
+                "核对顺序与并列关系；只有列表能提升扫读且不扭曲时间关系时才转换",
+                "保留原有时间线与语义层级，避免为排版而排版",
                 f"单段出现 {len(ordinals)} 个序号词：{'、'.join(ordinals[:5])}")
         # 10) 分句首词复读：同一两字连续领起三个以上分句（「一起努力，一起成长…」）
         clauses = [plain(c) for c in re.split(r"[，,；;。！？!?、]", text) if plain(c)]
@@ -797,10 +806,10 @@ def prose_clues(blocks):
             else:
                 run = 1
         if best >= 3 and best_token not in _HEAD_STOP and not _is_number_token(best_token):
-            add("PARALLEL-HEAD", "should", f"块 {index}",
-                f"连续 {best} 个分句以「{best_token}」开头，排比在替代内容",
-                "保留最能说明差别的一处；其余分句改成各自的主语或直接删去",
-                "排比只在需要强调时出现，读者不靠同一开头识别句子",
+            add("PARALLEL-HEAD", "note", f"块 {index}",
+                f"连续 {best} 个分句以「{best_token}」开头；可能是有意排比或必要选项清单",
+                "比较每个分句带来的信息差异；只有重复替代了内容时才改写",
+                "保留排比强调与必要选项，不把句式相同误当作信息重复",
                 f"本段「{best_token}…」连续 {best} 次")
         # 11) 空洞呼吁收尾：结尾段靠号召与愿景收束，没有可执行动作
         hollow = HOLLOW_CALL.findall(text)
@@ -814,10 +823,10 @@ def prose_clues(blocks):
 
     for name, where in template_hits.items():
         if len(where) >= 2:
-            add("TEMPLATE-REPEAT", "should", f"块 {'、'.join(map(str, where[:5]))}",
-                f"「{name}」句式在全文出现 {len(where)} 次，读起来像套模板而不是展开论证",
-                "保留一次最有力的使用，其余改为直陈事实或换一种关系表达",
-                "句式回到为内容服务，而不是代替内容",
+            add("TEMPLATE-REPEAT", "note", f"块 {'、'.join(map(str, where[:5]))}",
+                f"「{name}」句式在全文出现 {len(where)} 次；相同句式可能承担不同语义任务",
+                "逐处比较其论证/叙事功能；仅在复述且无信息增量时改写",
+                "不把正常的对比、递进或时间表达误判为模板",
                 f"模板「{name}」命中 {len(where)} 处")
     if meta_hits:
         add("META-DISCOURSE", "note", f"块 {'、'.join(str(i) for i, _ in meta_hits[:4])}",
@@ -930,7 +939,7 @@ def _section_stats(blocks):
 EVIDENCE_KINDS = {"note", "table", "data", "bars", "quote", "code"}
 
 
-def _text_issues(blocks, sections=None):
+def _text_issues(blocks, sections=None, article_type=""):
     """逐段文字与整体结构线索；每条自己的 class 决定它是形态还是判断入口。"""
     issues, paragraphs, seen = [], [], {}
     # --- 形态检查（mechanical） ---
@@ -940,20 +949,28 @@ def _text_issues(blocks, sections=None):
             normalized = re.sub(r"\s+", "", plain(value))
             if kind == "p":
                 paragraphs.append((index, normalized, value))
-            if normalized and normalized in seen:
-                _add(issues, "DUP-EXACT", "mechanical", "should", f"块 {index}", "信息完全重复",
-                     "合并或删除", "减少重复阅读，不改变论证",
+            if normalized and normalized in seen and normalized not in {"点击这里显示解决方案", "点击此处显示解决方案"}:
+                _add(issues, "DUP-EXACT", "mechanical", "note", f"块 {index}",
+                     "发现与前文完全相同的文字；跨练习说明或控件文案可能需要复用",
+                     "确认是否面对同一读者/同一任务；只有无功能的重复才合并",
+                     "避免删除练习所需的就地说明或交互标签",
                      f"与块 {seen[normalized]} 的可见文字完全相同")
             seen[normalized] = index
             if kind == "p" and len(normalized) > 260:
-                _add(issues, "LONG-PARA", "mechanical", "should", f"块 {index}",
-                     "移动端长段掩盖语义转折", "按语义断点拆分", "让论点、证据与限制更容易被扫读",
-                     f"该段去标记后为 {len(normalized)} 字；不按字数机械拆分")
-            for sentence in re.split(r"(?<=[。！？])", plain(value)):
-                if len(re.sub(r"\s", "", sentence)) > 90:
-                    _add(issues, "LONG-SENT", "mechanical", "should", f"块 {index}",
-                         "单句超过 90 字，移动端容易读丢主语", "在连接词处断句或改列表",
-                         "读者能一遍读完一个判断", f"「{sentence.strip()[:24]}…」{len(sentence)} 字")
+                _add(issues, "LONG-PARA", "mechanical", "note", f"块 {index}",
+                     "段落篇幅较长，可能包含多个语义任务；长度本身不构成缺陷",
+                     "只在出现论点/证据/限制的语义断点时拆分",
+                     "让结构服务语义，不按字符数机械切段",
+                     f"该段去标记后为 {len(normalized)} 字；须人工判断")
+            prose_for_length = re.sub(r"https?://\S+", "", plain(value))
+            for sentence in re.split(r"(?<=[。！？])", prose_for_length):
+                sentence_length = len(re.sub(r"\s", "", sentence))
+                if sentence_length > 90:
+                    _add(issues, "LONG-SENT", "mechanical", "note", f"块 {index}",
+                         "可见句子较长；引语、专名清单、术语定义与时间线可能应保持原样",
+                         "先找主干和语义停顿；只有拆分能提升理解时才改",
+                         "读者能一遍读完一个判断，同时保留引文和术语完整性",
+                         f"「{sentence.strip()[:24]}…」{sentence_length} 字")
                     break
             nearby = blocks[max(0, index - 2):min(len(blocks), index + 1)]
             has_source = any(k == "note" for k, _ in nearby) or bool(re.search(r"https?://", text))
@@ -967,23 +984,36 @@ def _text_issues(blocks, sections=None):
                 _add(issues, "ATTR-NO-SOURCE", "mechanical", "should", f"块 {index}",
                      "来源型表述没有就近指向依据", "补原始出处或降级表述",
                      "区分可核事实与作者转述", "出现“数据显示/研究表明/据…”而相邻块无来源", needs="fact-check")
-            if kind == "p" and CAUSAL.search(text) and not HEDGE.search(text):
+            causal_match = CAUSAL.search(text) if kind == "p" else None
+            nominal_proof = bool(causal_match and causal_match.group(0).startswith("证明")
+                                 and re.search(r"的证明(?:都|被|可|可以|是)", text[max(0, causal_match.start()-4):causal_match.end()+4]))
+            quoted_causal = bool(causal_match and any(causal_match.group(0) in quote for quote in quoted_spans(text)))
+            if causal_match and not nominal_proof and not quoted_causal and not HEDGE.search(text):
                 _add(issues, "CAUSAL-STRONG", "judgment", "should", f"块 {index}",
-                     "因果或确定性措辞可能强于可见证据", "核对推断链并补限定",
-                     "避免把相关、估算或观点写成确定事实", "出现强因果/绝对措辞，句内未见限制词", needs="editor")
+                     "可能存在因果/确定性措辞；引用中的原话和名词‘证明’不等于作者的因果断言",
+                     "核对作者自己的推断链；只有断言强于证据时才补限定",
+                     "不把引用或名词误读为因果结论",
+                     f"候选措辞「{causal_match.group(0)}」；句内未见限制词", needs="editor")
             if kind == "p" and CLICHE.search(text):
                 _add(issues, "OPENING-CLICHE", "mechanical", "should", f"块 {index}",
                      "套语开头占据入口，没有给出信息", "删除套语，直接给事实或判断",
                      "首屏留在有效信息上", f"命中套语：{CLICHE.search(text).group(0)}")
-            if kind == "p" and ABSOLUTE.search(text) and not HEDGE.search(text):
+            absolute_match = ABSOLUTE.search(text) if kind == "p" else None
+            local_example_observation = bool(absolute_match and absolute_match.group(0) == "显然"
+                                             and re.search(r"显然[，,]?\s*(?:这|这并不|这不是|这并非)", text))
+            if absolute_match and not local_example_observation and not HEDGE.search(text):
                 _add(issues, "GENERALIZE", "judgment", "should", f"块 {index}",
-                     "绝对化措辞可能把局部经验写成普遍规律", "补范围与反例，或改为限定表述",
-                     "结论力度与证据范围一致", f"出现“{ABSOLUTE.search(text).group(0)}”且句内无限定",
-                     needs="editor")
-            if kind == "p" and len(re.findall(r"首先|其次|再次|最后|第一|第二|第三", text)) >= 3 and len(text) > 80:
-                _add(issues, "PROSE-LIST", "mechanical", "should", f"块 {index}",
-                     "段内并列超过三项，扫读成本高", "改为有序列表并保留原有编号语义",
-                     "并列关系一眼可见，顺序不被改写", "同段出现 3 个以上顺序连接词")
+                     "绝对化措辞可能把局部经验写成普遍规律；对当前示例的评价不等于泛化",
+                     "核对断言范围与证据；只在声称普遍规律时补范围或反例",
+                     "区分经验判断与对当前示例的即时评价",
+                     f"出现“{absolute_match.group(0)}”且句内无限定", needs="editor")
+            ordinal_count = len(PROSE_ORDINAL.findall(plain(value)))
+            if kind == "p" and ordinal_count < 3 and len(re.findall(r"首先|其次|再次|最后|第一|第二|第三", text)) >= 3 and len(text) > 80:
+                _add(issues, "PROSE-LIST", "mechanical", "note", f"块 {index}",
+                     "段内出现多个顺序连接词；可能是时间线，也可能适合列表",
+                     "确认项目是否可独立列举且顺序有意义；避免与序号线索重复提示",
+                     "并列关系清楚，同时不破坏时间线",
+                     "存在顺序连接词；列表与否需编辑判断")
         if kind in ("h2", "h3"):
             nxt = blocks[index][0] if index < len(blocks) else ""
             if nxt in ("h2", "h3") or not nxt:
@@ -1005,11 +1035,20 @@ def _text_issues(blocks, sections=None):
                          f"与块 {j} 的字符序列相似度 ≥0.90；须人工判断是否为必要复现")
                     break
 
-    marks = sum(len(EMPH.findall(block_text(k, v))) for k, v in blocks if k == "p")
+    emphasis_spans = re.compile(r"\*\*[^*]+?\*\*|==[^=]+?==|<u>[^<]+?</u>")
+    speaker_label = re.compile(r"\*\*[A-Z][A-Z0-9]{0,3}[:：]\*\*")
+    marks = 0
+    for k, v in blocks:
+        if k != "p":
+            continue
+        raw = speaker_label.sub("", block_text(k, v))
+        marks += len(emphasis_spans.findall(raw))
     if marks > max(6, len(paragraphs)):
-        _add(issues, "EMPHASIS-OVERUSE", "mechanical", "should", "全文",
-             "强调标记密度过高，强调等于没有强调", "只保留改变理解的字句",
-             "重点重新变得可辨", f"段落内强调标记 {marks} 处 / 段落 {len(paragraphs)} 个")
+        _add(issues, "EMPHASIS-OVERUSE", "mechanical", "note", "全文",
+             "强调样式出现较密；问答说话人标签等格式不计作正文强调",
+             "只检查真正强调的词句是否都改变理解；不因格式标签删改采访结构",
+             "让视觉强调承担语义，而不破坏问答导航",
+             f"正文强调跨度 {marks} 处 / 段落 {len(paragraphs)} 个")
 
     # --- 台账与整体结构 ---
     sections = _section_stats(blocks) if sections is None else sections
@@ -1017,11 +1056,15 @@ def _text_issues(blocks, sections=None):
     if len(sections) >= 2 and total:
         for section in sections:
             share = section["chars"] / total
-            if section["chars"] < 45 or share > 0.7:
-                _add(issues, "SECTION-SKEW", "mechanical", "should",
-                     f"块 {section['block']}（{section['heading']}）", "章节篇幅与其他章节明显失衡",
-                     "检查是否缺证据、应并入相邻章或需要拆分", "让章节推进与信息重量一致",
-                     f"本章约 {section['chars']} 字，占有标题章节文字 {share:.0%}；比例仅作定位，不自动改稿")
+            heading = section["heading"]
+            expected_short = bool(re.search(r"参见|参考(?:资料|文献)?|总结|结论|结语|大功告成", heading))
+            expected_tutorial_core = article_type == "tutorial" and bool(re.search(r"示例|练习|实战|项目|游戏", heading))
+            if (section["chars"] < 45 and not expected_short) or (share > 0.7 and not expected_tutorial_core):
+                _add(issues, "SECTION-SKEW", "mechanical", "note",
+                     f"块 {section['block']}（{heading}）", "章节篇幅与其他章节差异较大；短参见/总结或核心教程案例本来就可能如此",
+                     "核对章节功能与信息重量；比例只定位疑点，不单独触发拆分或扩写",
+                     "保留正常的结尾、参考链接与核心案例章节",
+                     f"本章约 {section['chars']} 字，占有标题章节文字 {share:.0%}；比例仅作定位")
 
     if blocks and blocks[-1][0] == "p":
         head = " ".join(block_text(k, v) for k, v in blocks[:3])
@@ -1029,9 +1072,11 @@ def _text_issues(blocks, sections=None):
         fresh = [f for f in tail_facts if f[1] not in head and f[1] not in " ".join(
             block_text(k, v) for k, v in blocks[:-1])]
         if fresh:
-            _add(issues, "CONCLUDE-NEW-EVIDENCE", "judgment", "should", f"块 {len(blocks)}",
-                 "结尾出现前文未论证的新数字", "把该证据移到对应章节，或删去", "结尾只收束已论证的内容",
-                 f"新出现：{'、'.join(f[1] for f in fresh[:3])}", needs="editor")
+            _add(issues, "CONCLUDE-NEW-EVIDENCE", "judgment", "note", f"块 {len(blocks)}",
+                 "末段首次出现数字/日期；可能是新证据，也可能是相关背景或时间线",
+                 "确认该事实的来源和收束作用；只有实质新证据才需前移并展开",
+                 "保留有效历史背景与时间线，避免以位置代替论证判断",
+                 f"字面上首次出现：{'、'.join(f[1] for f in fresh[:3])}", needs="editor")
 
     issues.extend(prose_clues(blocks))
     return issues
@@ -1047,15 +1092,27 @@ def _judgment_issues(meta, blocks, type_key, sections=None):
     for index, (kind, value) in enumerate(blocks, 1):
         if kind != "p":
             continue
+        raw_text = block_text(kind, value)
         text = plain(value)
-        claim_like = bool(re.search(r"应该|必须|意味着|说明|证明|表明|因此|所以|结论|关键|本质", text))
+        if type_key == "tutorial":
+            # 教程中的操作指令和概念解释通常由步骤/代码示例承担证明责任；只把
+            # 可核的版本、数值、兼容性等事实送入来源复核，避免给每句讲解强加引文。
+            claim_like = bool(re.search(r"版本|兼容|支持(?:的|率|到)|不支持|报告显示|数据显示|研究表明|据统计", text))
+        else:
+            claim_like = bool(re.search(r"应该|必须|意味着|说明|证明|表明|因此|所以|结论|关键|本质", text))
         # index 为 1-based；当前块在数组 index-1。覆盖前两块、当前块与后两块。
         window = blocks[max(0, index - 3):min(len(blocks), index + 2)]
-        backed = any(k in evidence_kinds for k, _ in window) or bool(re.search(r"https?://|\d{4}", text))
-        if claim_like and not backed and len(text) > 40:
-            _add(issues, "ORPHAN-CLAIM", "judgment", "should", f"块 {index}",
-                 "判断性句子附近没有可见证据", "补证据、降级为推测或改为提问",
-                 "读者能区分结论与依据", "相邻两块无来源、表格、引文或代码",
+        # plain() 会去掉 Markdown 链接目标；在原始块上判来源，否则有链接的段落会被误报。
+        backed = any(k in evidence_kinds for k, _ in window) or bool(re.search(r"https?://|\d{4}", raw_text))
+        # 句末为设问、且没有独立事实/数字时，连接词“所以”不应自动变成无依据断言。
+        rhetorical_question = text.rstrip().endswith(("?", "？")) and not re.search(r"\d|必须|应该|证明|表明", text)
+        if claim_like and not backed and not rhetorical_question and len(text) > 40:
+            severity = "note" if type_key in ("opinion", "tutorial") else "should"
+            _add(issues, "ORPHAN-CLAIM", "judgment", severity, f"块 {index}",
+                 "判断性句子附近未定位到依据；价值立场、教程解释或直接引语可能无需外部引用",
+                 "先判断是否为可核事实/推断；仅在来源缺失且结论需证据时补证据或限定",
+                 "区分事实、观点、示例与引述，不把价值判断一律变成引文任务",
+                 "相邻块未定位到来源、表格、引文或代码",
                  needs="fact-check")
     # 章节是否只在复述主张：比较 thesis 与每个 H2 之后的第一段
     thesis = re.sub(r"\s+", "", plain(meta.get("thesis", "")))
@@ -1090,7 +1147,7 @@ def _judgment_issues(meta, blocks, type_key, sections=None):
             _add(issues, "MISSING-PREREQ", "judgment", "should", "全文",
                  "教程未写前提或版本", "补读者进入步骤前必须满足的条件",
                  "失败可归因，读者不会在错误前提下照着做", "全文未见前提/版本表述", needs="editor")
-        if not re.search(r"失败|报错|回退|撤销|如果没有|不适用|边界", body):
+        if not re.search(r"失败|报错|回退|撤销|如果没有|不适用|边界|错误|不起作用|不工作|不能正常|无法正常|无法运行|重置|清除|卡住|解决方案", body):
             _add(issues, "MISSING-FAILURE", "judgment", "should", "全文",
                  "教程只写成功路径", "补失败条件与回退方式",
                  "读者在出问题时能自行判断", "全文未见失败/回退表述", needs="fact-check")
@@ -1120,9 +1177,11 @@ def _promise_issues(promises):
                  "让标题对象能被读者定位，同时允许合理的名称变化",
                  f"标题对象“{p['promise']}”未以同一名称出现；语义等价需编辑确认", needs="editor")
         if p["kind"] == "question" and p["status"] == "unclear":
-            _add(issues, "PROMISE-QUESTION", "judgment", "should", "标题与全文",
-                 "问题型标题缺少可定位的回答结构", "标出核心回答与推导步骤",
-                 "读者能确认标题问题在何处被回答", "未提供 thesis，且 H2 未见回答性表述；关键词命中也不等于回答成立", needs="editor")
+            _add(issues, "PROMISE-QUESTION", "judgment", "note", "标题与全文",
+                 "问题/‘如何’型标题中，机器未定位到回答标题或 thesis；不等于文章没有回答",
+                 "人工判断叙事、正文或结尾是否已经兑现；仅在读者难以定位时补答复结构",
+                 "避免把叙事型‘如何’标题误判为未兑现，也保留真正缺答的提醒",
+                 "未提供 thesis，且 H2 未见显式回答性表述；语义兑现必须人工确认", needs="editor")
         if p["kind"] == "superlative":
             _add(issues, "PROMISE-SUPERLATIVE", "judgment", "note", "标题",
                  "最高级断言需要比较范围与依据", "写明比较范围、时间与来源",
@@ -1138,7 +1197,7 @@ def audit(meta, blocks):
     strategy = TYPES.get(type_key)
 
     sections = _section_stats(blocks)
-    issues = _text_issues(blocks, sections)
+    issues = _text_issues(blocks, sections, type_key)
     issues.extend(_judgment_issues(meta, blocks, type_key, sections))
     evidence_kinds = EVIDENCE_KINDS
 
@@ -1260,7 +1319,7 @@ def strategy_notes(meta, blocks):
         notes.append("动作：补一节「限制与反例」，或把限定写进结论句。")
     if key == "news" and not any(re.search(r"\d{4}", block_text(k, v)) for k, v in blocks[:4]):
         notes.append("动作：首屏补时间与来源，读者需要先知道这是什么时候的事。")
-    if key == "tutorial" and not any(k == "list" and v[0] for k, v in blocks):
+    if key == "tutorial" and not any(k == "list" and v["ordered"] for k, v in blocks):
         notes.append("动作：把操作序列改为有序列表，顺序本身就是信息。")
     if key == "profile" and not any(k == "quote" for k, _ in blocks):
         notes.append("动作：若有人物原话，用带出处的引文；没有就不要编写。")
