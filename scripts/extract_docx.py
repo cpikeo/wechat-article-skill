@@ -21,7 +21,8 @@ import sys
 import zipfile
 import xml.etree.ElementTree as ET
 
-from check import safe_http_url
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from check import safe_http_url  # noqa: E402
 
 W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 R = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
@@ -54,6 +55,24 @@ def load_styles(z):
         if match:
             levels[sid] = int(match.group(1))
     return levels
+
+
+def load_quote_styles(z):
+    """识别引用块段落样式（Quote / Intense Quote / Block Text / 引用）。"""
+    quotes = {"Quote", "IntenseQuote", "BlockText", "引用", "明显引用"}
+    try:
+        root = ET.fromstring(z.read("word/styles.xml"))
+    except KeyError:
+        return quotes
+    for st in root.iter(f"{W}style"):
+        sid = st.get(f"{W}styleId") or ""
+        name_el = st.find(f"{W}name")
+        name = (name_el.get(f"{W}val") if name_el is not None else "") or ""
+        if re.fullmatch(r"(?i)(?:intense\s*)?quote|block\s*text|(?:明显)?引用", name.strip()) \
+                or re.fullmatch(r"(?i)(?:intense)?quote|blocktext", sid.strip()):
+            if sid:
+                quotes.add(sid)
+    return quotes
 
 
 def _word_int(element, label, default=None, attribute="val"):
@@ -415,8 +434,22 @@ class NumberingState:
                 "marker": custom_marker, "markdown_number": markdown_number}
 
 
+def _wrap_inline_style(text, open_mark, close_mark):
+    """仅包裹非空白正文核，把首尾空白留在标记外，防止生成 **   ** 或 **重点 ** 等失效 Markdown。"""
+    if not text.strip():
+        return text
+    def wrap_line(seg):
+        if not seg.strip():
+            return seg
+        lead = seg[:len(seg) - len(seg.lstrip())]
+        trail = seg[len(seg.rstrip()):]
+        core = seg.strip()
+        return f"{lead}{open_mark}{core}{close_mark}{trail}"
+    return "\n".join(wrap_line(seg) for seg in text.split("\n"))
+
+
 def para_text(p, links=None):
-    """段内 run → 行内 Markdown（粗体→**、下划线→<u>）。"""
+    """段内 run → 行内 Markdown（粗体→**、下划线→<u>、删除线→~~）。"""
     links = links or {}
     out = []
     run_links = {id(run): links.get(h.get(f"{R}id"), "")
@@ -427,6 +460,12 @@ def para_text(p, links=None):
             and (rpr.find(f"{W}b").get(f"{W}val") or "1") not in ("0", "false")
         underline = rpr is not None and rpr.find(f"{W}u") is not None \
             and rpr.find(f"{W}u").get(f"{W}val") != "none"
+        strike = False
+        if rpr is not None:
+            for st_tag in ("strike", "dstrike"):
+                st_el = rpr.find(f"{W}{st_tag}")
+                if st_el is not None and (st_el.get(f"{W}val") or "1") not in ("0", "false"):
+                    strike = True
         text = "".join(
             (node.text or "") if node.tag == f"{W}t"
             else "\n" if node.tag == f"{W}br"
@@ -435,15 +474,21 @@ def para_text(p, links=None):
         )
         if not text:
             continue
+        if strike:
+            text = _wrap_inline_style(text, "~~", "~~")
         if bold:
-            text = f"**{text}**"
+            text = _wrap_inline_style(text, "**", "**")
         if underline:
-            text = f"<u>{text}</u>"
+            text = _wrap_inline_style(text, "<u>", "</u>")
         url = run_links.get(id(r_el))
         if url:
-            text = f"[{text}]({url})"
+            text = _wrap_inline_style(text, "[", f"]({url})")
         out.append(text)
-    return re.sub(r"\*\*\*\*", "", "".join(out))  # 相邻粗体 run 合并的空标记
+    joined = "".join(out)
+    joined = re.sub(r"\*\*\*\*", "", joined)
+    joined = re.sub(r"~~~~", "", joined)
+    joined = re.sub(r"</u><u>", "", joined)
+    return joined
 
 
 def image_alt(p, rid):
@@ -475,6 +520,8 @@ def validate_body(z, body, links, media_of, style_numpr=None):
                 if numbering_info is not None:
                     if list(el.iter(f"{A}blip")):
                         bad.append("编号列表项含图片（当前无法保证图片与编号项的顺序）")
+                    if list(el.iter(f"{W}br")):
+                        bad.append("编号列表项含手动换行（请拆分为独立列表项或子列表）")
                     if not para_text(el, links).strip():
                         bad.append("空编号列表项")
             except ValueError as error:
@@ -568,13 +615,16 @@ def table_lines(table, links):
     return [rows[0], "|" + "---|" * columns, *rows[1:], ""]
 
 
-def paragraph_lines(paragraph, heading_of, media_of, links, image_start, list_info=None):
+def paragraph_lines(paragraph, heading_of, media_of, links, image_start, list_info=None, quote_of=None):
     """返回 Markdown 行、图片序号、人工核对提示与文字类别。"""
+    quote_of = quote_of or set()
     lines, notices = [], []
     blips = list(paragraph.iter(f"{A}blip"))
     text = para_text(paragraph, links).strip()
     if list_info and blips:
         raise ValueError("Word 列表项含图片；当前无法保证图片与编号项的阅读顺序，已阻断转换")
+    if list_info and "\n" in text:
+        raise ValueError("Word 列表项含手动换行；请拆分为独立列表项或子列表，拒绝静默折断")
     if list_info and not text:
         raise ValueError("Word 编号列表项没有可导出的文字；请先核对空列表项")
     if blips and text:
@@ -614,11 +664,19 @@ def paragraph_lines(paragraph, heading_of, media_of, links, image_start, list_in
         lines.append(f"{indent}{marker} {text}")
         category = "list"
     elif level:
+        if "\n" in text:
+            text = re.sub(r"\s*\n\s*", " ", text).strip()
+            notices.append(f"注意：标题内手动换行已合并为单行空格：{text[:36]}")
         clean = re.sub(r"^\*\*(.*)\*\*$", r"\1", text)
         lines.append("#" * min(level, 3) + " " + clean)
         category = "heading"
         if level > 3:
             notices.append(f"注意：标题{level}归一化为三级，请核对层级")
+    elif style_id in quote_of:
+        for qline in text.split("\n"):
+            if qline.strip():
+                lines.append("> " + qline.strip())
+        category = "paragraph"
     else:
         lines.append(text)
         category = "paragraph"
@@ -642,6 +700,7 @@ def extract(docx_path, out_md):
                     raise ValueError("DOCX 解压内容超过 100MB 或 10000 项限制")
                 doc = ET.fromstring(z.read("word/document.xml"))
                 heading_of = load_styles(z)
+                quote_of = load_quote_styles(z)
                 style_numpr = load_style_numpr(z)
                 numbering = load_numbering(z)
                 media_of = load_rels(z)
@@ -737,7 +796,8 @@ def extract(docx_path, out_md):
                         lines.append("")
 
                     converted, image_number, notices, category = paragraph_lines(
-                        element, heading_of, media_of, links, image_number, list_info=list_info)
+                        element, heading_of, media_of, links, image_number,
+                        list_info=list_info, quote_of=quote_of)
                     lines.extend(converted)
                     notices_all.extend(notices)
                     if category:

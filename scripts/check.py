@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
 """Gate 1：检查发布正文的确定性风险，不证明微信清洗或粘贴兼容。"""
+import ipaddress
+import os
 import re
 import sys
 from html.parser import HTMLParser
 from urllib.parse import urlsplit
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from safety import is_safe_relpath  # noqa: E402
 
 CJK = re.compile(r"[\u4e00-\u9fff\u3400-\u4dbf]")
 HALF = re.compile(r"[\u4e00-\u9fff][,;!?:]|\"|[\u4e00-\u9fff]'|'[\u4e00-\u9fff]")
@@ -42,11 +47,10 @@ PARENTS = {
 }
 
 HEX = r"#[0-9a-fA-F]{6}"
-FONT_FAMILIES = {
-    "-apple-system,BlinkMacSystemFont,'PingFang SC','Hiragino Sans GB','Microsoft YaHei','Noto Sans CJK SC',sans-serif",
-    "'Songti SC','STSong','SimSun','Noto Serif CJK SC',serif",
-    "'SF Mono',Menlo,Consolas,monospace",
-}
+SANS = "-apple-system,BlinkMacSystemFont,'PingFang SC','Hiragino Sans GB','Microsoft YaHei','Noto Sans CJK SC',sans-serif"
+SERIF = "'Songti SC','STSong','SimSun','Noto Serif CJK SC',serif"
+MONO = "'SF Mono',Menlo,Consolas,monospace"
+FONT_FAMILIES = {SANS, SERIF, MONO}
 
 
 def _length(value, units=("px", "em", "%"), *, negative=False, auto=False,
@@ -80,10 +84,7 @@ def _border(value):
 
 def _font_size(value):
     m = re.fullmatch(r"(\d+(?:\.\d+)?)px", value)
-    if not m:
-        return False
-    size = float(m.group(1))
-    return 12 <= size <= 64
+    return bool(m and 12 <= float(m.group(1)) <= 64)
 
 
 def _line_height(value):
@@ -91,7 +92,7 @@ def _line_height(value):
     if not m:
         return False
     number = float(m.group(1))
-    return (12 <= number <= 100) if m.group(2) else (.8 <= number <= 3)
+    return (12 <= number <= 100) if m.group(2) else (0.8 <= number <= 3)
 
 
 def _letter_spacing(value):
@@ -102,7 +103,7 @@ def _letter_spacing(value):
 
 
 CSS_RULES = {
-    "align-items": lambda v: v in {"baseline", "center", "flex-end"},
+    "align-items": lambda v: v in {"baseline", "center", "flex-end", "flex-start"},
     "background": lambda v: bool(re.fullmatch(HEX, v)),
     "border": _border,
     "border-bottom": _border,
@@ -121,6 +122,7 @@ CSS_RULES = {
     "font-weight": lambda v: v in {"400", "500", "600", "700"},
     "gap": lambda v: bool(re.fullmatch(r"\d+(?:\.\d+)?px", v)) and float(v[:-2]) <= 100,
     "height": lambda v: _length(v, ("px",), auto=True, max_px=1000),
+    "justify-content": lambda v: v in {"space-between"},
     "letter-spacing": _letter_spacing,
     "line-break": lambda v: v == "strict",
     "line-height": _line_height,
@@ -132,7 +134,6 @@ CSS_RULES = {
     "max-width": lambda v: v == "100%",
     "min-width": lambda v: v == "0",
     "overflow": lambda v: v == "hidden",
-    # 正文根用 break-word（只兜住真的放不下的长词）；表格/代码等固定布局容器用 anywhere。
     "overflow-wrap": lambda v: v in ("break-word", "anywhere"),
     "padding": lambda v: _length_list(v, max_px=100, max_em=2),
     "padding-bottom": lambda v: _length(v, max_px=100, max_em=2),
@@ -141,7 +142,7 @@ CSS_RULES = {
     "padding-top": lambda v: _length(v, max_px=100, max_em=2),
     "tab-size": lambda v: bool(re.fullmatch(r"[1-8]", v)),
     "table-layout": lambda v: v == "fixed",
-    "text-align": lambda v: v in {"left", "center"},
+    "text-align": lambda v: v in {"left", "center", "right"},
     "text-decoration": lambda v: v in {"line-through", "underline"},
     "text-indent": lambda v: _length(v, ("px", "em"), negative=True, max_px=100, max_em=3),
     "vertical-align": lambda v: v in {"top", "middle", "bottom", "baseline"} or
@@ -186,33 +187,33 @@ def safe_http_url(value):
         return False
     try:
         parts = urlsplit(value)
-        port = parts.port  # Access rejects malformed ports and malformed IPv6 authorities.
+        port = parts.port
+        host = (parts.hostname or "").lower()
         authority = parts.netloc.rsplit("@", 1)[-1]
-        return (parts.scheme.lower() in {"http", "https"} and bool(parts.hostname)
+        if not (parts.scheme.lower() in {"http", "https"} and host
                 and parts.username is None and parts.password is None
-                and not authority.endswith(":") and (port is None or 1 <= port <= 65535))
+                and not authority.endswith(":") and (port is None or 1 <= port <= 65535)):
+            return False
+        if host == "localhost" or host.endswith((".localhost", ".local", ".internal")):
+            return False
+        try:
+            return ipaddress.ip_address(host).is_global
+        except ValueError:
+            return "." in host and not host.startswith(".") and not host.endswith(".")
     except ValueError:
         return False
-
-
-def _safe_local_src(value):
-    if not isinstance(value, str) or not value or value != value.strip():
-        return False
-    if any(ord(c) < 0x20 or ord(c) == 0x7f for c in value):
-        return False
-    if any(c in value for c in "\\?#%") or value.startswith("/"):
-        return False
-    if re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*:", value):
-        return False
-    if any(part == ".." for part in value.split("/")):
-        return False
-    return True
 
 
 class Leaf(HTMLParser):
     def __init__(self):
         super().__init__(convert_charrefs=True)
+        # Stack frame: [tag, is_leaf_span, is_mono, has_content]
         self.stack, self.must, self.half, self.images = [], [], [], []
+        self.empty_decoration = False
+
+    def _mark_nonempty(self):
+        for frame in self.stack:
+            frame[3] = True
 
     def handle_starttag(self, tag, attrs):
         names = [name for name, _ in attrs]
@@ -246,7 +247,7 @@ class Leaf(HTMLParser):
             src = a.get("src") or ""
             alt = a.get("alt") or ""
             self.images.append(src)
-            if not _safe_local_src(src):
+            if not is_safe_relpath(src):
                 self.must.append(f"图片必须是安全的相对本地路径：{src}")
             if not alt.strip():
                 self.must.append("图片必须有非空 alt 描述")
@@ -254,9 +255,15 @@ class Leaf(HTMLParser):
                 self.must.append("图片缺少 max-width:100%")
             if props.get("height") != "auto":
                 self.must.append("图片必须保持 height:auto")
-        if tag not in VOID:
-            self.stack.append((tag, tag == "span" and "leaf" in a,
-                               bool(re.search("monospace", props.get("font-family", ""), re.I))))
+        if tag in VOID:
+            self._mark_nonempty()
+        else:
+            self.stack.append([
+                tag,
+                tag == "span" and "leaf" in a,
+                bool(re.search("monospace", props.get("font-family", ""), re.I)),
+                False,
+            ])
 
     def handle_startendtag(self, tag, attrs):
         self.handle_starttag(tag, attrs)
@@ -271,14 +278,23 @@ class Leaf(HTMLParser):
             if self.stack[i][0] == tag:
                 if i != len(self.stack) - 1:
                     self.must.append(f"标签嵌套顺序错误：{self.stack[-1][0]} 在 {tag} 前未闭合")
+                for closed in self.stack[i:]:
+                    if closed[0] in ("section", "span") and not closed[3]:
+                        self.empty_decoration = True
                 del self.stack[i:]
                 return
         self.must.append(f"多余结束标签：{tag}")
 
     def handle_data(self, data):
+        if not data:
+            return
+        # Intentional whitespace inside a `<span leaf="">` separates adjacent inline nodes.
+        if self.stack and self.stack[-1][1]:
+            self._mark_nonempty()
         t = data.strip()
         if not t:
             return
+        self._mark_nonempty()
         if not any(x[1] for x in self.stack):
             self.must.append(f"文字未包 <span leaf>：{t[:20]}")
         if not any(x[2] for x in self.stack) and CJK.search(t) and HALF.search(re.sub(r'https?://[^\s<>，；。！？）"]+', "", t)):
@@ -307,19 +323,9 @@ def check(html):
     p.close()
     if p.stack:
         p.must.append("标签未闭合：" + " > ".join(x[0] for x in p.stack))
-    should = [f"待人工核对的半角标点/直引号（URL/引文可保留）：{p.half[:3]}"] if p.half else []
-    empty_decoration = False
-    for match in re.finditer(r"<(section|span)\b([^>]*)>(.*?)</\1>", html, re.I | re.S):
-        tag, attrs, content = match.groups()
-        # Whitespace-only `leaf` spans separate adjacent prose/link leaves; they are
-        # intentional text, not empty decoration. Truly empty leaves remain an error.
-        if tag.lower() == "span" and re.search(r"\bleaf\s*=", attrs) and content:
-            continue
-        if not content.strip():
-            empty_decoration = True
-            break
-    if empty_decoration:
+    if p.empty_decoration:
         p.must.append('空装饰元素缺少 <span leaf=""><br></span>')
+    should = [f"待人工核对的半角标点/直引号（URL/引文可保留）：{p.half[:3]}"] if p.half else []
     return list(dict.fromkeys(p.must)), should
 
 

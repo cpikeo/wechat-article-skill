@@ -312,15 +312,19 @@ def read_draft(access_token, media_id):
     return _post_json(f"{API_BASE}/draft/get?access_token={access_token}", {"media_id": media_id})
 
 
-def verify_draft(data, title, content, thumb_media_id):
+def verify_draft(data, title, content, thumb_media_id, author=None, digest=None, source_url=None):
     items = data.get("news_item", []) if isinstance(data, dict) else []
     if not items or not isinstance(items[0], dict):
         raise ValueError("草稿回读缺少 news_item")
     item = items[0]
-    mismatches = [name for name, expected in (("title", api_title(title)), ("content", content),
-                                               ("thumb_media_id", thumb_media_id))
-                  if item.get(name) != expected]
-    return mismatches
+    checks = [("title", api_title(title)), ("content", content), ("thumb_media_id", thumb_media_id)]
+    if author:
+        checks.append(("author", author))
+    if digest:
+        checks.append(("digest", digest))
+    if source_url:
+        checks.append(("content_source_url", source_url))
+    return [name for name, expected in checks if item.get(name) != expected]
 
 
 # ---------- 5. 发布（须核对实际账号权限） ----------
@@ -526,14 +530,15 @@ def publish_html_article(appid, secret, html_path, cover_path, title, author=Non
     if preflight(html_path, settings):
         raise ValueError("发布预检未通过：未调用微信接口")
     audit("preflight_pass", body_sha256=sha256(html_path), submit=do_submit)
-    print("[1/6] 获取 access_token …")
+    total = 5 if do_submit else 4
+    print(f"[1/{total}] 获取 access_token …")
     token = get_stable_access_token(appid, secret)
 
     if auto_enable_switch and not check_draft_switch(token):
         print("显式授权开启草稿箱开关（不可逆）…")
         enable_draft_switch(token)
 
-    print("[3/6] 上传封面为永久素材（同图复用，不重复占额度）…")
+    print(f"[2/{total}] 上传封面为永久素材（同图复用，不重复占额度）…")
     if material_cache:
         thumb_media_id = upload_thumb_material_cached(token, cover_path, material_cache)
     else:
@@ -543,11 +548,11 @@ def publish_html_article(appid, secret, html_path, cover_path, title, author=Non
     with open(html_path, encoding="utf-8") as f:
         html = f.read()
 
-    print("[4/6] 检查并上传正文里的本地图片（如有）…")
+    print(f"[3/{total}] 检查并上传正文里的本地图片（如有）…")
     base_dir = os.path.dirname(os.path.abspath(html_path))
     html = rewrite_local_images(html, token, base_dir=base_dir)
 
-    print("[5/6] 新增草稿 …")
+    print(f"[4/{total}] 新增草稿并执行 API 回读核验 …")
     try:
         media_id = create_draft(token, title, html, thumb_media_id, author=author, digest=digest,
                                 source_url=source_url, need_open_comment=1 if open_comment else 0,
@@ -563,10 +568,17 @@ def publish_html_article(appid, secret, html_path, cover_path, title, author=Non
 
     try:
         readback = read_draft(token, media_id)
-        differences = verify_draft(readback, title, html, thumb_media_id)
+        differences = verify_draft(readback, title, html, thumb_media_id,
+                                   author=author, digest=digest, source_url=source_url)
         if evidence_dir:
-            write_readback_evidence(evidence_dir, media_id, readback,
-                                    {"title": api_title(title), "content": html, "thumb_media_id": thumb_media_id})
+            expected_fields = {"title": api_title(title), "content": html, "thumb_media_id": thumb_media_id}
+            if author:
+                expected_fields["author"] = author
+            if digest:
+                expected_fields["digest"] = digest
+            if source_url:
+                expected_fields["content_source_url"] = source_url
+            write_readback_evidence(evidence_dir, media_id, readback, expected_fields)
     except Exception as e:
         raise RuntimeError(f"草稿已创建 media_id={media_id}，回读失败；请先在后台核对，勿重复建稿：{type(e).__name__}") from None
     if differences:
@@ -577,7 +589,7 @@ def publish_html_article(appid, secret, html_path, cover_path, title, author=Non
         print("\n草稿已建好，未继续发布。请后台检查；不要为查询状态重新建稿。")
         return {"media_id": media_id, "publish_id": None, "article_urls": []}
 
-    print("[6/6] 提交发布 …")
+    print(f"[5/{total}] 提交发布 …")
     try:
         publish_id = submit_publish(token, media_id)
     except WeChatAPIError as e:
@@ -745,6 +757,22 @@ def main():
             )
         return
 
+    AUDIT_FIELDS = {"submit", "body_sha256", "media_id", "publish_id", "error_type",
+                    "media_id_sha256", "stage"}
+
+    def audit(event, **fields):
+        dropped = set(fields) - AUDIT_FIELDS
+        if dropped:
+            raise ValueError(f"审计日志不接受字段：{'、'.join(sorted(dropped))}（防止凭证/正文入日志）")
+        for value in fields.values():
+            if not isinstance(value, (str, int, float, bool, type(None))):
+                raise ValueError("审计日志只接受标量字段")
+        record = {"time": datetime.now(timezone.utc).isoformat(), "event": event, **fields}
+        fd = os.open(args.audit_log, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        os.chmod(args.audit_log, 0o600)
+        with os.fdopen(fd, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
     # 删除永久素材不可逆：授权与格式检查必须在取 token **之前**完成——
     # 未被确认的破坏性操作不应该先花掉一次凭证请求，更不应该有任何网络副作用。
     if args.delete_material:
@@ -760,12 +788,8 @@ def main():
             result = delete_material(token, args.delete_material)
             print(json.dumps(result, ensure_ascii=False))
             try:
-                with open(args.audit_log, "a", encoding="utf-8") as f:
-                    f.write(json.dumps({"time": datetime.now(timezone.utc).isoformat(),
-                                        "event": "material_deleted",
-                                        "media_id_sha256": hashlib.sha256(
-                                            args.delete_material.encode()).hexdigest()},
-                                       ensure_ascii=False) + "\n")
+                audit("material_deleted",
+                      media_id_sha256=hashlib.sha256(args.delete_material.encode()).hexdigest())
             except OSError:
                 pass
             return
@@ -786,21 +810,6 @@ def main():
     missing = [n for n, v in [("--html", args.html), ("--cover", cover), ("--title", title)] if not v]
     if missing:
         ap.error(f"缺少必填参数：{', '.join(missing)}（--cover/--title 可由 --meta 提供）")
-
-    AUDIT_FIELDS = {"submit", "body_sha256", "media_id", "publish_id", "error_type",
-                    "media_id_sha256", "stage"}
-
-    def audit(event, **fields):
-        dropped = set(fields) - AUDIT_FIELDS
-        if dropped:
-            raise ValueError(f"审计日志不接受字段：{'、'.join(sorted(dropped))}（防止凭证/正文入日志）")
-        for value in fields.values():
-            if not isinstance(value, (str, int, float, bool, type(None))):
-                raise ValueError("审计日志只接受标量字段")
-        record = {"time": datetime.now(timezone.utc).isoformat(), "event": event, **fields}
-        fd = os.open(args.audit_log, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
-        with os.fdopen(fd, "a", encoding="utf-8") as f:
-            f.write(json.dumps(record, ensure_ascii=False) + "\n")
     try:
         audit("attempt", submit=s["submit"])
         publish_html_article(

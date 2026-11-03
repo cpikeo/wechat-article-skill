@@ -1,109 +1,55 @@
-# WeChat Article Skill · V9.0.0
+# WeChat Article Skill · V10.0.0
 
-把 Markdown、Word `.docx` 或纯文本编辑为可信、克制、适合手机阅读的微信公众号正文 HTML、独立预览与可核验交付记录。它是 AI 编辑与视觉排版 Skill，不是网页模板库、SaaS、CMS 或独立软件系统。
+将 Markdown、Word `.docx` 或纯文本编辑并排版为可信、克制、适合手机阅读的微信公众号正文 HTML、独立移动预览与可核验交付包。本仓库是遵循开放标准的 AI 编辑与视觉排版 Skill，零第三方运行时依赖，仅使用 Python 3 标准库。
 
-**工作顺序：THINK → EDIT → DESIGN → COMPOSE → RENDER → VERIFY。** 内容判断先于视觉；视觉概念先于装饰；删除 > 合并 > 简化 > 复用 > 新增。机器负责确定性检查，模型/编辑负责语义与审美判断。
+**工作流：THINK → EDIT → DESIGN → COMPOSE → RENDER → VERIFY。** 内容判断先于视觉，关系组织先于装饰；删除 > 合并 > 简化 > 复用 > 新增。完整规则与编辑/设计契约以唯一核心入口 [`SKILL.md`](SKILL.md) 为准。
 
-## 包里有什么
+## 目录结构
 
-| 路径 | 作用 |
+| 路径 | 职责 |
 |---|---|
-| [`SKILL.md`](SKILL.md) | 唯一核心入口：六类编辑策略、事实边界、六主题、构图与验收口径 |
-| `scripts/render.py` | Markdown → 正文 HTML / 浏览器预览 / `.meta.json`，含 Gate 1/2 与交付 |
-| `scripts/editorial.py` | 编辑候选：文风、重复、标题承诺、逐节增量、作者声音与事实字面变化 |
-| `scripts/check.py` | 标签、属性、协议、CSS、图片路径白名单与 HTTP(S) URL 校验 |
-| `scripts/publish.py` | 公众号官方 API：离线预检 → 草稿 → 可选发布；默认止于草稿 |
-| `scripts/extract_docx.py` | Word `.docx` → Markdown；支持常见有序/无序/嵌套列表、起始编号与可识别的自定义编号；图片列表项和不可保真结构显式阻断 |
-| `scripts/safety.py` | 本地资源路径边界、文件哈希与颜色对比度 |
-| `assets/themes.json` | 六主题参数的**唯一来源** |
-| `references/` | 按需读取：素材工艺、公众号工程边界、API 发布 |
-| `config.example.json` | 凭证与开关示例；复制为已被忽略的 `config.json` |
+| [`SKILL.md`](SKILL.md) | 唯一核心入口：六类编辑策略、事实与声音保护、六主题设计系统、构图与三级验收契约 |
+| `scripts/render.py` | Markdown 解析、六主题排版引擎、独立移动预览、`.meta.json` 与 Gate 1/2 门禁交付 |
+| `scripts/editorial.py` | 可定位编辑审计：六类文章判断入口、文风/重复线索、标题承诺、逐节增量、事实与声音比对 |
+| `scripts/check.py` | 公众号 HTML 标签、属性、协议、内联 CSS 白名单、字体栈与 HTTP(S) URL 真源校验 |
+| `scripts/extract_docx.py` | `.docx` → Markdown 无损优先提取（标题、粗体/下划线/删除线、引用块、多级编号、普通表格；有损结构显式阻断） |
+| `scripts/publish.py` | 微信公众号官方 API：离线预检 → 素材复用 → 草稿创建与回读核验 → 单次确认发布 |
+| `scripts/safety.py` | 相对路径穿越/符号链接拦截、SHA-256 指纹与 WCAG 对比度计算 |
+| `assets/themes.json` | 六套主题（`paper`/`letter`/`ink`/`frost`/`bone`/`folio`）唯一参数真源 |
+| `references/` | 按需工程参考：[`direction.md`](references/direction.md)（素材工艺）、[`platform.md`](references/platform.md)（HTML 门禁）、[`publish.md`](references/publish.md)（API 交付） |
+| `config.example.json` | 公众号配置示例（复制为已被 Git 忽略的 `config.json` 使用） |
 
-运行时只依赖 Python 3 标准库。正式包不含测试、评测集、真实样稿、截图、基准报告或开发文档。
+正式运行时包严格保持干净，不含测试脚本、评测样本、截图或开发报告。
 
-## 快速使用
+## 快速开始
 
 ```bash
-# Markdown / 纯文本 → 正文 HTML、浏览器预览、meta
-python3 scripts/render.py 文章.md
+# 1. Word 转 Markdown（可选；转换后须补图片职责并走编辑流程）
+python3 scripts/extract_docx.py 文章.docx -o 文章.md
 
-# 指定六种主题之一
-python3 scripts/render.py 文章.md --theme frost -o 交付/正文.html
+# 2. 渲染正文 HTML + 独立移动预览 + .meta.json（可选指定主题）
+python3 scripts/render.py 文章.md --theme paper
 
-# 对照原稿的事实字面变化并校验五列表格修改台账
+# 3. 对照原稿核查事实单元/作者声音变化，并校验五列修改台账
 python3 scripts/render.py 文章.md --against 原稿.md --ledger 修改台账.md
 
-# 一次交付源稿、HTML、预览、meta、记录、验收和本地素材
+# 4. 生成完整交付包（源稿/正文/预览/meta/修改记录/验收与本地素材）
 python3 scripts/render.py 文章.md --deliver 交付目录/
 
-# Word 转换为 Markdown；转换后须对照原件核查
-python3 scripts/extract_docx.py 文章.docx -o 文章.md
-```
-
-`render.py` 输出正文 HTML、独立浏览器预览和 `.meta.json`。预览中的工具栏、封面裁切、素材表及模拟标题/作者不会复制进正文。退出码 1 表示 Gate 1/2 有必须修事项；`todo` 允许预览但会被发布预检阻断。不要手改生成 HTML——要改就回 Markdown 重渲。
-
-## 六类编辑策略
-
-新闻、分析、教程、人物、评论、长文分别核对不同的读者任务、入口、证据、反例/失败路径与作者声音。类型可以复合，策略不是写作模板。
-
-- 标题数量、对象、问题和最高级只生成可定位的复核事项；**H2 数量不等于语义兑现**，无法在普通段落中机器计数时不作硬判决。
-- 文风命中只是回原文的地址。数字时间线不当作主语复读，日历日期不与统计数字共用来源规则，空泛收尾只检查最后一个实质正文段。
-- `--against` 比对数字、单位、日期精度、正负号、限定、链接与直接引语；引号前后的归属动词都可识别。它只做字面比对，不是事实核真。
-- 新闻与分析须明确未知项；`::: unknown` 可把未知单独成块。事实、推断、观点与未知的语义判定由编辑完成。
-- 修改台账五列：`位置｜问题｜动作｜收益｜保留检查`。无法说明具体收益的润色不做。
-
-## 六种主题
-
-`paper` 静纸、`letter` 暖信笺、`ink` 酌墨、`frost` 北霜、`bone` 素作、`folio` 特稿。差异来自网格、字体、章节、导语、重点、引文、数据、表格、列表、图片及阅读节奏，不只换颜色。选择依据是内容关系与读者任务，允许内容驱动的局部调整。
-
-主题轴（`lead/heading/h3/peak/divider/quote/image/data/table/list`）的取值全集登记在 `render.py` 的 `THEME_AXES`，配置载入时逐项校验。字号层级是硬约束：导语 < H2，导语 > 正文，H2 > H3，正文 15–17px，最小 12px。去色后仍须凭结构辨认主题。
-
-数据组件先计算数值在 320px 可用宽度，再选择分栏、左右记录或上下记录；长表格降级为保留全部字段与顺序的记录卡，不缩字硬塞。
-
-## 图片与构图
-
-每张图先声明职责：入口、解释、证据、对比、结构、场景、叙事、隐喻、停顿、数据、资料或实拍。说不出信息增量就不配图。解释/证据靠近其说明对象；多图顺序与比较口径必须可解释。
-
-资料图/实拍须写明出处与授权；证据/数据图须给可核对来源，生成示意不得承担真实证据职责。封面检查 2.35:1 与 1:1 两种本地模拟裁切，但不冒充微信各入口的真实裁切。
-
-## 发布保护
-
-```bash
-cp config.example.json config.json
-python3 scripts/publish.py --html 正文.html --meta 正文.meta.json --preflight
-python3 scripts/publish.py --html 正文.html --meta 正文.meta.json
-
-# 仅本次显式授权正式发布，标题必须逐字一致
-python3 scripts/publish.py --html 正文.html --meta 正文.meta.json \
+# 5. 公众号发布离线预检 / 创建草稿 / 单次确认正式发布
+python3 scripts/publish.py --html 交付目录/正文.html --meta 交付目录/正文.meta.json --preflight
+python3 scripts/publish.py --html 交付目录/正文.html --meta 交付目录/正文.meta.json
+python3 scripts/publish.py --html 交付目录/正文.html --meta 交付目录/正文.meta.json \
   --submit --confirm-title "逐字标题"
 ```
 
-默认止于草稿。`config.json` 不接受持久发布授权；正式提交必须同时具有本次 `--submit` 和逐字匹配的 `--confirm-title`。删除永久素材需要 `--delete-material <ID>` 与逐字一致的 `--confirm-delete-media-id <ID>`，两项校验都在获取 access_token 之前完成。凭证不进文章、仓库或审计日志。详见 [`references/publish.md`](references/publish.md)。
+## 核心边界
 
-## 验收口径（不要混用）
-
-| 级别 | 能证明 | 不能证明 |
-|---|---|---|
-| 浏览器 PASS | 本地 320/360/390/430px 的几何、字号、溢出、数值不拆行、复制事件 | 微信清洗后的样式、真机字体、客户端裁切 |
-| API 回读 PASS | 草稿字段与本地正文逐字一致 | 后台重开后的样式、手机端阅读 |
-| 微信真机 PASS | 客户端实际渲染、保存重开、iOS/Android、封面两种裁切 | 长期稳定性、不同账号权限差异 |
-
-`--deliver` 生成的 `验收.md` 默认把三级都写成 `UNVERIFIED`；脚本不会自动改成 PASS。没有授权账号或设备时，API 回读与微信真机分别为 `BLOCKED`；独立外部盲评和逐项第二来源核真未执行时也必须标 `UNVERIFIED`。
-
-## V9 相对 V8.0.0 的变更
-
-| 方向 | 实现与边界 |
-|---|---|
-| DOCX 列表 | 读取 `numbering.xml` 的 `abstractNum`、`numId`、`ilvl`、`lvlOverride` 与起始编号；支持常见十进制/字母/罗马/中文编号和嵌套有序、无序列表；编号重启按新 `numId` 处理。无法确认的编号格式、无父项层级、空项目、列表内图片会阻断输出，不静默丢层级。 |
-| Markdown 链接 | 支持标签本身包含一层方括号的链接文本；来源转换将紧贴 Markdown 链接的感叹号分开，避免把原文标点误作图片。 |
-| HTML 预检 | 不把带可见空格的 `leaf` 文本节点误判成空装饰元素；真正空 section/span 仍被拦截。 |
-| 编辑误报治理 | 保留 Markdown 来源链接；裸 URL 不计长句；引语/代码/列表不进入相似句检测；时间线、列表、术语、问答标签、观点与教程解释等文风信号只给人工复核，不自动改写。 |
-| 发布安全 | Multipart 上传文件名安全化，避免引号/换行改变 multipart 结构；HTTP(S) 图片 URL 识别不区分大小写。离线检查不代表真实微信 API 已验收。 |
-| 评测隔离 | 真实样稿、人工标注、压力夹具、浏览器截图与评测报告仅在同级开发目录，不进入正式运行包；合成压力夹具不计入编辑准确率分母。 |
-| 兼容性 | 未增加运行时依赖；六主题配置、CLI 和 Markdown 原语保持兼容。 |
-
-V8 及更早版本生成的 sidecar 带有旧版本号，发布预检会要求用 V9 重渲；不要手改版本字段或哈希。
+- **编辑不造假**：机器线索只定位回看原文的地址，不代替语义判决，不虚构事实、来源、引语或图片内容。
+- **六主题不靠换色**：`paper`（静纸）、`letter`（暖信笺）、`ink`（酌墨）、`frost`（北霜）、`bone`（素作）、`folio`（特稿）由字体、网格、标题结构与组件语法驱动，去色后仍清晰可辨；320px 窄屏自动执行多栏自适应与表格记录卡降级。
+- **安全与门禁闭环**：禁止路径越界、外链图片直引、危险 CSS/脚本与持久发布授权；草稿回读或删除永久素材均有独立强校验与 `0600` 脱敏审计日志。
+- **三级验收分离**：严格区分本地四宽度浏览器验证、微信 API 草稿回读与微信客户端真机验收；未执行项如实记为 `UNVERIFIED` 或 `BLOCKED`。
 
 ## 许可
 
-[MIT](LICENSE.txt) © 2026 cpikeo。本包不含第三方图片或字体资产。
+[MIT](LICENSE.txt) © 2026 cpikeo。
