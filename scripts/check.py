@@ -47,8 +47,8 @@ PARENTS = {
 }
 
 HEX = r"#[0-9a-fA-F]{6}"
-SANS = "-apple-system,BlinkMacSystemFont,'PingFang SC','Hiragino Sans GB','Microsoft YaHei','Noto Sans CJK SC',sans-serif"
-SERIF = "'Songti SC','STSong','SimSun','Noto Serif CJK SC',serif"
+SANS = "-apple-system,BlinkMacSystemFont,'PingFang SC','Hiragino Sans GB','Microsoft YaHei','Source Han Sans SC','Noto Sans CJK SC',sans-serif"
+SERIF = "'Songti SC','STSong','SimSun','Source Han Serif SC','Noto Serif CJK SC',serif"
 MONO = "'SF Mono',Menlo,Consolas,monospace"
 FONT_FAMILIES = {SANS, SERIF, MONO}
 
@@ -118,6 +118,7 @@ CSS_RULES = {
     "flex-shrink": lambda v: v == "0",
     "font-family": lambda v: v in FONT_FAMILIES,
     "font-size": _font_size,
+    "font-style": lambda v: v in {"italic", "normal"},
     "font-variant-numeric": lambda v: v == "tabular-nums",
     "font-weight": lambda v: v in {"400", "500", "600", "700"},
     "gap": lambda v: bool(re.fullmatch(r"\d+(?:\.\d+)?px", v)) and float(v[:-2]) <= 100,
@@ -181,7 +182,7 @@ def _parse_style(style):
 def safe_http_url(value):
     if not isinstance(value, str) or not value or value != value.strip():
         return False
-    if any(ord(c) < 0x20 for c in value) or any(c.isspace() for c in value) or "\\" in value:
+    if any(ord(c) < 0x20 or ord(c) == 0x7f for c in value) or any(c.isspace() for c in value) or "\\" in value:
         return False
     if any(c in value for c in '<>"`'):
         return False
@@ -199,9 +200,18 @@ def safe_http_url(value):
         try:
             return ipaddress.ip_address(host).is_global
         except ValueError:
-            return "." in host and not host.startswith(".") and not host.endswith(".")
+            labels = host.split(".")
+            return (len(labels) >= 2 and all(
+                re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", label)
+                for label in labels) and not labels[-1].isdigit())
     except ValueError:
         return False
+
+
+def source_urls(text):
+    """Extract syntactically valid links; existence and factual support remain UNVERIFIED."""
+    return [url for raw in re.findall(r"https?://[^\s<>，；。！？）\"]+", text)
+            if safe_http_url(url := raw.rstrip(".,;:!?)]}"))]
 
 
 class Leaf(HTMLParser):

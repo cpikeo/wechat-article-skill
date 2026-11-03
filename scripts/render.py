@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Composed Markdown → 公众号正文 HTML + 独立移动预览 + Gate 1/2（V10）。
+"""Composed Markdown → 公众号正文 HTML + 独立移动预览 + Gate 1/2（V11）。
 
     render.py article.md [--theme paper|letter|ink|frost|bone|folio] [-o out.html]
     render.py article.md --against 原稿.md [--ledger 台账.md]
@@ -7,6 +7,7 @@
 """
 import argparse
 import base64
+import functools
 import hashlib
 import html as H
 import json
@@ -14,21 +15,21 @@ import math
 import mimetypes
 import os
 import re
-import shutil
+import tempfile
 import struct
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from check import MONO, SANS, SERIF, check, safe_http_url  # noqa: E402
+from check import MONO, SANS, SERIF, check, safe_http_url, source_urls  # noqa: E402
 from editorial import (  # noqa: E402
     FACT_ROLES, audit, block_text, classify_fact_change, compare_facts,
     compare_voice, doc_len, first_screen, introduced_without_source,
-    locate, parse_ledger, peak_text, plain, render_report, strategy_notes,
+    LEDGER_HEAD, locate, parse_ledger, peak_text, plain, render_report, split_row, strategy_notes,
 )
-from safety import contrast, local_path, sha256  # noqa: E402
+from safety import atomic_write, contrast, local_path, output_path, sha256  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-SKILL_VERSION = "10.0.0"
+SKILL_VERSION = "11.0.0"
 THEMES_PATH = os.path.join(HERE, "..", "assets", "themes.json")
 with open(THEMES_PATH, "rb") as _theme_file:
     THEME_CONFIG_BYTES = _theme_file.read()
@@ -49,7 +50,7 @@ THEME_AXES = {
 }
 TYPE_KEYS = ("heading_size", "heading_weight", "heading_leading", "lead_size", "lead_weight",
              "lead_leading", "quote_size", "h3_size", "data_size")
-COLOR_ROLES = ("text", "sub", "muted", "line", "field", "accent", "dark", "on_dark")
+COLOR_ROLES = ("text", "sub", "muted", "line", "field", "accent")
 GRID_KEYS = ("inset", "indent", "chapter_gap", "paragraph_gap", "body", "caption")
 
 
@@ -96,6 +97,18 @@ if _THEME_PROBLEMS:
 CJK = "\u4e00-\u9fff\u3400-\u4dbf"
 MICRO, SMALL, BODY, DISPLAY = 13, 14, 16, 20
 
+
+@functools.lru_cache(maxsize=1)
+def renderer_fingerprint():
+    root = os.path.dirname(HERE)
+    paths = [os.path.join(root, "assets", "themes.json")] + [
+        os.path.join(HERE, name + ".py") for name in ("render", "editorial", "check", "safety")]
+    h = hashlib.sha256()
+    for path in sorted(paths):
+        with open(path, "rb") as stream:
+            h.update(os.path.relpath(path, root).encode() + b"\0" + stream.read() + b"\0")
+    return h.hexdigest()
+
 ROLES = {
     "入口", "锚点", "解释", "证据", "对比", "结构", "场景", "叙事", "隐喻", "停顿", "数据", "资料", "实拍",
     "entry", "anchor", "explain", "evidence", "compare", "structure", "context", "narrative", "metaphor", "rhythm",
@@ -109,8 +122,14 @@ COVER_BAND = (1.6, 3.0)
 COVER_MIN_W = 900
 
 BR = '<span leaf=""><br></span>'
-INLINE = re.compile(r"`([^`]+)`|==(.+?)==|\*\*(.+?)\*\*|<u>(.+?)</u>|~~(.+?)~~|\[([^\]]+)\]\(([^)\s]+)\)")
-INLINE_BRACKET_LINK = re.compile(r"\[(\[[^\]\n]*\])\]\(([^)\s]+)\)")
+INLINE = re.compile(
+    r"\\(?P<escape>[\\`*_\[\]()<>~=\-#!.+|:])"
+    r"|`(?P<code>[^`]+)`|==(?P<mark>.+?)==|\*\*\*(?P<bolditalic>.+?)\*\*\*|\*\*(?P<bold>.+?)\*\*"
+    r"|<u>(?P<underline>.+?)</u>|~~(?P<strike>.+?)~~"
+    r"|(?<!\*)\*(?P<italic>[^*\n]+?)\*(?!\*)"
+    r"|\[(?P<link>(?:\[[^\]\n]*\]|[^\[\]])+)\]\((?P<url>[^)\s]+)\)"
+)
+
 ORDINAL = re.compile(
     r"^(?:[一二三四五六七八九十]{1,3}[、．.]|[（(][一二三四五六七八九十0-9]{1,3}[）)]"
     r"|第[一二三四五六七八九十0-9]{1,3}[章节回讲部篇期段条则辑卷问日]"
@@ -135,7 +154,7 @@ def typo(s):
         )
     return "".join(
         part if i % 2 else prose(part)
-        for i, part in enumerate(re.split(r"(`[^`]+`|\[(?:\[[^\]\n]*\]|[^\]]+)\]\([^)\s]+\)|https?://[^\s<>\u3000，；。！？）\"]+)", s))
+        for i, part in enumerate(re.split(r"(`[^`]+`|“[^”]*”|「[^」]*」|『[^』]*』|\[(?:\[[^\]\n]*\]|[^\]]+)\]\([^)\s]+\)|https?://[^\s<>\u3000，；。！？）\"]+)", s))
     )
 
 
@@ -220,7 +239,12 @@ def parse_list(lines, start_index):
     return roots, i
 
 
-def parse(md):
+def parse(md, plain_text=False):
+    if plain_text:
+        text = md.lstrip("\ufeff").replace("\r\n", "\n").replace("\r", "\n")
+        paragraphs = re.split(r"\n\s*\n", text.strip())
+        escape = lambda value: re.sub(r"([\\`*_\[\]()<>~=#!.+|])", r"\\\1", value)
+        return {}, [("p", escape(p.replace("\n", " "))) for p in paragraphs if p.strip()]
     md = md.lstrip("\ufeff").replace("\r\n", "\n").replace("\r", "\n")
     meta, blocks = {}, []
     if md.startswith("---\n"):
@@ -238,6 +262,8 @@ def parse(md):
             if k in meta:
                 raise ValueError(f"frontmatter 第 {line_no} 行重复字段：{k}")
             v = v.strip()
+            if v.startswith(('"', "'")) and not re.fullmatch(r"([\"\'])([^\"\']*)\1(?:\s+#.*)?", v):
+                raise ValueError(f"frontmatter 第 {line_no} 行引号未闭合")
             quoted = re.fullmatch(r"([\"'])(.*?)\1(?:\s+#.*)?", v)
             if quoted:
                 v = quoted[2]
@@ -262,16 +288,22 @@ def parse(md):
     while i < len(lines):
         ln = lines[i].rstrip()
         s = ln.strip()
-        if s.startswith("```"):
+        fence = re.match(r"^(`{3,}|~{3,})(.*)$", s)
+        if fence:
             flush()
-            lang, body = s[3:].strip(), []
-            i += 1
-            while i < len(lines) and not lines[i].strip().startswith("```"):
+            marker, lang = fence.groups()
+            if marker[0] == "`" and "`" in lang:
+                raise ValueError(f"第 {i + 1} 行：反引号代码语言不能含反引号")
+            body, i = [], i + 1
+            closing = re.compile(r"^" + re.escape(marker[0]) + "{" + str(len(marker)) + r",}\s*$")
+            while i < len(lines) and not closing.fullmatch(lines[i].strip()):
+                if lines[i].strip().startswith(marker[0] * len(marker)):
+                    raise ValueError(f"第 {i + 1} 行：代码结束围栏不能附带文字")
                 body.append(lines[i])
                 i += 1
             if i >= len(lines):
                 raise ValueError("代码围栏未闭合")
-            blocks.append(("code", (lang, body)))
+            blocks.append(("code", (lang.strip(), body)))
         elif s.startswith(":::") and len(s) > 3:
             flush()
             kind, _, arg = s[3:].strip().partition(" ")
@@ -299,13 +331,13 @@ def parse(md):
             flush()
             q = []
             while i < len(lines) and lines[i].strip().startswith(">"):
-                q.append(lines[i].strip().lstrip(">").strip())
+                q.append(re.sub(r"^\s*> ?", "", lines[i]))
                 i += 1
             i -= 1
             src = q.pop()[1:].lstrip("—-– ").strip() if len(q) > 1 and re.match(r"[—–-]", q[-1]) else ""
             # 仅全文首个块作为导语，防止多个连续 > 块叠加成双导语
             kind = "lead" if not blocks else "quote"
-            blocks.append((kind, ("".join(x for x in q if x), src)))
+            blocks.append((kind, ("\n".join(q).strip(), src)))
         elif re.match(r"!\[[^\]]*\]\([^)]*\)\s*$", s):
             flush()
             mm = re.match(r'!\[([^\]]*)\]\(\s*([^)\s]*)\s*(?:"([^"]*)")?\s*\)', s)
@@ -319,17 +351,22 @@ def parse(md):
             i = next_i - 1
         elif s.startswith("|"):
             flush()
-            rows, sep_cols = [], None
+            rows, sep_cols, table_header_count = [], None, 0
             while i < len(lines) and lines[i].strip().startswith("|"):
-                cells = [c.strip().replace(r"\|", "|") for c in re.split(r"(?<!\\)\|", lines[i].strip().strip("|"))]
+                cells = split_row(lines[i])
                 if cells and all(re.fullmatch(r":?-+:?", c) for c in cells):
                     sep_cols = len(cells)
+                    table_header_count += 1
+                    if table_header_count > 1 or len(rows) != 1:
+                        raise ValueError(f"第 {i + 1} 行：表格分隔行只能出现一次且紧跟表头")
                 else:
                     rows.append(cells)
                 i += 1
             i -= 1
-            if sep_cols is not None and rows and sep_cols != len(rows[0]):
-                raise ValueError(f"第 {i + 1} 行：表格分隔行列数（{sep_cols}）与表头列数（{len(rows[0])}）不一致")
+            if sep_cols is None or table_header_count != 1 or not rows:
+                raise ValueError(f"第 {i + 1} 行：表格必须有表头，且第二行是唯一的列分隔行")
+            if any(len(row) != sep_cols for row in rows):
+                raise ValueError(f"第 {i + 1} 行：表格列数不一致，不能静默补齐或丢弃单元格")
             blocks.append(("table", rows))
         elif not s:
             flush()
@@ -411,10 +448,6 @@ def text_px(s, size=14):
 
 def cell_min_px(s, pad=12):
     return text_px(s) + pad
-
-
-def col_floor(s, pad=12):
-    return cell_min_px(s, pad) + TABLE_SLACK
 
 
 def table_pad(t):
@@ -504,9 +537,10 @@ class R:
         return round(px * self.k)
 
     def leaf(self, s):
-        return BR if not s else f'<span leaf="">{H.escape(s, quote=False)}</span>'
+        return BR if not s else BR.join(f'<span leaf="">{H.escape(part, quote=False)}</span>' for part in s.split("\n"))
 
     def prose_leaf(self, s):
+        # Escape processing happens in inline(); here only keep numeric atoms intact.
         out, pos = [], 0
         for m in PROSE_ATOM.finditer(s):
             token = m.group()
@@ -525,33 +559,31 @@ class R:
     def inline(self, s, normalize=True):
         t, out, pos = self.t, [], 0
         s = typo(s) if normalize else s
-        matches = [(m, False) for m in INLINE.finditer(s)]
-        matches.extend((m, True) for m in INLINE_BRACKET_LINK.finditer(s))
-        matches.sort(key=lambda item: item[0].start())
-        for m, bracket_link in matches:
-            if m.start() < pos:
-                continue
+        for m in INLINE.finditer(s):
             if m.start() > pos:
                 out.append(self.prose_leaf(s[pos:m.start()]))
-            if bracket_link:
-                code = mark = bold = u = strike = None
-                ltext, url = m.groups()
-            else:
-                code, mark, bold, u, strike, ltext, url = m.groups()
-            if code:
+            g = m.groupdict()
+            if g["escape"] is not None:
+                out.append(self.leaf(g["escape"]))
+            elif g["code"] is not None:
                 out.append(f'<span style="font-family:{MONO};font-size:{SMALL}px;background:{t["field"]};'
-                           f'padding:1px 5px;border-radius:3px;color:{t["text"]};">{self.leaf(code)}</span>')
-            elif mark or u:
-                out.append(f'<span style="border-bottom:1px solid {t["accent"]};padding-bottom:1px;">'
-                           f'{self.leaf(mark or u)}</span>')
-            elif bold:
-                out.append(f'<strong style="font-weight:600;color:inherit;">{self.leaf(bold)}</strong>')
-            elif strike:
-                out.append(f'<span style="text-decoration:line-through;color:{t["muted"]};">{self.leaf(strike)}</span>')
+                           f'padding:1px 5px;border-radius:3px;color:{t["text"]};">{self.leaf(g["code"])}</span>')
+            elif g["mark"] is not None or g["underline"] is not None:
+                inner = self.inline(g["mark"] if g["mark"] is not None else g["underline"], normalize=False)
+                out.append(f'<span style="border-bottom:1px solid {t["accent"]};padding-bottom:1px;">{inner}</span>')
+            elif g["bolditalic"] is not None:
+                out.append(f'<strong style="font-weight:600;color:inherit;"><span style="font-style:italic;">{self.inline(g["bolditalic"], normalize=False)}</span></strong>')
+            elif g["bold"] is not None:
+                out.append(f'<strong style="font-weight:600;color:inherit;">{self.inline(g["bold"], normalize=False)}</strong>')
+            elif g["italic"] is not None:
+                out.append(f'<span style="font-style:italic;">{self.inline(g["italic"], normalize=False)}</span>')
+            elif g["strike"] is not None:
+                out.append(f'<span style="text-decoration:line-through;color:{t["muted"]};">{self.inline(g["strike"], normalize=False)}</span>')
             else:
+                url = g["url"]
                 if not safe_http_url(url):
                     raise ValueError(f"链接不合法或协议不支持：{url}；仅允许带有效主机名的 HTTP(S) URL")
-                out.append(f'<a href="{H.escape(url, quote=True)}" style="color:{t["text"]};text-decoration:underline;">{self.leaf(ltext)}</a>')
+                out.append(f'<a href="{H.escape(url, quote=True)}" style="color:{t["text"]};text-decoration:underline;">{self.inline(g["link"], normalize=False)}</a>')
             pos = m.end()
         if pos < len(s) or not out:
             out.append(self.prose_leaf(s[pos:]))
@@ -608,7 +640,7 @@ class R:
             return (f'<section style="{gap}padding-top:16px;border-top:1px solid {t["line"]};">'
                     + self.p(title, hs, extra=style + "letter-spacing:0.03em;") + "</section>")
         if mode == "folio":
-            bar = (f'<section style="display:flex;align-items:center;gap:8px;margin-bottom:7px;">'
+            bar = ('<section style="display:flex;align-items:center;gap:8px;margin-bottom:7px;">'
                    + self.p(self.leaf(f"{n:02d}"), SMALL, t["accent"],
                             f"font-weight:700;line-height:1;font-family:{self.font};font-variant-numeric:tabular-nums;flex-shrink:0;")
                    + f'<section style="width:20px;height:2px;background:{t["accent"]};flex-shrink:0;">{BR}</section></section>'
@@ -678,8 +710,8 @@ class R:
                     f'background:{t["field"]};border-left:3px solid {t["accent"]};">'
                     + self.p(inner, lead_size, t["text"], lead_style) + cite + "</section>")
         if mode == "plate":
-            return (f'<section style="margin:{self.g(4)}px 0 {self.g(26)}px;padding:16px 16px;'
-                    f'background:{t["field"]};border-top:1px solid {t["line"]};border-bottom:1px solid {t["line"]};">'
+            return (f'<section style="margin:{self.g(8)}px 0 {self.g(30)}px;padding:4px 12px 12px;'
+                    f'border-bottom:1px solid {t["line"]};">'
                     + self.p(inner, lead_size, t["text"], lead_style + f"font-family:{SERIF};") + cite + "</section>")
         if mode == "feature":
             parts = [p.strip() for p in re.split(r"(?<=[。！？；])", text) if p.strip()]
@@ -731,10 +763,11 @@ class R:
         t, style = self.t, self.t["peak"]
         fam = f"font-family:{self.font};"
         if style in ("dark", "compact"):
-            inner = self.p(self.inline(text, normalize=False), DISPLAY - 1, t["on_dark"],
-                           f"font-weight:600;line-height:{'1.68' if style == 'dark' else '1.56'};{fam}")
-            pad = f"{self.g(20)}px 18px" if style == "dark" else "14px 16px"
-            return f'<section style="margin:{self.g(30)}px 0;padding:{pad};background:{t["dark"]};">{inner}</section>'
+            size = 21 if style == "dark" else 23
+            inner = self.p(self.inline(text, normalize=False), size, t["text"],
+                           f"font-weight:{600 if style == 'dark' else 700};line-height:{1.72 if style == 'dark' else 1.52};{fam}")
+            pad = "0 4px" if style == "dark" else "0"
+            return f'<section style="margin:{self.g(32)}px 0;padding:{pad};">{inner}</section>'
         claim = self.p(self.inline(text, normalize=False), DISPLAY - 1, t["text"], f"font-weight:600;line-height:1.65;{fam}")
         if style == "field":
             return f'<section style="margin:{self.g(28)}px 0;padding:{self.g(18)}px 16px;background:{t["field"]};border-radius:{t["radius"]}px;">{claim}</section>'
@@ -752,8 +785,8 @@ class R:
         t = self.t
         head = self.micro(label or "未知 / 待确认", extra="margin-bottom:6px;")
         body = "".join(self.p(self.inline(x), self.body - 1, t["sub"], "line-height:1.82;") for x in lines)
-        return (f'<section style="margin:{self.g(22)}px 0;padding:13px 14px;'
-                f'border:1px dashed {t["muted"]};border-radius:{t["radius"]}px;">{head}{body}</section>')
+        return (f'<section style="margin:{self.g(24)}px 0;padding:2px 0 2px 14px;'
+                f'border-left:2px solid {t["line"]};">{head}{body}</section>')
 
     def note(self, label, lines, tight=False):
         t = self.t
@@ -781,14 +814,14 @@ class R:
         if mode in ("columns", "specimen"):
             gap = 16 if mode == "columns" else 12
             candidates = ([3, 2] if len(items) >= 3 and mode == "columns" else [2]) if len(items) >= 2 else [1]
-            per = next((p for p in candidates if values_fit((avail - gap * (p - 1)) / p)), 1)
+            per = next((p for p in candidates if values_fit((avail - gap * (p - 1)) / p - 0)), 1)
             if per >= 2:
                 rows = []
                 for i in range(0, len(items), per):
                     cells = "".join(
-                        f'<section style="flex:1;min-width:0;'
+                        '<section style="flex:1;min-width:0;'
                         + (f"padding:12px 0 0;border-top:1px solid {t['text']};" if mode == "columns"
-                           else f"padding:14px 12px;background:{t['field']};border-top:1px solid {t['line']};")
+                           else "padding:12px 0 0;border-top:1px solid " + t['line'] + ";")
                         + '">'
                         + self.p(self.leaf(v), size, t["text"],
                                  f"font-weight:600;line-height:1.25;font-family:{self.font};font-variant-numeric:tabular-nums;white-space:nowrap;")
@@ -799,7 +832,7 @@ class R:
                     rows.append(f'<section style="display:flex;gap:{gap}px;margin-top:{gap if i else 0}px;">{cells}</section>')
                 return f'<section style="{margin}">{"".join(rows)}</section>'
             rows = [
-                f'<section style="'
+                '<section style="'
                 + (f"padding:13px 14px;background:{t['field']};border-top:1px solid {t['line']};margin-top:{8 if idx else 0}px;"
                    if mode == "specimen" else f"padding:11px 0;border-top:1px solid {t['text' if idx == 0 else 'line']};")
                 + '">'
@@ -836,7 +869,7 @@ class R:
                           f"border-top:3px solid {t['text']};"),
             }[mode]
             ratio, pad_x, v_col, v_ext, outer = spec
-            side_fits = values_fit(avail * ratio - pad_x)
+            side_fits = values_fit(avail * ratio - 2 * pad_x)
             rows = []
             for idx, (v, lab) in enumerate(items):
                 row_pad = ("padding-top:10px;margin-top:10px;" if idx else "margin:0;") if mode == "stack" else ("padding:9px 0;" if mode == "ticker" else "padding:12px 0;")
@@ -844,7 +877,7 @@ class R:
                 if side_fits:
                     rows.append(
                         f'<section style="display:flex;align-items:baseline;gap:12px;{sep}{row_pad}">'
-                        + self.p(self.leaf(v), size, v_col, f"width:{int(ratio * 100)}%;flex-shrink:0;{v_ext}font-variant-numeric:tabular-nums;white-space:nowrap;")
+                        + self.p(self.leaf(v), size, v_col, f"width:{int(ratio * 100)}%;box-sizing:border-box;flex-shrink:0;{v_ext}font-variant-numeric:tabular-nums;white-space:nowrap;")
                         + self.p(self.inline(lab), SMALL, t["text" if mode != "ticker" else "sub"], "flex:1;min-width:0;line-height:1.65;")
                         + "</section>"
                     )
@@ -855,6 +888,8 @@ class R:
                         + self.p(self.inline(lab), SMALL, t["sub" if mode != "folio" else "text"], "margin-top:4px;line-height:1.65;")
                         + "</section>"
                     )
+            outer = (f"padding:6px 16px;background:{t['field']};border-radius:{t['radius']}px;"
+                     if mode == "stack" and len(items) > 1 else outer)
             return f'<section style="{margin}{outer}">{"".join(rows)}</section>'
 
         raise ValueError(f"数据轴取值未实现：{mode}")
@@ -864,12 +899,14 @@ class R:
         for ln in lines:
             val, _, lab = ln.replace("|", "｜").partition("｜")
             items.append((val.strip(), lab.strip()))
-        nums = [float(v) if re.fullmatch(r"\d+(\.\d+)?", v) else 0 for v, _ in items]
+        if any(not re.fullmatch(r"\d+(\.\d+)?", v) for v, _ in items):
+            raise ValueError("bars 只接受非负十进制数值；负值请改用有符号轴的图表或文字，不能画成零")
+        nums = [float(v) for v, _ in items]
         nums = [v if math.isfinite(v) else 0 for v in nums]
         mx = max(nums, default=0)
         if label:
             rows.append(self.p(self.inline(label), SMALL, t["text"], "font-weight:600;"))
-        rows.append(self.p(self.leaf("零起点 · 最长条代表本组最大值"), self.cap, t["muted"], "margin-top:2px;"))
+        rows.append(self.p(self.leaf("零起点 · 最长条代表本组最大值" if mx else "零起点 · 本组数值全部为零"), self.cap, t["muted"], "margin-top:2px;"))
         for (val, lab), num in zip(items, nums):
             w = f"{num / mx * 100:.6g}" if mx else "0"
             rows.append(
@@ -943,15 +980,17 @@ class R:
         t, head = self.t, rows[0]
         mode = t["table"]
         blocks = []
+        if len(rows) == 1:
+            return f'<section style="margin:{self.g(24)}px 0;">' + "".join(self.p(self.inline(label), SMALL, t["sub"], "padding:6px 0;") for label in head) + "</section>"
         for n, row in enumerate(rows[1:], 1):
             # 若首列为短名称（≤8字），直接把首列作为卡片小标题，省去机械的“记录 01”冗余头
             lead_key = plain(row[0]).strip() if row else ""
             use_first_as_title = bool(lead_key and len(lead_key) <= 10 and len(head) >= 3)
             pairs = list(zip(head[1:], row[1:])) if use_first_as_title else list(zip(head, row))
-            card_title = f"{plain(head[0])} · {lead_key}" if use_first_as_title else f"记录 {n:02d}"
+            card_title = self.inline(head[0]) + self.leaf(" · ") + self.inline(row[0]) if use_first_as_title else self.leaf(f"记录 {n:02d}")
             cells = [
-                f'<section style="display:flex;gap:12px;padding:4px 0;">'
-                + self.p(self.leaf(label), self.cap, t["muted"], "width:32%;flex-shrink:0;min-width:0;line-height:1.65;")
+                '<section style="display:flex;gap:12px;padding:4px 0;">'
+                + self.p(self.inline(label), self.cap, t["muted"], "width:32%;flex-shrink:0;min-width:0;line-height:1.65;")
                 + self.p(self.inline(value), SMALL, t["text"],
                          "flex:1;min-width:0;line-height:1.65;font-variant-numeric:tabular-nums;")
                 + "</section>"
@@ -964,7 +1003,7 @@ class R:
             )
             blocks.append(
                 f'<section style="{card_style}">'
-                + self.p(self.leaf(card_title), SMALL, t["accent"] if mode == "feature" else t["text"],
+                + self.p(card_title, SMALL, t["accent"] if mode == "feature" else t["text"],
                          f"margin-bottom:6px;font-weight:600;font-family:{self.font};")
                 + "".join(cells) + "</section>"
             )
@@ -1149,7 +1188,7 @@ class R:
                            f"margin-top:{6 if n > 1 else 0}px;line-height:1.68;font-family:{self.font};")
                 )
         box_style = (
-            f"margin:{self.g(6)}px 0 {self.g(30)}px;padding:13px 15px;background:{t['field']};border-radius:{t['radius']}px;"
+            f"margin:{self.g(6)}px 0 {self.g(30)}px;padding:8px 0 12px;border-bottom:1px solid {t['line']};"
             if mode in ("plain", "atelier") else
             f"margin:{self.g(6)}px 0 {self.g(30)}px;padding:12px 0 12px 12px;border-left:2px solid {t['line']};"
         )
@@ -1248,24 +1287,30 @@ def _asset_gate(meta, blocks, base):
         if unknown_mods:
             must.append(f"图片修饰词未识别：{'、'.join(sorted(unknown_mods))}")
         if "parallel" in [x.lower() for x in tokens[2:]] and mode != "comparison":
-            must.append("parallel 只用于 comparison；默认纵向同宽对照")
+            must.append("parallel 只用于 comparison；窄屏将按单列顺序呈现")
         if role0 in FACT_ROLES and not (alt or "").strip():
             must.append("证据类图必须写清出处 / 口径 / 时间；解释图也需说明")
-        if not src or TODO.match(src):
-            continue
+        if "parallel" in [x.lower() for x in tokens[2:]]:
+            should.append("对照图已改为单列纵向呈现，避免 320px 下细节不可读；请移除 parallel 声明")
         if role0 in FACT_ROLES and not _has_adjacent_explanation(blocks, idx):
             should.append(f"图片 {src}（{role0}）未紧邻解释文字：说明/证据类图片须靠近其解释对象")
         if role0 in PROVENANCE_ROLES:
             note_near = blocks[idx + 1][1][1] if idx + 1 < len(blocks) and blocks[idx + 1][0] == "note" else []
             caption = " ".join([alt or "", role or ""] + list(note_near))
-            if not re.search(r"来源|馆藏|授权|许可|版权|CC0|CC BY|©|摄影|摄于|截图|扫描|archive|collection", caption, re.I):
-                must.append(f"图片 {src}：资料图/实拍必须在图注写明来源与授权（馆藏、CC BY、摄影者或档案编号）")
+            has_source = re.search(r"来源|馆藏|摄影|摄于|archive|collection", caption, re.I)
+            has_rights = re.search(r"授权|许可|版权|CC0|CC BY|©|rights|license", caption, re.I)
+            placeholder = re.search(r"(?:来源|授权|许可)[：:]\s*(?:未知|待补|无)|(?:TODO|TBD)", caption, re.I)
+            if not (has_source and has_rights) or placeholder:
+                must.append(f"图片 {src}：资料图/实拍须分别写明实际来源与授权；关键词或「未知/待补」不构成验收")
         if role0 in {"证据", "数据", "evidence", "data"}:
             context = (alt or "") + " " + role + " " + (" ".join(blocks[idx + 1][1][1]) if idx + 1 < len(blocks) and blocks[idx + 1][0] == "note" else "")
-            if re.search(r"AI.*示意|生成.*示意|(?:^|\s)(?:ai|generated)(?:\s|$)", context, re.I):
+            if re.search(r"(?:^|\s)(?:ai|generated)(?:\s|$)|AI\s*生成|生成式|人工智能生成", context, re.I):
                 must.append("生成示意图不能承担证据/数据职责")
-            elif not re.search(r"https?://\S+", context):
-                must.append("证据/数据图片缺少可核对来源链接")
+            elif not source_urls(context):
+                must.append("证据/数据图片缺少有效、可核对的 HTTP(S) 来源链接")
+        if not src or TODO.match(src):
+            must.append(f"图片待补，不能进入发布：{src or '(空路径)'}")
+            continue
         p = local_path(src, base)
         if not os.path.isfile(p):
             must.append(f"图片不存在：{src}（本地化后再交付，或写成 todo）")
@@ -1320,12 +1365,12 @@ def _data_gate(meta, blocks, key):
                 elif text_px(val.strip(), th["type"]["data_size"]) + DATA_VALUE_SLACK > room:
                     must.append(f"data 数值在 320px 无法单行完整显示：{val.strip()[:24]}；请精简口径或改用文字")
             continue
-        if not b[0]:
-            must.append("bars 必须声明单一单位/口径：写在 ::: bars 后")
+        if not re.search(r"单位[：:]\s*\S+", b[0]):
+            must.append("bars 必须声明单一单位，格式为「说明（单位：项）」。不同单位不能共轴")
         items = [(v.strip(), lab.strip()) for v, _, lab in (x.replace("|", "｜").partition("｜") for x in b[1])]
         for v, lab in items:
             if not re.fullmatch(r"\d+(\.\d+)?", v):
-                must.append(f"bars 的值必须是数字：{v or '（空）'}")
+                must.append(f"bars 的值必须是非负十进制数字：{v or '（空）'}；负值不能为零起点柱图")
             else:
                 num = float(v)
                 if not math.isfinite(num):
@@ -1486,8 +1531,8 @@ def asset_sheet(blocks, base="."):
             + '<p class="hint">未亲眼核验原图前，可见主体、景别、安全区一律记为 UNVERIFIED，不得凭文件名或 alt 推断。</p></div>')
 
 
-def render(md, theme=None):
-    meta, blocks = parse(md)
+def render(md, theme=None, plain_text=False):
+    meta, blocks = parse(md, plain_text=plain_text)
     key = theme or meta.get("theme", "paper")
     if key not in THEMES:
         raise ValueError(f"未知主题 {key}，可选：{', '.join(THEMES)}")
@@ -1551,7 +1596,6 @@ def render(md, theme=None):
         elif kind == "img":
             parts = (b[2] or "").split()
             mode = parts[1].lower() if len(parts) > 1 else ""
-            mods = {x.lower() for x in parts[2:]}
             if mode == "sequence":
                 end, group = i, []
                 while end < len(blocks) and blocks[end][0] == "img" and _img_mode(blocks[end][1]) == "sequence":
@@ -1571,30 +1615,18 @@ def render(md, theme=None):
                     continue
             if mode == "comparison" and i + 1 < len(blocks) and blocks[i + 1][0] == "img":
                 other = blocks[i + 1][1]
-                other_parts = (other[2] or "").split()
                 if _img_mode(other) == "comparison":
                     after_pair = blocks[i + 2][0] if i + 2 < len(blocks) else ""
                     mb = 8 if after_pair == "note" else r.g(24)
-                    if "parallel" in mods and "parallel" in {x.lower() for x in other_parts[2:]}:
-                        cells = [r.img(f"对照 {idx_c} · {im[0]}", im[1], im[2], below=0, above=0)
-                                 for idx_c, im in enumerate((b, other), 1)]
-                        out.append(
-                            f'<table style="width:100%;table-layout:fixed;border-collapse:collapse;margin:{r.g(24)}px 0 {mb}px;">'
-                            "<tr>" + "".join(
-                                '<td style="width:50%;vertical-align:top;padding:0 4px;overflow-wrap:anywhere;">' + cell + "</td>"
-                                for cell in cells
-                            ) + "</tr></table>"
-                        )
-                    else:
-                        # 纵向同宽成组对照：收紧组内间距，使两图在同一阅读视野内形成清晰比较关系
-                        def _cmp_cap(idx_c, text):
-                            return text if re.match(r"^(?:对照|近景|远景|图\s*[AB12])", text.strip()) else f"对照 {idx_c:02d} · {text}"
-                        out.append(
-                            f'<section style="margin:{r.g(24)}px 0 {mb}px;">'
-                            + r.img(_cmp_cap(1, b[0]), b[1], b[2], below=12, above=0)
-                            + r.img(_cmp_cap(2, other[0]), other[1], other[2], below=0, above=12)
-                            + "</section>"
-                        )
+                    # 纵向同宽成组对照：收紧组内间距，使两图在同一阅读视野内形成清晰比较关系
+                    def _cmp_cap(idx_c, text):
+                        return text if re.match(r"^(?:对照|近景|远景|图\s*[AB12])", text.strip()) else f"对照 {idx_c:02d} · {text}"
+                    out.append(
+                        f'<section style="margin:{r.g(24)}px 0 {mb}px;">'
+                        + r.img(_cmp_cap(1, b[0]), b[1], b[2], below=12, above=0)
+                        + r.img(_cmp_cap(2, other[0]), other[1], other[2], below=0, above=12)
+                        + "</section>"
+                    )
                     consumed.add(i + 1)
                     continue
             out.append(r.img(*b, below=below))
@@ -1611,7 +1643,7 @@ def render(md, theme=None):
         out.append(sig)
     t = THEMES[key]
     pad = f"padding-left:{r.inset}px;padding-right:{r.inset}px;" if r.inset else ""
-    body = (f'<section style="font-family:{r.reading_font};font-size:{r.body:g}px;color:{t["text"]};line-height:{t["leading"]};'
+    body = (f'<section style="font-family:{r.reading_font};font-size:{r.body}px;color:{t["text"]};line-height:{t["leading"]};'
             f'letter-spacing:normal;text-align:left;line-break:strict;overflow-wrap:break-word;{pad}">'
             + "".join(out) + "</section>")
     return key, meta, blocks, body
@@ -1621,170 +1653,89 @@ def contrast_checks(theme):
     t = THEMES[theme]
     pairs = [(role, "#FFFFFF") for role in ("text", "sub", "muted", "accent")]
     pairs += [(role, t["field"]) for role in ("text", "sub", "muted")]
-    pairs.append(("on_dark", t["dark"]))
+
     return [{"foreground_role": role, "foreground": t[role], "background": bg,
              "ratio": round(contrast(t[role], bg), 3), "required": 4.5,
              "pass": contrast(t[role], bg) >= 4.5} for role, bg in pairs]
 
 
-def build(md_path, theme=None, out=None):
+def safety_read(path):
+    with open(path, "rb") as stream:
+        return stream.read()
+
+
+def build(md_path, theme=None, out=None, against=None, ledger=None, delivery=False):
+    """Read → validate → stage → commit. Manifest is written last, never a false PASS."""
     base = os.path.dirname(os.path.abspath(md_path))
-    with open(md_path, encoding="utf-8") as f:
-        source_text = f.read()
-    key, meta, blocks, body = render(source_text, theme)
-    for src in [meta.get("cover", "")] + [b[1] for k, b in blocks if k == "img"]:
-        if src and not TODO.match(src):
-            local_path(src, base)
-    out = out or f"{os.path.splitext(md_path)[0]}_{key}.html"
-    os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
-    out_base = os.path.dirname(os.path.abspath(out))
+    with open(md_path, "rb") as stream:
+        source_bytes = stream.read()
+    source_text = source_bytes.decode("utf-8")
+    source_digest = hashlib.sha256(source_bytes).hexdigest()
+    key, meta, blocks, body = render(source_text, theme, plain_text=os.path.splitext(md_path)[1].lower() == ".txt")
+    out = os.path.abspath(out or f"{os.path.splitext(md_path)[0]}_{key}.html")
+    if os.path.splitext(out)[1].lower() != ".html":
+        raise ValueError("正文输出必须使用 .html 扩展名，拒绝覆盖源稿或其他文件")
+    out = output_path(out)
+    out_base = os.path.dirname(out)
+    prev = output_path(os.path.splitext(out)[0] + "_预览.html")
+    meta_path = output_path(os.path.splitext(out)[0] + ".meta.json")
+    protected = {os.path.realpath(md_path)}
+    for optional in (against, ledger):
+        if optional:
+            protected.add(os.path.realpath(optional))
+    if {os.path.realpath(p) for p in (out, prev, meta_path)} & protected or len({out, prev, meta_path}) != 3:
+        raise ValueError("输出路径与源稿/原稿/台账冲突，或正文、预览、侧车彼此重名")
+    os.makedirs(out_base, exist_ok=True)
+    deliver = out_base if delivery else ""
+    if delivery and os.path.basename(out) != "正文.html":
+        raise ValueError("交付目录的正文必须命名为 正文.html")
+    previous_manifest = None
+    if deliver and os.path.exists(deliver):
+        if not os.path.isdir(deliver) or os.path.islink(deliver):
+            raise ValueError("交付目标必须是真实目录")
+        if os.listdir(deliver):
+            manifest_path = os.path.join(deliver, "交付清单.json")
+            if not os.path.isfile(manifest_path):
+                raise ValueError("交付目录非空且没有本工具清单；拒绝混入或覆盖用户文件，请使用空目录")
+            with open(manifest_path, encoding="utf-8") as stream:
+                previous_manifest = json.load(stream)
+            for name, digest in previous_manifest.get("files", {}).items():
+                path = local_path(name, deliver)
+                if not os.path.isfile(path) or sha256(path) != digest:
+                    raise ValueError(f"既有交付已手工改动或缺失，拒绝覆盖：{name}；请使用新目录")
+            actual = {os.path.relpath(os.path.join(root, name), deliver).replace(os.sep, "/")
+                      for root, _, names in os.walk(deliver) for name in names} - {"交付清单.json"}
+            if actual != set(previous_manifest.get("files", {})):
+                raise ValueError("交付目录存在清单外文件；拒绝混入，请使用空目录")
 
-    def output_src(src):
-        if not src or TODO.match(src) or re.match(r"^(?:[a-z][a-z0-9+.-]*:|//)", src, re.I):
-            return src
-        original = local_path(src, base)
-        target = local_path(src, out_base)
-        if os.path.isfile(original) and os.path.realpath(original) != os.path.realpath(target):
-            os.makedirs(os.path.dirname(target), exist_ok=True)
-            if os.path.exists(target) and sha256(target) != sha256(original):
-                raise ValueError(f"输出素材冲突，拒绝覆盖：{src}")
-            if not os.path.exists(target):
-                shutil.copyfile(original, target)
-        return src
-
-    body = re.sub(r'(<img\b[^>]*src=")([^"]+)(")',
-                  lambda m: m[1] + H.escape(output_src(H.unescape(m[2]))) + m[3], body)
-    with open(out, "w", encoding="utf-8") as f:
-        f.write(body)
-    prev = os.path.splitext(out)[0] + "_预览.html"
-    nt = H.escape(api_title(meta.get("title", "")))
-    au_parts = []
-    if meta.get("author"):
-        au_parts.append(f"<b>{H.escape(meta['author'])}</b>")
-    if meta.get("date"):
-        au_parts.append(H.escape(meta["date"]))
-    native = (f'<div class="nt"><h1>{nt}</h1>' + (f'<p class="au">{"".join(au_parts)}</p>' if au_parts else "") + "</div>") if nt else ""
-    preview = PREVIEW.format(
-        title=H.escape(meta.get("title", "")),
-        theme=THEMES[key]["name"],
-        cover=cover_block(dict(meta, cover=output_src(meta.get("cover", ""))), out_base),
-        assets=asset_sheet([(k, (b[0], output_src(b[1]), b[2])) if k == "img" else (k, b) for k, b in blocks], out_base),
-        native=native,
-        body=body,
-    )
-    preview = re.sub(
-        r'(<img\b[^>]*src=")([^"]+)(")',
-        lambda m: m[1] + H.escape(preview_image(H.unescape(m[2]), out_base)) + m[3] + ' data-local="' + m[2] + '"',
-        preview,
-    )
-    with open(prev, "w", encoding="utf-8") as f:
-        f.write(preview)
-
+    asset_sources = [b[1] for k, b in blocks if k == "img" and b[1] and not TODO.match(b[1])]
     cover = (meta.get("cover") or "").strip()
-    m1, s1 = check(body)
+    if cover and not TODO.match(cover):
+        asset_sources.append(cover)
+    originals = {}
+    for src in dict.fromkeys(asset_sources):
+        path = local_path(src, base)
+        if os.path.realpath(path) in protected or os.path.realpath(path) in {out, prev, meta_path}:
+            raise ValueError(f"素材与输入或输出文件冲突：{src}")
+        if not os.path.isfile(path):
+            continue
+        with open(path, "rb") as stream:
+            originals[src] = stream.read()
+        target = local_path(src, out_base)
+        if os.path.islink(os.path.join(out_base, src)):
+            raise ValueError(f"素材输出不能是符号链接：{src}")
+        if os.path.isfile(target) and target != os.path.realpath(path) and safety_read(target) != originals[src]:
+            raise ValueError(f"输出素材冲突，拒绝覆盖：{src}")
+
     review = audit(meta, blocks)
+    m1, s1 = check(body)
     m2, s2 = compose_gate(meta, blocks, base, key, review)
     s2 = [f"平台层建议：{x}" for x in s1] + s2
-    contrasts = contrast_checks(key)
-    for pair in contrasts:
-        if not pair["pass"]:
-            m2.append(f"色彩对比不足：{pair['foreground_role']} / {pair['background']} 为 {pair['ratio']:.2f}:1，要求 ≥4.5")
-    fs = first_screen(meta, blocks)
-    if fs["weight"] > 1:
-        s2.append(f"首屏含 {fs['weight']} 个重入口（{'、'.join(fs['layers'])}）：建议只保留一个主入口")
-
-    asset_records = []
-    for src in sorted(set([output_src(b[1]) for k, b in blocks if k == "img" and b[1] and not TODO.match(b[1])]
-                          + ([output_src(cover)] if cover and not TODO.match(cover) else []))):
-        resolved_out = local_path(src, out_base)
-        if os.path.isfile(resolved_out):
-            wh = img_size(resolved_out)
-            asset_records.append({
-                "path": src,
-                "sha256": sha256(resolved_out),
-                "source_path": src,
-                "source_sha256": sha256(local_path(src, base)),
-                "dimensions": list(wh) if wh else None,
-                "subject_visibility": "UNVERIFIED",
-                "safe_zone": "UNVERIFIED",
-            })
-
-    side = {
-        "title": meta.get("title", ""),
-        "api_title": api_title(meta.get("title", "")),
-        "author": meta.get("author") or "",
-        "digest": meta.get("digest") or auto_digest(meta, blocks),
-        "cover": "" if (not cover or TODO.match(cover)) else output_src(cover),
-        "source_url": meta.get("source", ""),
-        "theme": key,
-        "skill_version": SKILL_VERSION,
-        "theme_config_sha256": THEME_CONFIG_SHA256,
-        "theme_profile": {axis: THEMES[key][axis] for axis in
-                          ("lead", "heading", "h3", "quote", "peak", "divider", "image", "data", "table", "list")},
-        "grid": dict(THEMES[key].get("grid", {})),
-        "contrast_checks": contrasts,
-        "decision": review["decision"],
-        "article_type": review["type"]["key"],
-        "composition_evidence": {
-            "first_screen_layers": fs["layers"],
-            "first_screen_weight": fs["weight"],
-            "h2_count": sum(k == "h2" for k, _ in blocks),
-            "body_characters": doc_len(blocks),
-            "scope": "源稿开篇结构统计；真实首屏像素高度须在 320/360/390/430px 浏览器验证",
-        },
-        "editorial_review": review,
-        "integrity_version": 2,
-        "source": {"path": os.path.abspath(md_path), "sha256": sha256(md_path)},
-        "assets": asset_records,
-        "body_sha256": hashlib.sha256(body.encode()).hexdigest(),
-        "render_errors": m1 + m2,
-        "pending_assets": any(not b[1] or TODO.match(b[1]) for k, b in blocks if k == "img"),
-        "verification_gates": {
-            "browser_multi_width": "UNVERIFIED",
-            "wechat_api_readback": "UNVERIFIED",
-            "wechat_real_device": "UNVERIFIED",
-        },
-    }
-    meta_path = os.path.splitext(out)[0] + ".meta.json"
-    with open(meta_path, "w", encoding="utf-8") as f:
-        json.dump(side, f, ensure_ascii=False, indent=2)
-    return {
-        "key": key, "meta": meta, "blocks": blocks, "body": body, "side": side,
-        "out": out, "preview": prev, "meta_path": meta_path,
-        "gates": (("Gate 1 Platform", m1, s1), ("Gate 2 Composition", m2, s2)),
-    }
-
-
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("md", nargs="?")
-    ap.add_argument("--theme", choices=list(THEMES))
-    ap.add_argument("-o", "--out")
-    ap.add_argument("--against", help="原稿 .md：比对改写前后的事实单元与作者声音")
-    ap.add_argument("--ledger", help="修改台账 .md：五列表格，逐行校验收益与原文定位")
-    ap.add_argument("--deliver", help="交付目录：一次产出源稿/正文/预览/meta/修改记录/验收与本地素材")
-    a = ap.parse_args()
-    if not a.md:
-        ap.error("需要一个 markdown 文件")
-    if os.path.splitext(a.md)[1].lower() not in (".md", ".markdown", ".txt"):
-        ap.error("仅支持 UTF-8 Markdown/纯文本；DOCX 请先用 extract_docx.py 转换")
-
-    deliver = os.path.abspath(a.deliver) if a.deliver else ""
-    if deliver:
-        os.makedirs(deliver, exist_ok=True)
-    out = os.path.join(deliver, "正文.html") if deliver else a.out
-    res = build(a.md, a.theme, out)
-    key, meta, blocks, side = res["key"], res["meta"], res["blocks"], res["side"]
-    g1, g2 = res["gates"]
-    m1, m2, s2 = g1[1], g2[1], g2[2]
-    review = side["editorial_review"]
-
-    facts_diff, voice_diff = None, None
-    if a.against:
-        with open(a.against, encoding="utf-8") as f:
-            original_meta, original_blocks = parse(f.read())
+    facts_diff = voice_diff = None
+    ledger_rows, ledger_problems = [], []
+    if against:
+        original_meta, original_blocks = parse(open(against, encoding="utf-8").read())
         facts_diff = compare_facts(original_blocks, blocks, original_meta, meta)
-        loose = introduced_without_source(blocks, facts_diff["introduced"])
         declared = {x.strip() for x in (meta.get("removed_facts") or "").replace("，", ",").split(",") if x.strip()}
         for item in facts_diff["dropped"]:
             if item in declared:
@@ -1792,107 +1743,167 @@ def main():
             change, why = classify_fact_change(blocks, "num", item) if re.search(r"\d", item) else ("lost", "")
             if change == "lost":
                 change, why = classify_fact_change(blocks, "date", item)
-            message = f"原稿事实单元在改稿中消失：{item}"
-            if change in ("moved", "rounded"):
-                s2.append(f"{message}；{why}（结构搬家/概括不等于删除，口径仍须人工确认）")
-            else:
-                m2.append(f"{message}；确认是删除还是改写，确属有意删除请声明 removed_facts")
-        for item in loose:
-            change, why = classify_fact_change(blocks, "date", item) if not re.search(r"[^\d\-\s]", item) else ("added", "")
-            if change == "rounded":
-                s2.append(f"改稿新增「{item}」；{why}（确认未替代精确值）")
-            else:
-                m2.append(f"改稿新增事实单元「{item}」附近缺少可核对来源")
-        for change in facts_diff["precision_changes"] + facts_diff["qualifier_changes"]:
+            message = f"原稿事实单元消失：{item}；{why}"
+            (s2 if change in ("moved", "rounded") else m2).append(message + "；须回源确认，有意删除须声明 removed_facts")
+        for item in introduced_without_source(blocks, facts_diff["introduced"]):
+            m2.append(f"改稿新增事实单元「{item}」附近缺少可核对来源")
+        for change in facts_diff["precision_changes"] + facts_diff["qualifier_changes"] + facts_diff["qualifier_occurrence_changes"]:
             m2.append(f"事实精度或限定词变化需回源确认：{change}")
         for quote in facts_diff["dropped_quotes"] + facts_diff["introduced_quotes"]:
             m2.append(f"直接引语变化需逐字回源：{quote[:40]}")
+        if facts_diff["code_changes"]:
+            m2.append("代码语言、内容、顺序或空行发生变化；教程须逐项验证，不能视作润色")
         voice_diff = compare_voice(original_blocks, blocks)
-        side["fact_diff"] = facts_diff
-        side["voice_diff"] = voice_diff
-        for change in voice_diff["changes"]:
-            s2.append(f"作者声音形态变化：{change['mark']} {change['original']} → {change['edited']}（{change['note']}）")
-        side["render_errors"] = m1 + m2
+        s2.extend(f"作者声音形态变化：{x['mark']} {x['original']} → {x['edited']}" for x in voice_diff["changes"])
+    if ledger:
+        ledger_rows, ledger_problems = parse_ledger(open(ledger, encoding="utf-8").read())
+        ledger_problems.extend(f"台账位置「{row['位置']}」无法在成稿定位" for row in ledger_rows if not locate(row["位置"], blocks))
+        m2.extend(f"修改台账不合格：{x}" for x in ledger_problems)
+    contrasts = contrast_checks(key)
+    m2.extend(f"色彩对比不足：{x['foreground_role']} / {x['background']}" for x in contrasts if not x["pass"])
+    fs = first_screen(meta, blocks)
+    if fs["weight"] > 1:
+        s2.append(f"首屏含 {fs['weight']} 个重入口：建议只保留一个主入口")
+    m1, m2, s2 = list(dict.fromkeys(m1)), list(dict.fromkeys(m2)), list(dict.fromkeys(s2))
 
-    ledger_rows, ledger_problems = [], []
-    if a.ledger:
-        with open(a.ledger, encoding="utf-8") as f:
-            ledger_rows, ledger_problems = parse_ledger(f.read())
-        for row in ledger_rows:
-            if not locate(row["位置"], blocks):
-                ledger_problems.append(f"台账位置「{row['位置']}」无法在成稿定位")
-        if ledger_problems:
-            m2.extend(f"修改台账不合格：{p}" for p in ledger_problems)
-            side["render_errors"] = m1 + m2
-        side["ledger"] = {"rows": ledger_rows, "problems": ledger_problems}
-    if ledger_problems or facts_diff is not None:
-        with open(res["meta_path"], "w", encoding="utf-8") as f:
-            json.dump(side, f, ensure_ascii=False, indent=2)
+    with tempfile.TemporaryDirectory(prefix=".wechat-stage-", dir=out_base) as stage:
+        for src, data in originals.items():
+            atomic_write(local_path(src, stage), data)
+        atomic_write(os.path.join(stage, "正文.html"), body)
+        source_name = "源稿.md" if delivery else os.path.abspath(md_path)
+        preview = PREVIEW.format(
+            title=H.escape(api_title(meta.get("title", ""))), theme=H.escape(THEMES[key]["name"]),
+            cover=cover_block(meta, stage), assets=asset_sheet(blocks, stage),
+            native=native_header(meta), body=body)
+        preview = re.sub(r'(<img\b[^>]*src=")([^"]+)(")',
+                         lambda m: m[1] + H.escape(preview_image(H.unescape(m[2]), stage)) + m[3] + ' data-local="' + m[2] + '"', preview)
+        atomic_write(os.path.join(stage, "预览.html"), preview)
+        asset_records = []
+        for src, data in sorted(originals.items()):
+            wh = img_size(local_path(src, stage))
+            asset_records.append({"path": src, "sha256": hashlib.sha256(data).hexdigest(),
+                                  "source_path": src, "source_sha256": hashlib.sha256(data).hexdigest(),
+                                  "dimensions": list(wh) if wh else None,
+                                  "subject_visibility": "UNVERIFIED", "safe_zone": "UNVERIFIED"})
+        side = {
+            "title": meta.get("title", ""), "api_title": api_title(meta.get("title", "")),
+            "author": meta.get("author", ""), "digest": meta.get("digest") or auto_digest(meta, blocks),
+            "cover": cover if cover and not TODO.match(cover) else "", "source_url": meta.get("source", ""),
+            "theme": key, "skill_version": SKILL_VERSION, "theme_config_sha256": THEME_CONFIG_SHA256,
+            "renderer_sha256": renderer_fingerprint(),
+            "theme_profile": {axis: THEMES[key][axis] for axis in THEME_AXES},
+            "grid": dict(THEMES[key]["grid"]), "contrast_checks": contrasts,
+            "decision": review["decision"], "article_type": review["type"]["key"],
+            "composition_evidence": {"first_screen_layers": fs["layers"], "first_screen_weight": fs["weight"],
+                                     "h2_count": sum(k == "h2" for k, _ in blocks), "body_characters": doc_len(blocks),
+                                     "scope": "源稿结构统计，不是首屏像素测量"},
+            "editorial_review": review, "integrity_version": 3,
+            "source": {"path": source_name, "sha256": source_digest}, "assets": asset_records,
+            "body_sha256": hashlib.sha256(body.encode()).hexdigest(),
+            "preview_sha256": hashlib.sha256(preview.encode()).hexdigest(),
+            "render_status": "FAIL" if m1 or m2 else "PASS", "render_errors": m1 + m2,
+            "pending_assets": any(not b[1] or TODO.match(b[1]) for k, b in blocks if k == "img"),
+            "verification_gates": {"local_static": "FAIL" if m1 or m2 else "PASS",
+                                   "browser_multi_width": "UNVERIFIED", "semantic_editorial": "UNVERIFIED",
+                                   "wechat_api_readback": "UNVERIFIED", "wechat_real_device": "UNVERIFIED"},
+        }
+        if facts_diff is not None:
+            side.update(fact_diff=facts_diff, voice_diff=voice_diff)
+        if ledger:
+            side["ledger"] = {"rows": ledger_rows, "problems": ledger_problems}
+        atomic_write(os.path.join(stage, "正文.meta.json"), json.dumps(side, ensure_ascii=False, indent=2) + "\n")
+        if delivery:
+            report = render_report(review, facts_diff, ledger_problems, voice_diff)
+            report += "\n## 类型策略\n\n" + "\n".join(f"- {x}" for x in strategy_notes(meta, blocks)) + "\n"
+            report += "\n## 修改边界\n\n仅记录已输入的原稿比对与修改台账；未提供原稿时，不声称已完成改前/改后编辑审计。\n"
+            if ledger_rows:
+                report += "\n## 修改台账\n\n| 位置 | 问题 | 动作 | 收益 | 保留检查 |\n|---|---|---|---|---|\n"
+                report += "\n".join("| " + " | ".join(row[c].replace("|", "｜").replace("\n", " ") for c in LEDGER_HEAD) + " |" for row in ledger_rows) + "\n"
+            acceptance = ["# 验收结果", "", f"- Skill：{SKILL_VERSION}；主题：{key}",
+                          f"- 本地静态 Gate：{'FAIL' if m1 or m2 else 'PASS'}"]
+            acceptance += [f"- FAIL：{x}" for x in m1 + m2]
+            acceptance += [f"- 复核建议：{x}" for x in s2]
+            acceptance += ["", "| 验证项 | 状态 | 证据边界 |", "|---|---|---|",
+                           "| 四宽度浏览器 | UNVERIFIED | 本命令不启动浏览器；须另附 320/360/390/430px 实测 |",
+                           "| 语义编辑与外部核真 | UNVERIFIED | 机器线索不是事实核真或审美评分 |",
+                           "| 微信 API 回读 | UNVERIFIED | 须真实账号创建草稿并回读 |",
+                           "| 微信 iOS/Android 真机 | UNVERIFIED | 浏览器与 API 均不能代替 |",
+                           "| 图片主体与安全区 | UNVERIFIED | 须实际核看原图与客户端裁切 |"]
+            atomic_write(os.path.join(stage, "源稿.md"), source_bytes)
+            atomic_write(os.path.join(stage, "修改记录.md"), report)
+            atomic_write(os.path.join(stage, "验收.md"), "\n".join(acceptance) + "\n")
+        files = {}
+        for root, _, names in os.walk(stage):
+            for name in sorted(names):
+                path = os.path.join(root, name)
+                relative = os.path.relpath(path, stage).replace(os.sep, "/")
+                target_name = {"预览.html": os.path.basename(prev)}.get(relative, relative)
+                if not delivery and target_name in {"正文.html", "正文.meta.json"}:
+                    target_name = os.path.basename(out) if target_name == "正文.html" else os.path.basename(meta_path)
+                files[target_name] = path
+        collisions = [os.path.join(out_base, name) for name in files if os.path.realpath(os.path.join(out_base, name)) in protected]
+        if collisions:
+            raise ValueError(f"交付将覆盖受保护输入：{collisions}")
+        for name in files:
+            output_path(os.path.join(out_base, name))
+        for name, path in files.items():
+            atomic_write(os.path.join(out_base, name), safety_read(path))
+        if delivery:
+            manifest = {"schema": 1, "skill_version": SKILL_VERSION, "source_sha256": source_digest,
+                        "body_sha256": side["body_sha256"], "render_status": side["render_status"],
+                        "files": {name: hashlib.sha256(safety_read(path)).hexdigest() for name, path in sorted(files.items())}}
+            atomic_write(os.path.join(deliver, "交付清单.json"), json.dumps(manifest, ensure_ascii=False, indent=2) + "\n")
+    return {"key": key, "meta": meta, "blocks": blocks, "body": body, "side": side,
+            "out": out, "preview": prev, "meta_path": meta_path, "facts_diff": facts_diff,
+            "voice_diff": voice_diff, "ledger_rows": ledger_rows, "ledger_problems": ledger_problems,
+            "gates": (("Gate 1 Platform", m1, s1), ("Gate 2 Composition", m2, s2))}
 
+
+def native_header(meta):
+    title = H.escape(api_title(meta.get("title", "")))
+    author = H.escape(meta.get("author", ""))
+    date = H.escape(meta.get("date", ""))
+    credit = (f'<b>{author}</b>' if author else "") + date
+    return (f'<div class="nt"><h1>{title}</h1>' + (f'<p class="au">{credit}</p>' if credit else "") + "</div>") if title else ""
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("md")
+    ap.add_argument("--theme", choices=list(THEMES))
+    ap.add_argument("-o", "--out")
+    ap.add_argument("--against", help="原稿：事实、引语、代码、限定词与作者声音比对")
+    ap.add_argument("--ledger", help="五列修改台账")
+    ap.add_argument("--deliver", help="完整交付到空目录或未被手改的本工具交付目录")
+    args = ap.parse_args()
+    if os.path.splitext(args.md)[1].lower() not in (".md", ".markdown", ".txt"):
+        ap.error("仅支持 UTF-8 Markdown/纯文本；DOCX 请先用 extract_docx.py 转换")
+    if args.out and args.deliver:
+        ap.error("--out 与 --deliver 二选一")
+    out = os.path.join(os.path.abspath(args.deliver), "正文.html") if args.deliver else args.out
+    result = build(args.md, args.theme, out, args.against, args.ledger, bool(args.deliver))
+    review = result["side"]["editorial_review"]
     for issue in review["issues"]:
-        print(f"编辑提示 · {issue['severity']:<6} · {issue['location']} · {issue['problem']} → "
-              f"{issue['action']}；收益：{issue['benefit']}（{issue['class']}，需要：{issue['needs']}）")
-    print(f"{THEMES[key]['name']} → {res['out']}\n预览 → {res['preview']}\n"
-          f"发布字段 → {res['meta_path']}\n")
-    print("Gate 3 客观结构证据")
-    for line in evidence(meta, blocks, key):
+        print(f"编辑提示 · {issue['severity']} · {issue['location']} · {issue['code']}：{issue['problem']} → {issue['action']}")
+    print(f"{THEMES[result['key']]['name']} → {result['out']}\n预览 → {result['preview']}\n侧车 → {result['meta_path']}")
+    for line in evidence(result["meta"], result["blocks"], result["key"]):
         print("  " + line)
-    for gate, must, should in res["gates"]:
+    failed = False
+    for gate, must, should in result["gates"]:
+        failed |= bool(must)
         print(f"\n{gate}: {'FAIL' if must else 'PASS'}")
-        for x in must:
-            print("  必须改 ·", x)
-        for x in should:
-            print("  建议改 ·", x)
-    if facts_diff is not None:
-        print(f"\n事实单元比对：保留 {len(facts_diff['preserved'])}/{facts_diff['source_units']} · "
-              f"消失 {len(facts_diff['dropped'])} · 新增 {len(facts_diff['introduced'])}（仅字面比对）")
-    if ledger_problems:
-        print("\n修改台账：" + "；".join(ledger_problems))
-
-    if deliver:
-        report = render_report(review, facts_diff, ledger_problems, voice_diff)
-        report += "\n## 类型策略\n\n" + "\n".join(f"- {x}" for x in strategy_notes(meta, blocks)) + "\n"
-        if ledger_rows:
-            report += "\n## 修改台账（已校验）\n\n| 位置 | 问题 | 动作 | 收益 | 保留检查 |\n|---|---|---|---|---|\n"
-            report += "\n".join(f"| {r['位置']} | {r['问题']} | {r['动作']} | {r['收益']} | {r['保留检查']} |"
-                                for r in ledger_rows) + "\n"
-        with open(os.path.join(deliver, "修改记录.md"), "w", encoding="utf-8") as f:
-            f.write(report)
-        acceptance = [
-            "# 验收结果", "",
-            f"- 渲染版本：`{SKILL_VERSION}`",
-            f"- 主题：`{key}`（{THEMES[key]['name']}）", "",
-        ]
-        for gate, must, should in res["gates"]:
-            acceptance.append(f"## {gate}：{'FAIL' if must else 'PASS'}")
-            acceptance.append("")
-            acceptance += [f"- 必须改：{x}" for x in must] or ["- 必须改：无"]
-            acceptance += [f"- 建议改：{x}" for x in should] or ["- 建议改：无"]
-            acceptance.append("")
-        acceptance += [
-            "## 三级验收状态（严禁互相冒充）", "",
-            "| 级别 | 能证明 | 当前状态 |", "|---|---|---|",
-            "| 浏览器验证 | 本地 320/360/390/430px 无溢出、最小字号≥12px、数值不拆断 | UNVERIFIED（须附四宽度实测截图） |",
-            "| 微信 API 回读 | 草稿 title/content/thumb_media_id 与本地逐字一致 | UNVERIFIED（须授权账号执行 `publish.py`） |",
-            "| 微信真机验收 | 客户端清洗后样式、后台重开、iOS/Android 阅读与双入口封面裁切 | UNVERIFIED（须真机实测） |",
-            "",
-            "## 未验证清单（UNVERIFIED）", "",
-            "- 图像可见主体、景别与裁切安全区：未人工核看原图前一律为 UNVERIFIED",
-            "- 外部独立第二信源逐项事实核真：UNVERIFIED",
-            "- 微信真机粘贴/草稿保存重开与多端渲染：UNVERIFIED",
-        ]
-        with open(os.path.join(deliver, "验收.md"), "w", encoding="utf-8") as f:
-            f.write("\n".join(acceptance) + "\n")
-        shutil.copyfile(a.md, os.path.join(deliver, "源稿.md"))
-        print(f"\n交付包 → {deliver}（源稿/正文/预览/meta/修改记录/验收" + ("/素材" if side["assets"] else "") + "）")
-
-    if not meta.get("author"):
-        print("提示：未填写 author，草稿原生作者栏将留空。")
-    sys.exit(1 if m1 or m2 else 0)
+        for message in must:
+            print("  必须改 ·", message)
+        for message in should:
+            print("  建议改 ·", message)
+    print("\n浏览器、语义编辑、微信 API 与真机：UNVERIFIED；静态 PASS 不能代替。")
+    if args.deliver:
+        print(f"交付包 → {args.deliver}（清单最后写入）")
+    sys.exit(1 if failed else 0)
 
 
 if __name__ == "__main__":
     try:
         main()
-    except (ValueError, OSError) as e:
-        sys.exit(f"输入错误：{e}")
+    except (ValueError, OSError) as error:
+        sys.exit(f"输入错误：{error}")

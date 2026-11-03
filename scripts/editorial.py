@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Editorial Intelligence V10：可定位、可复现的编辑审计层。
+"""Editorial Intelligence V11：可定位、可复现的编辑审计层。
 
 边界：
 - 本模块不做语义判决、不证实外部事实、不自动改写文字。
@@ -152,12 +152,13 @@ def resolve_type(value):
 
 def plain(s):
     """剥离 Markdown 行内标记（含单层方括号链接文本），供目录与字数度量共用。"""
-    s = re.sub(r"\[(\[[^\]\n]*\]|[^\]]+)\]\([^)\s]*\)", r"\1", s)
-    return re.sub(
-        r"`([^`]*)`|==([^=]*)==|\*\*([^*]*)\*\*|<u>([^<]*)</u>|~~([^~]*)~~",
-        lambda m: next(g for g in m.groups() if g is not None),
-        s,
-    ).strip()
+    pattern = re.compile(r"\[(\[[^\]\n]*\]|[^\]]+)\]\([^)\s]*\)|`([^`]*)`|==([^=]*)==|\*\*([^*]*)\*\*|<u>([^<]*)</u>|~~([^~]*)~~|(?<!\*)\*([^*\n]+)\*(?!\*)")
+    for _ in range(16):
+        changed = pattern.sub(lambda m: next(g for g in m.groups() if g is not None), s)
+        if changed == s:
+            break
+        s = changed
+    return re.sub(r"\\([\\`*_\[\]()<>~=\-#!.+|:])", r"\1", s).strip()
 
 
 def visible_len(s):
@@ -182,7 +183,7 @@ def block_text(kind, value):
     if kind in ("p", "h2", "h3"):
         return value
     if kind in ("lead", "quote"):
-        return value[0]
+        return value[0] + (" " + value[1] if value[1] else "")
     if kind == "peak":
         return peak_text(value)
     if kind in ("note", "unknown", "code", "data", "bars"):
@@ -229,6 +230,7 @@ _DATE = re.compile(
     r"\d{1,2}月\d{1,2}日"
 )
 _QUALIFIER = re.compile(r"大约|约|近|超过|超|不足|少于|多于|不到|至少|至多|预计|估算|初步")
+_QUALIFIER_AFTER = re.compile(r"^(?:左右|以上|以下|以内|之外|有余)")
 _ATTR_BEFORE = re.compile(r"说|称|问|道|引述|引用|信中|古语|俗语|写道|回答|宣布|表示|坦言|回忆")
 _ATTR_AFTER = re.compile(r"^[\s，,：:]*(?:[\u4e00-\u9fff]{1,8})?(?:说|称|问|道|表示|宣布|写道|回答|补充|解释|强调|回忆)")
 
@@ -255,9 +257,8 @@ def _fact_matches(text):
     for m in _NUM.finditer(normalized):
         if any(a <= m.start() < b for a, b in spans):
             continue
-        if m.group(2):
-            value = re.sub(r"\s+", "", m.group()).replace("％", "%").replace("−", "-")
-            out.append(("num", value, m.start(), m.end()))
+        value = re.sub(r"\s+", "", m.group()).replace("％", "%").replace("−", "-")
+        out.append(("num", value, m.start(), m.end()))
     for m in _CN_NUM.finditer(normalized):
         if not any(a <= m.start() < b for a, b in spans):
             out.append(("num", m.group(), m.start(), m.end()))
@@ -273,14 +274,15 @@ def fact_occurrences(blocks):
     for index, (kind, value) in enumerate(blocks, 1):
         text = block_text(kind, value)
         normalized = text.replace("，", ",")
-        for fact_kind, raw, start, _ in _fact_matches(text):
-            clause = re.split(r"[。！？；;，,]", normalized[:start])[-1]
+        matches = _fact_matches(text)
+        for pos, (fact_kind, raw, start, end) in enumerate(matches):
+            previous_end = matches[pos - 1][3] if pos else 0
+            clause = re.split(r"[。！？；;，,]", normalized[previous_end:start])[-1]
             qualifiers = list(_QUALIFIER.finditer(clause[-16:]))
-            rows.append({
-                "block": index, "kind": fact_kind, "value": raw,
-                "qualifier": qualifiers[-1].group() if qualifiers else "",
-                "context": text[:180],
-            })
+            suffix = _QUALIFIER_AFTER.match(normalized[end:])
+            qualifier = (qualifiers[-1].group() if qualifiers else "") + (suffix.group() if suffix else "")
+            rows.append({"block": index, "kind": fact_kind, "value": raw,
+                         "qualifier": qualifier, "context": text[:180]})
     return rows
 
 
@@ -330,8 +332,8 @@ def compare_facts(original_blocks, edited_blocks, original_meta=None, edited_met
             matched.update((key, cand))
             precision.append({"original": src[key], "edited": dst[cand],
                               "status": "UNVERIFIED", "reason": "补全年份需回原始来源确认"})
-    src_q = {q for k, b in original_blocks for q in quoted_spans(block_text(k, b))}
-    dst_q = {q for k, b in edited_blocks for q in quoted_spans(block_text(k, b))}
+    src_q = {next(g for g in m.groups() if g) for k, b in original_blocks if k != "code" for m in _QUOTED.finditer(block_text(k, b))}
+    dst_q = {next(g for g in m.groups() if g) for k, b in edited_blocks if k != "code" for m in _QUOTED.finditer(block_text(k, b))}
     before, after = fact_occurrences(original_blocks), fact_occurrences(edited_blocks)
     counts_before = Counter(_fact_key(x["kind"], x["value"]) for x in before)
     counts_after = Counter(_fact_key(x["kind"], x["value"]) for x in after)
@@ -341,7 +343,23 @@ def compare_facts(original_blocks, edited_blocks, original_meta=None, edited_met
         q2 = {x["qualifier"] for x in after if _fact_key(x["kind"], x["value"]) == key and x["qualifier"]}
         if q1 != q2:
             qualifiers.append({"value": src[key], "original": sorted(q1), "edited": sorted(q2), "status": "UNVERIFIED"})
+    qualifier_counts = []
+    for occurrences in (before, after):
+        qualifier_counts.append(Counter((_fact_key(x["kind"], x["value"]), x["qualifier"]) for x in occurrences))
+    qualifier_occurrence_changes = [
+        {"value": src.get(key, dst.get(key)), "qualifier": qualifier,
+         "before": qualifier_counts[0][(key, qualifier)], "after": qualifier_counts[1][(key, qualifier)]}
+        for key, qualifier in sorted(set(qualifier_counts[0]) | set(qualifier_counts[1]))
+        if qualifier_counts[0][(key, qualifier)] != qualifier_counts[1][(key, qualifier)]
+    ]
+    original_code = [v for k, v in original_blocks if k == "code"]
+    edited_code = [v for k, v in edited_blocks if k == "code"]
     return {
+        "code_changes": [] if original_code == edited_code else {"before": original_code, "after": edited_code},
+        "qualifier_occurrence_changes": qualifier_occurrence_changes or (
+            [{"scope": "qualifier binding/order", "before": [list(x) for x in sorted(qualifier_counts[0].elements())],
+              "after": [list(x) for x in sorted(qualifier_counts[1].elements())]}]
+            if qualifier_counts[0] != qualifier_counts[1] else []),
         "preserved": [src[k] for k in src if k in matched],
         "dropped": sorted(src[k] for k in src if k not in matched),
         "dropped_quotes": sorted(src_q - dst_q),
@@ -399,8 +417,14 @@ def compare_voice(original_blocks, edited_blocks):
                 "mark": name, "original": b, "edited": a, "status": "UNVERIFIED",
                 "note": "整体消失" if a == 0 < b else ("新增" if b == 0 < a else "显著减少/增加"),
             })
+    original_paras = Counter(plain(v) for k, v in original_blocks if k == "p" and plain(v))
+    edited_paras = Counter(plain(v) for k, v in edited_blocks if k == "p" and plain(v))
+    retained = sum((original_paras & edited_paras).values())
+    total = sum(original_paras.values())
     return {"original": before, "edited": after, "changes": changes,
-            "status": "UNVERIFIED", "scope": "形态计数，不是声音相似度评分"}
+            "unchanged_paragraphs": retained, "source_paragraphs": total,
+            "unchanged_paragraph_ratio": round(retained / total, 4) if total else None,
+            "status": "UNVERIFIED", "scope": "逐字段落保留率与形态计数，不是语义声音相似度评分"}
 
 
 def classify_fact_change(edited_blocks, kind, value):
@@ -414,7 +438,6 @@ def classify_fact_change(edited_blocks, kind, value):
             lines = body if isinstance(body, list) else body.splitlines()
             for raw_line in lines:
                 cells = [cell.strip() for cell in raw_line.replace("|", "｜").split("｜")]
-                cell = cells[0] if block_kind == "data" else (cells[0] if block_kind == "bars" else "")
                 # 兼容「数值｜标签」与「标签｜数值」两种常见顺序
                 cand_cells = [c for c in cells[:2] if c]
                 for c in cand_cells:
@@ -461,7 +484,13 @@ LEDGER_HEAD = ("位置", "问题", "动作", "收益", "保留检查")
 
 
 def split_row(line):
-    return [c.strip().replace(r"\|", "|") for c in re.split(r"(?<!\\)\|", line.strip().strip("|"))]
+    line = line.strip()
+    if line.startswith("|"):
+        line = line[1:]
+    if line.endswith("|") and not line.endswith(r"\|"):
+        line = line[:-1]
+    return [c.strip().replace(r"\|", "|") for c in re.split(r"(?<!\\)\|", line)]
+
 
 
 def parse_ledger(text):
@@ -519,7 +548,7 @@ CLICHE = re.compile(
     r"总而言之|综上所述|总之[，,]|从某种意义上(?:来)?说"
 )
 ABSOLUTE = re.compile(
-    r"所有人|每个人|无一例外|从来如此|永远|绝对|毫无疑问|显然|"
+    r"所有人|每个人|所有[^。！？]{0,16}都|无一例外|从来如此|永远|绝对|毫无疑问|显然|"
     r"只要我们[^。]{0,24}就(?:一定|必然)|就一定(?:能|可以|会)"
 )
 META_DISCOURSE = re.compile(
@@ -605,6 +634,19 @@ def _section_stats(blocks):
     if current:
         sections.append(current)
     return sections
+
+
+def _affirmative_cues(text, pattern):
+    """只把肯定陈述当覆盖证据；「未说明版本」不能证明交代了版本。"""
+    hits = []
+    for sentence in _sentence_list(text):
+        for clause in re.split(r"[，,；;]", sentence):
+            if re.search(r"未|没有|不曾|省略|不提供|不说明|不交代|缺(?:少|失|乏)|无论|不能确认|故意不", clause):
+                continue
+            match = pattern.search(clause)
+            if match:
+                hits.append(match)
+    return hits
 
 
 def _has_doc_provenance(meta, blocks):
@@ -704,7 +746,9 @@ def section_gain(blocks):
         start = section["block"]
         end = next((x["block"] for x in sections if x["block"] > start), len(blocks) + 1)
         members = blocks[start - 1:end - 1]
-        text = " ".join(block_text(k, v) for k, v in members)
+        # 不把章节标题本身混入正文相似度；否则换一个标题即可掩盖整段复制。
+        body_members = blocks[start:end - 1]
+        text = " ".join(block_text(k, v) for k, v in body_members)
         here = {_fact_key(*f) for f in facts(text)}
         here_facts = {_fact_key(kind, value): value for kind, value in facts(text)}
         new_facts = sorted(value for key, value in here_facts.items() if key not in seen_facts)
@@ -715,7 +759,7 @@ def section_gain(blocks):
             "new_facts": new_facts, "new_fact_count": len(here - seen_facts),
             "quoted": quotes[:3], "similarity_to_previous": round(similarity, 3),
             "image": any(k == "img" for k, _ in members),
-            "evidence_blocks": [i for i, (k, _) in enumerate(members, start) if k in ("note", "table", "data", "bars", "code")],
+            "evidence_blocks": [i for i, (k, _) in enumerate(body_members, start + 1) if k in ("note", "table", "data", "bars", "code")],
             "verdict": "UNVERIFIED",
         })
         seen_facts |= here
@@ -846,14 +890,13 @@ def _scan_blocks(meta, blocks, sections, type_key):
                  "不补写无法确认的来源；必要时标明未核", needs="fact-check")
 
         unquoted = _unquoted_prose(clean)
-        causal_match = CAUSAL.search(unquoted)
-        nominal_proof = bool(
-            causal_match and causal_match.group(0).startswith("证明")
-            and re.search(r"的证明(?:都|被|可|可以|是)", unquoted[max(0, causal_match.start() - 4):causal_match.end() + 4])
-        )
-        if causal_match and not nominal_proof and not HEDGE.search(unquoted):
+        causal_sentence = next((sentence for sentence in _sentence_list(unquoted)
+                                if CAUSAL.search(sentence) and not HEDGE.search(sentence)
+                                and not re.search(r"的证明(?:都|被|可|可以|是)", sentence)), "")
+        causal_match = CAUSAL.search(causal_sentence)
+        if causal_match:
             _add(issues, "CAUSAL-STRONG", "judgment", "should", loc,
-                 "作者叙述中出现强因果/必然性措辞（已排除引号内引述）",
+                 "作者叙述中出现强因果/必然性措辞（已排除引语及同句限定）",
                  "核对证据是否足以支撑因果方向；仅支持相关或机制时补限定语",
                  "防止把相关关系或单因素放大为绝对因果",
                  f"候选措辞「{causal_match.group(0)}」且同句无限定词", needs="editor")
@@ -864,12 +907,11 @@ def _scan_blocks(meta, blocks, sections, type_key):
                  "套语占据段落入口，未提供实质信息", "删去套语，直接亮出事实、场景或判断",
                  "把首屏和段首留给有效信息", f"命中套语：{cliche_match.group(0)}")
 
-        absolute_match = ABSOLUTE.search(unquoted)
-        local_obs = bool(
-            absolute_match and absolute_match.group(0) == "显然"
-            and re.search(r"显然[，,]?\s*(?:这|这并不|这不是|这并非)", unquoted)
-        )
-        if absolute_match and not local_obs and not HEDGE.search(unquoted):
+        absolute_sentence = next((sentence for sentence in _sentence_list(unquoted)
+                                  if ABSOLUTE.search(sentence) and not HEDGE.search(sentence)
+                                  and not re.search(r"显然[，,]?\s*(?:这并不|这不是|这并非)", sentence)), "")
+        absolute_match = ABSOLUTE.search(absolute_sentence)
+        if absolute_match:
             _add(issues, "GENERALIZE", "judgment", "should", loc,
                  "全称或绝对化措辞可能超出证据边界（已排除引号内反方引述）",
                  "核对适用范围与反例；仅在过度泛化时收窄范围",
@@ -1120,18 +1162,21 @@ def _judgment_issues(meta, blocks, type_key, sections, gains):
                 continue
             unq = _unquoted_prose(plain(v))
             emotive = re.search(r"冰火两重天|撕得明明白白|被裁者的寒冬|令人唏嘘|沦为笑柄|无疑是一记耳光|何其讽刺", unq)
-            unquoted_q = ("？" in unq or "?" in unq) and not NAMED_SOURCE.search(v)
-            if emotive or (unquoted_q and idx == len(blocks) - 1):
+            unquoted_q = next((sentence for sentence in _sentence_list(unq)
+                               if re.search(r"难道|岂(?:不|非)|这不正是|(?:？|\?)\s*$", sentence)
+                               and not NAMED_SOURCE.search(sentence)), "")
+            if emotive or unquoted_q:
                 _add(issues, "NEWS-EDITORIALIZE", "judgment", "should", f"块 {idx + 1}",
                      "硬新闻段落出现无归属的情绪化隐喻或评论式反问，混淆报道与评论边界",
                      "删去情绪修辞与反问，或明确转入归属清楚的各方观点与未确认事项",
                      "保持新闻文本的克制与可信度",
-                     f"命中：{emotive.group(0) if emotive else '无归属结尾反问'}", needs="editor")
+                     f"命中：{emotive.group(0) if emotive else unquoted_q[:60]}", needs="editor")
 
     elif type_key == "analysis":
         has_boundary = any(k == "unknown" for k, _ in blocks) or bool(re.search(
             r"尚不清楚|尚未|未确认|不能确认|未知|缺乏数据|不能单独证明|无法单独证明|"
-            r"不等于.{0,8}(?:因果|必然)|不能只归因于|不能把.{0,12}写成唯一|适用边界|例外|样本限制|局限",
+            r"不等于.{0,8}(?:因果|必然)|不能只归因于|不能把.{0,12}写成唯一|适用边界|例外|样本限制|局限|不确定性|预测存在|"
+            r"risks? (?:to the outlook )?(?:are|remain)|could exceed|projections?|not observed outcomes",
             full_body,
         ))
         if not has_boundary:
@@ -1145,26 +1190,33 @@ def _judgment_issues(meta, blocks, type_key, sections, gains):
             txt = block_text(k, v)
             if re.search(r"(?:增长|下降|提升|缩水|高出|低了)\s*\d+(?:\.\d+)?\s*(?:%|％|倍)", txt):
                 win = " ".join(block_text(wk, wv) for wk, wv in blocks[max(0, idx - 1):min(len(blocks), idx + 2)])
-                if not re.search(r"同比|环比|相比|较|高于|低于|从.{1,12}到|(?:19|20)\d{2}|口径|基准|期间", win):
+                if not _affirmative_cues(win, re.compile(r"同比|环比|相比|较|高于|低于|从.{1,12}到|(?:19|20)\d{2}|口径|基准|期间")):
                     _add(issues, "ANALYSIS-NO-BASELINE", "judgment", "should", f"块 {idx + 1}",
                          "变化幅度或倍数缺少比较基准与统计期间",
                          "补齐比较对象（同比/环比/跨样本基准）与时间窗口",
                          "没有基准的百分比无法构成有效分析证据", "含变化率数值但邻近未见基准/期间词", needs="fact-check")
 
     elif type_key == "tutorial":
-        if not re.search(r"版本|前提|要求|需要先|环境|依赖|适用|Python\s*\d|Node|Linux|macOS|Windows", full_body, re.I) and doc_len(blocks) >= 400:
+        prerequisite_heading = any(re.search(r"前提|准备|环境要求|适用版本|依赖", plain(v))
+                                   for k, v in blocks if k in ("h2", "h3"))
+        concrete_prerequisite = _affirmative_cues(full_body, re.compile(
+            r"(?:Python|Node|Java|PHP|Ruby|Go|Rust|iOS|Android)\s*v?\d|无第三方依赖|"
+            r"需要先|前提是|适用.{0,12}版本|依赖.{0,12}(?:安装|配置)|安装.{0,12}依赖", re.I))
+        if not (prerequisite_heading or concrete_prerequisite):
             _add(issues, "MISSING-PREREQ", "judgment", "should", "全文",
                  "教程未交代运行环境、语言版本或前置条件",
                  "在入口处写明适用版本与前置依赖",
                  "避免读者在不同版本环境下照做失败", "全文未见版本/环境/前提说明", needs="editor")
-        if not re.search(r"失败|报错|异常|Error|Exception|回退|撤销|如果没有|不适用|边界|错误|"
-                         r"不起作用|无法运行|重置|不要|不会预先|分清|误区|误当|避免|坑", full_body, re.I):
+        if not _affirmative_cues(full_body, re.compile(r"失败|报错|异常|Error|Exception|回退|撤销|如果没有|不适用|边界|错误|"
+                                                        r"不起作用|无法运行|重置|不要|不会预先|分清|误区|误当|避免|坑", re.I)):
             _add(issues, "MISSING-FAILURE", "judgment", "should", "全文",
                  "教程只覆盖成功路径，缺少常见误区、异常报错或回退说明",
                  "补充至少一处边界条件、报错表现或回退方法",
                  "读者遇到预期外结果时可自行定位修复", "全文未见失败/异常/误区边界表述", needs="fact-check")
         has_code = any(k == "code" for k, _ in blocks)
-        if has_code and not re.search(r"输出|返回|结果|看到|打印|验证|检查|#\s*\S|->|=>", full_body):
+        verification_prose = " ".join(block_text(k, v) for k, v in blocks if k != "code")
+        if has_code and not _affirmative_cues(verification_prose, re.compile(
+                r"预期输出|输出(?:为|校验|检查)|返回(?:值|结果)|预期结果|验证命令|检查.{0,20}是否|校验方式|预期看到|打印出")):
             _add(issues, "MISSING-VERIFY", "judgment", "note", "全文",
                  "教程含代码块但未说明可观察的预期输出或校验方式",
                  "在关键步骤后写出预期输出或验证命令",
@@ -1181,19 +1233,21 @@ def _judgment_issues(meta, blocks, type_key, sections, gains):
         for idx, (k, v) in enumerate(blocks):
             if k != "p":
                 continue
-            txt = plain(v)
+            txt = _unquoted_prose(plain(v))
             if "我" in txt[:12]:
                 continue
-            mind = re.search(r"(?:他|她)(?:心里想|暗自决定|内心深处明白|在那一刻意识到|默默发誓)", txt)
-            win = " ".join(block_text(wk, wv) for wk, wv in blocks[max(0, idx - 1):min(len(blocks), idx + 2)])
-            if mind and not re.search(r"回忆|自述|采访|信中|日记|坦言|说|写道|据.{1,8}记载", win):
+            mind_sentence = next((sentence for sentence in _sentence_list(txt)
+                                  if re.search(r"(?:他|她)(?:心里想|暗自决定|内心深处明白|在那一刻意识到|默默发誓)", sentence)), "")
+            mind = re.search(r"(?:他|她)(?:心里想|暗自决定|内心深处明白|在那一刻意识到|默默发誓)", mind_sentence)
+            # 后一句「这些心理活动没有日记依据」是缺陷说明，不是前一句的来源。
+            if mind and not _affirmative_cues(mind_sentence, re.compile(r"回忆|自述|采访|信中|日记|坦言|说|写道|据.{1,8}记载")):
                 _add(issues, "PROFILE-MIND-READ", "judgment", "should", f"块 {idx + 1}",
                      "第三人称人物叙述出现无出处的心理独白，存在虚构内心活动风险",
                      "核对是否有本人自述/书信/采访依据并写明出处；无依据则改写为可见外部动作",
                      "严守非虚构人物写作的事实边界", f"命中「{mind.group(0)}」且邻近无自述/采访归属", needs="fact-check")
 
     elif type_key == "opinion":
-        if not re.search(r"不过|但是|然而|反例|相反|也有人|有人说|另一种|代价|局限|例外|诚然|固然", full_body):
+        if not _affirmative_cues(full_body, re.compile(r"不过|但是|然而|反例|相反|也有人(?:认为|指出|担心)|有人说|另一种|诚然|固然")):
             _add(issues, "NO-COUNTER", "judgment", "should", "全文",
                  "评论未处理反方理由、代价或适用边界",
                  "引入最强反驳并正面回应，或明确主张成立的前提条件",
@@ -1206,21 +1260,29 @@ def _judgment_issues(meta, blocks, type_key, sections, gains):
                  "回应最强反例才能真正增强说服力", f"命中「{straw.group(0)}」", needs="editor")
 
     elif type_key == "longform":
-        if len(blocks) >= 6:
+        narrative_blocks = sum(k in ("p", "list", "table", "quote") for k, _ in blocks)
+        if narrative_blocks >= 6:
             list_like = sum(1 for k, _ in blocks if k in ("list", "table"))
-            if list_like / len(blocks) >= 0.4:
+            if list_like / narrative_blocks >= 0.5:
                 _add(issues, "LONGFORM-LIST-COLLAPSE", "judgment", "note", "全文",
                      "深度长文中列表/表格块占比过高，连续叙事有被压成清单的风险",
                      "仅对真正需要扫读比对的信息保留列表，把人物动作与主线推进还给连续段落",
-                     "保持深度长文的阅读沉浸感与叙事张力", f"列表/表格占总块数 {list_like}/{len(blocks)}", needs="editor")
+                     "保持深度长文的阅读沉浸感与叙事张力", f"列表/表格占叙事块 {list_like}/{narrative_blocks}（标题不计）", needs="editor")
         if len(gains) >= 3:
+            prior_sentences = set()
+            first = gains[0]["block"]
+            prior_sentences.update(_sentence_list(" ".join(block_text(k, v) for k, v in blocks[first:gains[1]["block"] - 1])))
             for g in gains[1:-1]:
-                if g["chars"] >= 100 and g["similarity_to_previous"] >= 0.35 and g["new_fact_count"] == 0 and not g["quoted"] and not g["image"]:
+                end = next((x["block"] for x in gains if x["block"] > g["block"]), len(blocks) + 1)
+                here = _sentence_list(" ".join(block_text(k, v) for k, v in blocks[g["block"]:end - 1]))
+                repeated = next((sentence for sentence in here if len(sentence) >= 20 and sentence in prior_sentences), "")
+                prior_sentences.update(here)
+                if repeated or (g["chars"] >= 60 and g["similarity_to_previous"] >= 0.35 and g["new_fact_count"] == 0 and not g["quoted"] and not g["image"]):
                     _add(issues, "LONGFORM-MID-SAG", "judgment", "should",
                          f"块 {g['block']}（{g['heading']}）",
                          "长文中段章节与前文高度重叠，未见新事实、新引语或新场景推进",
                          "合并重复铺垫，或补入推动主线转折的具体细节",
-                         "防止长文在中段失速", f"与前文相似度 {g['similarity_to_previous']:.2f} 且无新事实/引语", needs="editor")
+                         "防止长文在中段失速", (f"整句重复：{repeated[:40]}" if repeated else f"与前文相似度 {g['similarity_to_previous']:.2f} 且无新事实/引语"), needs="editor")
 
     # 5) 证据型文体的逐节信息增量检查
     if type_key in ("analysis", "news", "tutorial", "opinion"):
@@ -1459,7 +1521,10 @@ def render_report(result, facts_diff=None, ledger_problems=None, voice_diff=None
                   f"- 直接引语变化：删 {facts_diff.get('dropped_quotes', [])}；增 {facts_diff.get('introduced_quotes', [])}",
                   f"- 频次变化：{facts_diff.get('occurrence_changes', [])}"]
     if voice_diff is not None:
-        lines += ["", "## 作者声音比对（原稿 → 改稿）", ""]
+        lines += ["", "## 作者声音比对（原稿 → 改稿）", "",
+                  (f"- 逐字段落保留：{voice_diff['unchanged_paragraphs']}/{voice_diff['source_paragraphs']}"
+                   f"（{voice_diff['unchanged_paragraph_ratio']:.1%}）；不代表语义声音评分。"
+                   if voice_diff["source_paragraphs"] else "- 原稿无正文段落，保留率不适用。")]
         if voice_diff["changes"]:
             lines += ["| 标记 | 原稿 | 改稿 | 变化形态 |", "|---|---:|---:|---|"]
             lines += [f"| {c['mark']} | {c['original']} | {c['edited']} | {c['note']} |" for c in voice_diff["changes"]]

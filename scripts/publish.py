@@ -26,11 +26,30 @@ import urllib.request
 import urllib.error
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from render import api_title, img_size, SKILL_VERSION, THEME_CONFIG_SHA256  # noqa: E402
+from render import api_title, img_size, SKILL_VERSION, THEME_CONFIG_SHA256, renderer_fingerprint  # noqa: E402
 from check import check, image_sources, safe_http_url  # noqa: E402
-from safety import local_path, sha256
+from safety import atomic_write, local_path, sha256
 
 API_BASE = "https://api.weixin.qq.com/cgi-bin"
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def _open_api(request, timeout):
+    """Official origin only; never forward query-string tokens to a redirect host."""
+    from urllib.parse import urlsplit
+    parts = urlsplit(request.full_url)
+    if (parts.scheme != "https" or parts.hostname != "api.weixin.qq.com"
+            or parts.port not in (None, 443) or parts.username is not None or parts.password is not None
+            or parts.fragment or not parts.path.startswith("/cgi-bin/")):
+        raise ValueError("拒绝非微信官方 API 地址")
+    opener = urllib.request.build_opener(_NoRedirect())
+    return opener.open(request, timeout=timeout)
+
+RENDERER_SHA256 = renderer_fingerprint()
 
 
 class WeChatAPIError(RuntimeError):
@@ -46,7 +65,7 @@ class WeChatAPIError(RuntimeError):
 def _post_json(url, payload, binary=False):
     data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json; charset=utf-8"})
-    with urllib.request.urlopen(req, timeout=30) as resp:
+    with _open_api(req, timeout=30) as resp:
         raw = resp.read()
         if binary and not raw.lstrip().startswith((b"{", b"[")):
             return raw
@@ -58,7 +77,7 @@ def _post_json(url, payload, binary=False):
 
 def _get_json(url):
     """官方文档里 get_materialcount 标注为 GET 请求，按文档实现。"""
-    with urllib.request.urlopen(urllib.request.Request(url), timeout=30) as resp:
+    with _open_api(urllib.request.Request(url), timeout=30) as resp:
         body = json.loads(resp.read().decode("utf-8"))
     if isinstance(body, dict) and body.get("errcode", 0) not in (0, None):
         raise WeChatAPIError(body.get("errcode"), body.get("errmsg"), body)
@@ -72,7 +91,7 @@ def _multipart_filename(filepath):
     return (safe[:120] or "upload")
 
 
-def _post_multipart_file(url, filepath, field_name="media", extra_fields=None):
+def _post_multipart_file(url, filepath, field_name="media", extra_fields=None, data=None):
     """手写 multipart/form-data，不依赖 requests 库。"""
     boundary = uuid.uuid4().hex
     original_filename = os.path.basename(filepath)
@@ -84,8 +103,10 @@ def _post_multipart_file(url, filepath, field_name="media", extra_fields=None):
         parts.append(
             f"--{boundary}\r\nContent-Disposition: form-data; name=\"{key}\"\r\n\r\n{val}\r\n".encode("utf-8")
         )
-    with open(filepath, "rb") as f:
-        file_bytes = f.read()
+    if data is None:
+        with open(filepath, "rb") as stream:
+            data = stream.read()
+    file_bytes = data
     parts.append(
         (
             f"--{boundary}\r\nContent-Disposition: form-data; name=\"{field_name}\"; "
@@ -99,7 +120,7 @@ def _post_multipart_file(url, filepath, field_name="media", extra_fields=None):
     req = urllib.request.Request(
         url, data=body, headers={"Content-Type": f"multipart/form-data; boundary={boundary}"}
     )
-    with urllib.request.urlopen(req, timeout=60) as resp:
+    with _open_api(req, timeout=60) as resp:
         result = json.loads(resp.read().decode("utf-8"))
     if isinstance(result, dict) and result.get("errcode", 0) not in (0, None):
         raise WeChatAPIError(result.get("errcode"), result.get("errmsg"), result)
@@ -151,26 +172,26 @@ def enable_draft_switch(access_token):
 
 # ---------- 3. 素材上传 ----------
 
-def upload_thumb_material(access_token, cover_path):
+def upload_thumb_material(access_token, cover_path, data=None):
     """上传封面为永久素材，返回 thumb_media_id（draft/add 建草稿必须用这个，不能用临时素材）。"""
     url = f"{API_BASE}/material/add_material?access_token={access_token}&type=image"
-    result = _post_multipart_file(url, cover_path, field_name="media")
+    result = _post_multipart_file(url, cover_path, field_name="media", data=data)
     return result["media_id"]
 
 
-def upload_content_image(access_token, image_path):
+def upload_content_image(access_token, image_path, data=None):
     """上传正文里用到的图片，返回可以直接写进 content HTML 的微信图片 URL。
     正文里但凡出现非微信域名的外链图片，draft/add 会把它过滤掉，所以正文图片必须先过这一步。
     """
     url = f"{API_BASE}/media/uploadimg?access_token={access_token}"
-    result = _post_multipart_file(url, image_path, field_name="media")
+    result = _post_multipart_file(url, image_path, field_name="media", data=data)
     return result["url"]
 
 
 IMG_SRC_RE = re.compile(r"(<img\b[^>]*?\bsrc\s*=\s*)(?:\"([^\"]*)\"|'([^']*)'|([^\s>]+))", re.IGNORECASE)
 
 
-def rewrite_local_images(html, access_token, base_dir="."):
+def rewrite_local_images(html, access_token, base_dir=".", image_bytes=None):
     """扫描 HTML 里的 <img src="本地路径">，逐个上传替换成微信图片 URL。
     已经是 http(s) 链接的图片不动（是否会被微信过滤由官方接口决定，这里不重复判断）。
     """
@@ -184,7 +205,13 @@ def rewrite_local_images(html, access_token, base_dir="."):
         if not os.path.isfile(local_file):
             raise ValueError(f"正文图片不存在：{src}")
         if local_file not in uploaded:
-            uploaded[local_file] = upload_content_image(access_token, local_file)
+            data = image_bytes.get(os.path.relpath(local_file, os.path.realpath(base_dir)).replace(os.sep, "/")) if image_bytes is not None else None
+            if image_bytes is not None and data is None:
+                raise ValueError("正文图片不在已核验快照中")
+            url = upload_content_image(access_token, local_file, data=data)
+            if not safe_http_url(url):
+                raise ValueError("正文图片上传接口未返回有效 HTTP(S) URL")
+            uploaded[local_file] = url
         wechat_url = uploaded[local_file]
         print(f"  已上传正文图片 {src} -> {wechat_url}")
         return f'{prefix}"{H.escape(wechat_url)}"'
@@ -198,7 +225,7 @@ def rewrite_local_images(html, access_token, base_dir="."):
 # 并提供 get_materialcount / batchget_material / del_material 做对账与清理。
 # 临时素材（media/upload，3 天过期）不能用于草稿封面，本流水线不接入。
 
-MATERIAL_CACHE_DEFAULT = ".wechat_material_cache.json"
+MATERIAL_CACHE_DEFAULT = ".wechat_material_cache_v11.json"
 
 
 def get_material(access_token, media_id):
@@ -240,37 +267,44 @@ def delete_material(access_token, media_id):
     return _post_json(url, {"media_id": media_id})
 
 
-def upload_thumb_material_cached(access_token, cover_path, cache_path=MATERIAL_CACHE_DEFAULT):
-    """同一张封面复用同一个永久素材，不重复占用账号素材额度。
-
-    本地缓存 sha256 -> media_id；复用前用 get_material 验活——素材可能在
-    后台被手动删掉（40007），缓存命中但已死就重传并更新缓存。
-    """
-    digest = sha256(cover_path)
-    cache = {}
+def upload_thumb_material_cached(access_token, cover_path, cache_path=MATERIAL_CACHE_DEFAULT, account=None, data=None):
+    """Account-scoped content cache. Validate remote existence before reusing an ID."""
+    if not account:
+        raise ValueError("封面缓存必须绑定账号，禁止跨公众号复用 media_id")
+    if data is None:
+        with open(cover_path, "rb") as stream:
+            data = stream.read()
+    digest, account_key = hashlib.sha256(data).hexdigest(), hashlib.sha256(account.encode()).hexdigest()
+    cache = {"version": 2, "accounts": {}}
     if cache_path and os.path.exists(cache_path):
-        try:
-            with open(cache_path, encoding="utf-8") as f:
-                cache = json.load(f)
-                if not isinstance(cache, dict):
-                    cache = {}
-        except (ValueError, OSError):
-            cache = {}
-    media_id = cache.get(digest)
+        if os.path.islink(cache_path):
+            raise ValueError("素材缓存不能是符号链接")
+        with open(cache_path, encoding="utf-8") as stream:
+            loaded = json.load(stream)
+        if not isinstance(loaded, dict) or loaded.get("version") != 2 or not isinstance(loaded.get("accounts"), dict):
+            raise ValueError("素材缓存格式无效，拒绝猜测或跨账号迁移")
+        cache = loaded
+    entries = cache["accounts"].setdefault(account_key, {})
+    if not isinstance(entries, dict):
+        raise ValueError("账号素材缓存必须是对象")
+    media_id = entries.get(digest)
     if media_id:
+        if not isinstance(media_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", media_id):
+            raise ValueError("缓存 media_id 格式无效")
         try:
-            get_material(access_token, media_id)
-            print(f"  复用已有封面永久素材 {media_id}")
+            result = get_material(access_token, media_id)
+            if not result or (isinstance(result, dict) and not (result.get("down_url") or result.get("media_id"))):
+                raise ValueError("素材验活返回空记录")
             return media_id
-        except WeChatAPIError as e:
-            if e.errcode != 40007:
+        except WeChatAPIError as error:
+            if error.errcode != 40007:
                 raise
-            print(f"  缓存的素材 {media_id} 已不可用（errcode={e.errcode}），重新上传")
-    media_id = upload_thumb_material(access_token, cover_path)
+    media_id = upload_thumb_material(access_token, cover_path, data=data)
+    if not isinstance(media_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", media_id):
+        raise ValueError("上传返回 media_id 无效")
     if cache_path:
-        cache[digest] = media_id
-        with open(cache_path, "w", encoding="utf-8") as f:
-            json.dump(cache, f, ensure_ascii=False, indent=2)
+        entries[digest] = media_id
+        atomic_write(cache_path, json.dumps(cache, ensure_ascii=False, indent=2) + "\n", mode=0o600)
     return media_id
 
 
@@ -341,13 +375,14 @@ def write_readback_evidence(directory, media_id, data, expected):
                         "observed_sha256": hashlib.sha256(str(got).encode()).hexdigest(),
                         "observed": got if name in ("title", "author", "digest", "thumb_media_id", "content_source_url", "need_open_comment", "only_fans_can_comment") else None}
     root = os.path.join(directory, media_id)
+    if os.path.islink(directory) or os.path.islink(root):
+        raise ValueError("回读证据目录不能是符号链接")
     os.makedirs(root, exist_ok=True)
     payload = {"media_id": media_id, "time": datetime.now(timezone.utc).isoformat(),
                "api_readback": "PASS" if all(f["match"] for f in fields.values()) else "FAIL",
                "fields": fields, "backend_save_reopen": "UNVERIFIED", "wechat_mobile": "UNVERIFIED",
                "note": "仅本地保存的 API 回读对照；不含 token；不等于后台或真机验收。"}
-    with open(os.path.join(root, "draft-readback.json"), "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2)
+    atomic_write(os.path.join(root, "draft-readback.json"), json.dumps(payload, ensure_ascii=False, indent=2) + "\n", mode=0o600)
     return payload
 
 
@@ -403,213 +438,190 @@ def resolve_cover(cover, html_path):
     return local_path(cover, os.path.dirname(os.path.abspath(html_path)))
 
 
-def preflight(html_path, s):
-    """不调接口，先把「将要上行的东西」摆出来：Gate 1 + 原生字段 + 封面 + 待传正文图。
-
-    发布可靠性只能验到这一层——接口那边是否放行无法预演，但「发出去的东西对不对」必须能验。
-    """
-    with open(html_path, encoding="utf-8") as f:
-        html = f.read()
+def prepare_submission(html_path, settings, meta_path=None):
+    """Freeze and validate exactly the HTML, sidecar and image bytes to be uploaded."""
+    html_path = os.path.abspath(html_path)
+    expected_meta = os.path.splitext(html_path)[0] + ".meta.json"
+    meta_path = os.path.abspath(meta_path or expected_meta)
+    if os.path.realpath(meta_path) != os.path.realpath(expected_meta):
+        raise ValueError("--meta 必须是正文对应的同名侧车，拒绝字段错配")
+    if not os.path.isfile(meta_path):
+        raise ValueError("缺少渲染侧车：不能创建草稿或发布；请先运行 render.py")
+    with open(html_path, "rb") as stream:
+        raw_html = stream.read()
+    with open(meta_path, "rb") as stream:
+        raw_meta = stream.read()
+    html, side = raw_html.decode("utf-8"), json.loads(raw_meta.decode("utf-8"))
+    if not isinstance(side, dict):
+        raise ValueError("meta 必须是 JSON 对象")
+    if side.get("integrity_version") != 3 or side.get("skill_version") != SKILL_VERSION:
+        raise ValueError("旧版渲染记录不能上行；请用 V11 重渲染")
+    if side.get("theme_config_sha256") != THEME_CONFIG_SHA256 or side.get("renderer_sha256") != RENDERER_SHA256:
+        raise ValueError("主题或渲染代码已变化；请重渲染，不能沿用旧验收")
+    if side.get("body_sha256") != hashlib.sha256(raw_html).hexdigest():
+        raise ValueError("正文哈希与侧车不一致")
+    if side.get("render_status") != "PASS" or side.get("render_errors") or side.get("pending_assets"):
+        raise ValueError("渲染 Gate 未通过或仍有待补素材")
+    base = os.path.dirname(html_path)
+    source = side["source"]
+    source_path = source["path"] if os.path.isabs(source["path"]) else local_path(source["path"], base)
+    if sha256(source_path) != source["sha256"]:
+        raise ValueError("源稿已变化；请重渲染")
     must, should = check(html)
-    ok = not must
-    # Consume the existing render sidecar: detect stale/failed generation, not factual truth.
-    side_path = os.path.splitext(html_path)[0] + ".meta.json"
-    if os.path.isfile(side_path):
-        with open(side_path, encoding="utf-8") as f:
-            side = json.load(f)
-        if not isinstance(side, dict):
-            raise ValueError("meta 必须是JSON对象")
-        if side.get("body_sha256") != hashlib.sha256(html.encode()).hexdigest() or side.get("render_errors") or side.get("pending_assets"):
-            ok = False
-            print("  必须改 · 正文与渲染验收不一致，或 Gate 1/2 未通过：重渲染")
-    else:
-        print("  注意 · HTML 无渲染验收记录：只做静态检查，不能正式提交发布")
-        if s["submit"]:
-            ok = False
+    if must:
+        raise ValueError("Gate 1 FAIL：" + "；".join(must))
     if "待补素材" in html:
-        ok = False
-        print("  必须改 · 正文仍有待补素材")
-    base = os.path.dirname(os.path.abspath(html_path))
+        raise ValueError("正文仍有待补素材")
+    for field, cap in (("title", 32), ("author", 16), ("digest", 120)):
+        value = settings.get(field) or ""
+        if len(value) > cap or (field == "title" and not value.strip()):
+            raise ValueError(f"{field} 为空或超过 {cap} 字，拒绝静默截断")
+    if settings.get("source") and not safe_http_url(settings["source"]):
+        raise ValueError("原文链接不是有效的 HTTP(S) URL")
     local = image_sources(html)
-    safe_local = []
-    for u in local:
-        try:
-            safe_local.append(local_path(u, base))
-        except ValueError as e:
-            ok = False
-            print("  必须改 ·", e)
-    miss = [u for u in safe_local if not os.path.isfile(u)]
-    if s["cover"]:
-        try:
-            # Callers pass the already resolved cover; it must stay within HTML root.
-            rel = os.path.relpath(s["cover"], base)
-            local_path(rel, base)
-        except ValueError as e:
-            ok = False
-            print("  必须改 · 封面路径越界", e)
-    if os.path.isfile(side_path) and side.get("integrity_version") == 2:
-        try:
-            if side.get("skill_version") != SKILL_VERSION:
-                raise ValueError(f"渲染版本已变化：{side.get('skill_version')} → {SKILL_VERSION}")
-            if side.get("theme_config_sha256") != THEME_CONFIG_SHA256:
-                raise ValueError("主题配置已变化；正文、配置和展示样张可能不一致")
-            source = side["source"]
-            if sha256(source["path"]) != source["sha256"]:
-                raise ValueError("源 Markdown 已变化")
-            assets = {item["path"]: item["sha256"] for item in side["assets"]}
-            cover_rel = os.path.relpath(s["cover"], base).replace(os.sep, "/") if s["cover"] else ""
-            required = set(local) | ({cover_rel} if cover_rel else set())
-            if set(assets) != required:
-                raise ValueError("素材清单与正文/封面不一致")
-            source_root = os.path.dirname(os.path.abspath(source["path"]))
-            for item in side["assets"]:
-                path, digest = item["path"], item["sha256"]
-                if (sha256(local_path(path, base)) != digest
-                        or sha256(local_path(item["source_path"], source_root)) != item["source_sha256"]
-                        or digest != item["source_sha256"]):
-                    raise ValueError(f"素材已变化：{path}")
-        except (KeyError, TypeError, ValueError, OSError) as e:
-            ok = False
-            print("  必须改 · 一致性校验失败：", e)
-    elif os.path.isfile(side_path):
-        print("  注意 · 旧版记录缺少当前渲染器／主题配置一致性记录，建议重渲染")
-        if s["submit"]:
-            ok = False
-            print("  必须改 · 正式提交前须用当前版本重渲染")
-    print("预检（不调用接口）")
-    for m in must:
-        print("  必须改 ·", m)
-    for x in should:
-        print("  建议改 ·", x)
-    print(f"  Gate 1 Platform: {'PASS' if not must else 'FAIL'}（仅静态检查）")
-    for label, v, cap in (("标题", s["title"] or "", 32), ("作者", s["author"] or "", 16),
-                          ("摘要", s["digest"] or "", 120)):
-        if len(v) > cap or (label == "标题" and not v.strip()):
-            ok = False
-        print(f"  {label}  {v or '（空）'}（{len(v)}/{cap}）"
-              + (f"  ⚠ 超过官方上限 {cap}，拒绝上行，请编辑" if len(v) > cap else ""))
-    print(f"  原文链接  {s['source'] or '（无）'}")
-    if s["source"] and not safe_http_url(s["source"]):
-        ok = False
-        print("  必须改 · 原文链接不是有效的 HTTP(S) URL")
-    cover = s["cover"]
+    assets = side["assets"]
+    if not isinstance(assets, list) or any(not isinstance(x, dict) for x in assets):
+        raise ValueError("assets 必须是对象数组")
+    mapping = {x["path"]: x for x in assets}
+    if len(mapping) != len(assets):
+        raise ValueError("素材清单有重复路径")
+    cover = settings.get("cover")
     if not cover:
-        ok = False
-        print("  封面  ⚠ 未设置（草稿必须有封面）")
-    elif not os.path.isfile(cover):
-        ok = False
-        print(f"  封面  ⚠ 文件不存在：{cover}")
-    else:
-        wh, kb = img_size(cover), os.path.getsize(cover) // 1024
-        if not wh or not all(wh):
-            ok = False
-            print("  必须改 · 封面不是可识别图片")
-        print(f"  封面  {cover}" + (f" · {wh[0]}×{wh[1]}（{wh[0] / wh[1]:.2f}:1）· {kb}KB" if wh else f" · {kb}KB"))
-    print(f"  正文图片  {len(local)} 张待上传" + (f" · ⚠ 缺失 {miss}" if miss else ""))
-    if miss or any(not img_size(u) for u in safe_local):
-        ok = False
-    print(f"  留言 {'开' if s['open_comment'] else '关'} · 仅粉丝 {'是' if s['fans_only'] else '否'}"
-          f" · 建草稿后{'继续发布' if s['submit'] else '止步'}")
-    print("\n预检" + ("通过：仅本地工程检查；事实、裁切与微信清洗仍须人工核对" if ok else "未通过：先修完再发"))
-    return 0 if ok else 1
+        raise ValueError("草稿必须有封面")
+    cover_rel = os.path.relpath(os.path.realpath(cover), os.path.realpath(base)).replace(os.sep, "/")
+    local_path(cover_rel, base)
+    if cover_rel != side.get("cover"):
+        raise ValueError("封面与渲染侧车不一致；请修改源稿后重渲染，不用 CLI 偷换封面")
+    if set(mapping) != set(local) | {cover_rel}:
+        raise ValueError("素材清单与正文/封面不一致")
+    frozen = {}
+    for path, record in mapping.items():
+        resolved = local_path(path, base)
+        if not os.path.isfile(resolved) or not img_size(resolved):
+            raise ValueError(f"素材缺失或格式不识别：{path}")
+        with open(resolved, "rb") as stream:
+            data = stream.read()
+        digest = hashlib.sha256(data).hexdigest()
+        if digest != record["sha256"] or digest != record.get("source_sha256"):
+            raise ValueError(f"素材已变化：{path}")
+        frozen[path] = data
+    return {"html": html, "html_path": html_path, "meta_path": meta_path, "side": side,
+            "settings": dict(settings), "cover_rel": cover_rel, "images": frozen,
+            "body_sha256": hashlib.sha256(raw_html).hexdigest(),
+            "meta_sha256": hashlib.sha256(raw_meta).hexdigest(),
+            "source_sha256": source["sha256"], "warnings": should}
 
 
-# ---------- 一键流程 ----------
+def preflight(html_path, settings, meta_path=None, snapshot=None):
+    """Offline only. A PASS is local consistency, never API or client acceptance."""
+    try:
+        snap = snapshot or prepare_submission(html_path, settings, meta_path)
+        if snap["html_path"] != os.path.abspath(html_path):
+            raise ValueError("快照与预检正文不是同一文件")
+    except (ValueError, OSError, KeyError, TypeError) as error:
+        print("预检 FAIL：", error)
+        return 1
+    s = snap["settings"]
+    print("预检 PASS（仅冻结输入的本地工程检查，不联网）")
+    print("  标题", s["title"], "· 作者", s.get("author") or "（空）", "· 摘要", s.get("digest") or "（空）")
+    print(f"  正文 SHA-256 {snap['body_sha256']}")
+    print(f"  侧车 SHA-256 {snap['meta_sha256']}")
+    print(f"  封面 {snap['cover_rel']} · 正文图片 {len(snap['images']) - 1} 张")
+    print(f"  本次动作：{'创建草稿后提交发布' if s.get('submit') else '仅创建草稿'}")
+    for warning in snap["warnings"]:
+        print("  复核建议 ·", warning)
+    print("  语义编辑、图片安全区、API 回读、微信真机：UNVERIFIED")
+    return 0
+
+
+def write_audit(path, event, **fields):
+    """Append private, schema-constrained scalars. Refuse links and secret-shaped values."""
+    allowed = {"submit", "body_sha256", "media_id", "publish_id", "error_type", "media_id_sha256", "stage", "snapshot_sha256"}
+    if set(fields) - allowed or not re.fullmatch(r"[a-z_]{1,64}", event):
+        raise ValueError("审计事件或字段不在白名单")
+    patterns = {"body_sha256": r"[a-f0-9]{64}", "media_id_sha256": r"[a-f0-9]{64}",
+                "snapshot_sha256": r"[a-f0-9]{64}", "media_id": r"[A-Za-z0-9_-]{1,128}",
+                "publish_id": r"[A-Za-z0-9_-]{1,128}", "error_type": r"[A-Za-z]{1,64}",
+                "stage": r"[a-z_]{1,64}"}
+    for key, value in fields.items():
+        if key == "submit":
+            if not isinstance(value, bool):
+                raise ValueError("submit 必须是布尔值")
+        elif not isinstance(value, str) or not re.fullmatch(patterns[key], value):
+            raise ValueError(f"审计字段 {key} 格式非法")
+    path = os.path.abspath(path)
+    if os.path.islink(path):
+        raise ValueError("审计日志不能是符号链接")
+    record = {"time": datetime.now(timezone.utc).isoformat(), "event": event, **fields}
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    with os.fdopen(fd, "a", encoding="utf-8") as stream:
+        os.fchmod(stream.fileno(), 0o600)
+        stream.write(json.dumps(record, ensure_ascii=False) + "\n")
+
 
 def publish_html_article(appid, secret, html_path, cover_path, title, author=None, digest=None,
                          source_url=None, open_comment=True, fans_only=False,
-                         material_cache=MATERIAL_CACHE_DEFAULT,
-                         do_submit=False, submit_confirm=None, poll_timeout=600, auto_enable_switch=False, audit=None,
-                         evidence_dir=None):
+                         material_cache=MATERIAL_CACHE_DEFAULT, do_submit=False, submit_confirm=None,
+                         poll_timeout=600, auto_enable_switch=False, audit=None, evidence_dir=None, meta_path=None):
     audit = audit or (lambda event, **fields: None)
-    if do_submit and api_title(submit_confirm or "") != api_title(title):
-        raise ValueError(f"正式发布需要本次运行的单次确认：--confirm-title 必须与本次标题逐字一致"
-                         f"（本次标题：{api_title(title)!r}）。没有持久授权这回事，每次发布都要重新确认")
-    settings = {"title": title, "author": author, "digest": digest, "cover": cover_path,
+    if do_submit and (submit_confirm is None or api_title(submit_confirm) != api_title(title)):
+        raise ValueError("正式发布须本次逐字传入 --submit --confirm-title；没有持久授权")
+    settings = {"title": api_title(title), "author": author, "digest": digest, "cover": cover_path,
                 "source": source_url, "open_comment": open_comment, "fans_only": fans_only, "submit": do_submit}
-    if preflight(html_path, settings):
-        raise ValueError("发布预检未通过：未调用微信接口")
-    audit("preflight_pass", body_sha256=sha256(html_path), submit=do_submit)
+    snap = prepare_submission(html_path, settings, meta_path)
+    if preflight(html_path, settings, meta_path, snapshot=snap):
+        raise ValueError("发布预检未通过；未调用微信接口")
+    fingerprint = hashlib.sha256(json.dumps({k: snap[k] for k in ("body_sha256", "meta_sha256", "source_sha256")}, sort_keys=True).encode()).hexdigest()
+    audit("preflight_pass", body_sha256=snap["body_sha256"], snapshot_sha256=fingerprint, submit=do_submit)
     total = 5 if do_submit else 4
     print(f"[1/{total}] 获取 access_token …")
     token = get_stable_access_token(appid, secret)
-
     if auto_enable_switch and not check_draft_switch(token):
         print("显式授权开启草稿箱开关（不可逆）…")
         enable_draft_switch(token)
-
-    print(f"[2/{total}] 上传封面为永久素材（同图复用，不重复占额度）…")
-    if material_cache:
-        thumb_media_id = upload_thumb_material_cached(token, cover_path, material_cache)
-    else:
-        thumb_media_id = upload_thumb_material(token, cover_path)
-    print(f"  thumb_media_id = {thumb_media_id}")
-
-    with open(html_path, encoding="utf-8") as f:
-        html = f.read()
-
-    print(f"[3/{total}] 检查并上传正文里的本地图片（如有）…")
-    base_dir = os.path.dirname(os.path.abspath(html_path))
-    html = rewrite_local_images(html, token, base_dir=base_dir)
-
-    print(f"[4/{total}] 新增草稿并执行 API 回读核验 …")
+    print(f"[2/{total}] 上传已核验的封面字节 …")
+    cover_data = snap["images"][snap["cover_rel"]]
+    thumb = upload_thumb_material_cached(token, cover_path, material_cache, account=appid, data=cover_data) if material_cache else upload_thumb_material(token, cover_path, data=cover_data)
+    print(f"[3/{total}] 上传已冻结的正文图片 …")
+    html = rewrite_local_images(snap["html"], token, os.path.dirname(snap["html_path"]), image_bytes=snap["images"])
+    print(f"[4/{total}] 新建草稿并回读 …")
     try:
-        media_id = create_draft(token, title, html, thumb_media_id, author=author, digest=digest,
-                                source_url=source_url, need_open_comment=1 if open_comment else 0,
-                                only_fans_can_comment=1 if fans_only else 0)
-    except WeChatAPIError as e:
-        if e.errcode == 48001:
-            print("\n❌ 建草稿被拒绝（48001）：逐个排查——① 草稿箱开关未开（可试 --enable-draft-switch，不可逆）；"
-                  "② token/appid/secret 无效；③ 账号缺草稿箱接口权限（后台「设置与开发 → 接口权限」）。"
-                  "都排除仍报错，则该账号草稿箱路径走不通，回手动粘贴。", file=sys.stderr)
+        media_id = create_draft(token, title, html, thumb, author=author, digest=digest, source_url=source_url,
+                                need_open_comment=open_comment, only_fans_can_comment=fans_only)
+    except WeChatAPIError as error:
+        if error.errcode == 48001:
+            print("草稿接口拒绝：核对账号权限与草稿箱开关；不要推断认证身份。", file=sys.stderr)
         raise
+    except (OSError, urllib.error.URLError) as error:
+        audit("draft_result_unknown", error_type=type(error).__name__)
+        raise RuntimeError("draft/add 网络结果未知，服务器可能已建稿；禁止自动重试，请先检查草稿箱") from None
+    if not isinstance(media_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", media_id):
+        raise RuntimeError("草稿返回 media_id 无效；请检查草稿箱，不自动重试")
     audit("draft_created", media_id=media_id)
-    print(f"  草稿 media_id = {media_id}")
-
     try:
         readback = read_draft(token, media_id)
-        differences = verify_draft(readback, title, html, thumb_media_id,
-                                   author=author, digest=digest, source_url=source_url)
+        differences = verify_draft(readback, title, html, thumb, author, digest, source_url)
         if evidence_dir:
-            expected_fields = {"title": api_title(title), "content": html, "thumb_media_id": thumb_media_id}
-            if author:
-                expected_fields["author"] = author
-            if digest:
-                expected_fields["digest"] = digest
-            if source_url:
-                expected_fields["content_source_url"] = source_url
-            write_readback_evidence(evidence_dir, media_id, readback, expected_fields)
-    except Exception as e:
-        raise RuntimeError(f"草稿已创建 media_id={media_id}，回读失败；请先在后台核对，勿重复建稿：{type(e).__name__}") from None
+            expected = {"title": api_title(title), "content": html, "thumb_media_id": thumb,
+                        "need_open_comment": int(open_comment), "only_fans_can_comment": int(fans_only)}
+            expected.update({k: v for k, v in (("author", author), ("digest", digest), ("content_source_url", source_url)) if v})
+            write_readback_evidence(evidence_dir, media_id, readback, expected)
+    except Exception as error:
+        raise RuntimeError(f"草稿已创建 media_id={media_id}，回读失败；勿重复建稿（{type(error).__name__}）") from None
     if differences:
-        raise RuntimeError(f"草稿已创建 media_id={media_id}，回读字段不一致：{', '.join(differences)}；请检查，勿重复建稿")
+        raise RuntimeError(f"草稿已创建 media_id={media_id}，回读不一致：{', '.join(differences)}；禁止发布")
     audit("draft_readback_match", media_id=media_id)
-    print("  草稿 API 回读字段一致；仍需后台重新打开和手机验收。")
     if not do_submit:
-        print("\n草稿已建好，未继续发布。请后台检查；不要为查询状态重新建稿。")
+        print(f"草稿已创建 media_id={media_id}；未发布。后台重开与真机仍须验收。")
         return {"media_id": media_id, "publish_id": None, "article_urls": []}
-
-    print(f"[5/{total}] 提交发布 …")
-    try:
-        publish_id = submit_publish(token, media_id)
-    except WeChatAPIError as e:
-        if e.errcode == 48001:
-            print("\n❌ 提交发布被拒绝（48001）：草稿已建好，此接口未获授权"
-                  "。请核对实际接口权限；草稿已保留，不要重复建稿。",
-                  file=sys.stderr)
-        raise
-    audit("publish_submitted", media_id=media_id, publish_id=publish_id)
-    print(f"  publish_id = {publish_id}，开始轮询发布状态（这是异步任务，不会立刻返回文章链接）…")
-
+    print(f"[5/{total}] 本次确认有效，提交发布 …")
+    publish_id = submit_publish(token, media_id)
+    audit("publish_submitted", media_id=media_id, publish_id=str(publish_id))
     result = poll_publish_status(token, publish_id, timeout=poll_timeout)
-    print(f"\n发布结果：{result['status_text']}")
-    if result["article_urls"]:
-        for u in result["article_urls"]:
-            print(f"  文章链接: {u}")
+    print("发布结果：", result["status_text"])
     if result["status"] != 0:
-        raise RuntimeError(f"发布未成功：{result['status_text']}；publish_id={publish_id}")
+        raise RuntimeError(f"发布未确认成功：{result['status_text']}；publish_id={publish_id}")
     return {"media_id": media_id, "publish_id": publish_id, **result}
-
 
 CONFIG_NAME = "config.json"
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -718,7 +730,6 @@ def main():
         cfg = load_config(args.config)
     except (OSError, ValueError) as e:
         ap.error(str(e))
-    side = {}
     if args.meta:
         if args.html and os.path.realpath(args.meta) != os.path.realpath(os.path.splitext(args.html)[0] + ".meta.json"):
             ap.error("--meta 必须是正文对应的同名 sidecar，避免字段与验收记录错配")
@@ -731,7 +742,7 @@ def main():
         if not args.html:
             ap.error("--preflight 需要 --html")
         s["cover"] = resolve_cover(s["cover"], args.html)
-        sys.exit(preflight(args.html, s))
+        sys.exit(preflight(args.html, s, args.meta))
     appid, secret = s["appid"], s["secret"]
     if not (appid and secret):
         ap.error("缺少 AppID/AppSecret：写进 config.json（模板 config.example.json），或用 --appid/--secret 传入")
@@ -757,21 +768,8 @@ def main():
             )
         return
 
-    AUDIT_FIELDS = {"submit", "body_sha256", "media_id", "publish_id", "error_type",
-                    "media_id_sha256", "stage"}
-
     def audit(event, **fields):
-        dropped = set(fields) - AUDIT_FIELDS
-        if dropped:
-            raise ValueError(f"审计日志不接受字段：{'、'.join(sorted(dropped))}（防止凭证/正文入日志）")
-        for value in fields.values():
-            if not isinstance(value, (str, int, float, bool, type(None))):
-                raise ValueError("审计日志只接受标量字段")
-        record = {"time": datetime.now(timezone.utc).isoformat(), "event": event, **fields}
-        fd = os.open(args.audit_log, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
-        os.chmod(args.audit_log, 0o600)
-        with os.fdopen(fd, "a", encoding="utf-8") as f:
-            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        write_audit(args.audit_log, event, **fields)
 
     # 删除永久素材不可逆：授权与格式检查必须在取 token **之前**完成——
     # 未被确认的破坏性操作不应该先花掉一次凭证请求，更不应该有任何网络副作用。
@@ -783,15 +781,13 @@ def main():
             ap.error("media_id 格式非法，拒绝调用删除接口")
 
     if args.material_count or args.list_materials or args.delete_material:
+        if args.delete_material:
+            audit("material_delete_authorized", media_id_sha256=hashlib.sha256(args.delete_material.encode()).hexdigest())
         token = get_stable_access_token(appid, secret)
         if args.delete_material:
             result = delete_material(token, args.delete_material)
             print(json.dumps(result, ensure_ascii=False))
-            try:
-                audit("material_deleted",
-                      media_id_sha256=hashlib.sha256(args.delete_material.encode()).hexdigest())
-            except OSError:
-                pass
+            audit("material_deleted", media_id_sha256=hashlib.sha256(args.delete_material.encode()).hexdigest())
             return
         if args.material_count:
             print(json.dumps(get_material_count(token), ensure_ascii=False, indent=2))
@@ -830,6 +826,7 @@ def main():
             auto_enable_switch=args.enable_draft_switch,
             audit=audit,
             evidence_dir=args.evidence_dir,
+            meta_path=args.meta,
         )
         audit("completed")
     except (WeChatAPIError, ValueError, OSError, RuntimeError) as e:

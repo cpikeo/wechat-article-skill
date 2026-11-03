@@ -14,6 +14,8 @@
 """
 
 import argparse
+import hashlib
+import json
 import os
 import posixpath
 import re
@@ -23,6 +25,7 @@ import xml.etree.ElementTree as ET
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from check import safe_http_url  # noqa: E402
+from safety import atomic_write, output_path, sha256  # noqa: E402
 
 W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 R = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
@@ -55,6 +58,59 @@ def load_styles(z):
         if match:
             levels[sid] = int(match.group(1))
     return levels
+
+
+def load_run_styles(z):
+    """Character-style inheritance; direct run properties override inherited toggles."""
+    try:
+        root = ET.fromstring(z.read("word/styles.xml"))
+    except KeyError:
+        return {}
+    styles = {}
+    for style in root.findall(f"{W}style"):
+        sid = style.get(f"{W}styleId")
+        if not sid:
+            continue
+        based = style.find(f"{W}basedOn")
+        rpr = style.find(f"{W}rPr")
+        properties = {}
+        for name in ("b", "i", "u", "strike", "dstrike", "vertAlign", "vanish", "webHidden"):
+            node = rpr.find(f"{W}{name}") if rpr is not None else None
+            if node is not None:
+                properties[name] = node.get(f"{W}val") or "1"
+        styles[sid] = {"based": based.get(f"{W}val") if based is not None else None, "props": properties}
+    return styles
+
+
+def run_properties(run, styles):
+    rpr = run.find(f"{W}rPr")
+    style = rpr.find(f"{W}rStyle") if rpr is not None else None
+    current = style.get(f"{W}val") if style is not None else None
+    inherited, seen = {}, set()
+    while current and current not in seen:
+        seen.add(current)
+        definition = styles.get(current, {})
+        for key, value in definition.get("props", {}).items():
+            inherited.setdefault(key, value)
+        current = definition.get("based")
+    for name in ("b", "i", "u", "strike", "dstrike", "vertAlign", "vanish", "webHidden"):
+        node = rpr.find(f"{W}{name}") if rpr is not None else None
+        if node is not None:
+            inherited[name] = node.get(f"{W}val") or "1"
+    return inherited
+
+
+def _enabled(value):
+    return value is not None and value.lower() not in ("0", "false", "off", "none")
+
+
+def escape_markdown(text):
+    return re.sub(r"([\\`*_\[\]()<>~=#!.+|:])", r"\\\1", text)
+
+
+def image_filename(number, source):
+    name = re.sub(r"[^A-Za-z0-9._-]+", "_", posixpath.basename(source)).strip("._")
+    return f"{number:02d}-{name or 'image.png'}"
 
 
 def load_quote_styles(z):
@@ -448,24 +504,17 @@ def _wrap_inline_style(text, open_mark, close_mark):
     return "\n".join(wrap_line(seg) for seg in text.split("\n"))
 
 
-def para_text(p, links=None):
-    """段内 run → 行内 Markdown（粗体→**、下划线→<u>、删除线→~~）。"""
-    links = links or {}
+def para_text(p, links=None, run_styles=None):
+    """段内 run → 行内 Markdown（粗体→**、斜体→*、下划线→<u>、删除线→~~）。"""
+    links, run_styles = links or {}, run_styles or {}
     out = []
     run_links = {id(run): links.get(h.get(f"{R}id"), "")
                  for h in p.iter(f"{W}hyperlink") for run in h.iter(f"{W}r")}
     for r_el in p.iter(f"{W}r"):
-        rpr = r_el.find(f"{W}rPr")
-        bold = rpr is not None and rpr.find(f"{W}b") is not None \
-            and (rpr.find(f"{W}b").get(f"{W}val") or "1") not in ("0", "false")
-        underline = rpr is not None and rpr.find(f"{W}u") is not None \
-            and rpr.find(f"{W}u").get(f"{W}val") != "none"
-        strike = False
-        if rpr is not None:
-            for st_tag in ("strike", "dstrike"):
-                st_el = rpr.find(f"{W}{st_tag}")
-                if st_el is not None and (st_el.get(f"{W}val") or "1") not in ("0", "false"):
-                    strike = True
+        properties = run_properties(r_el, run_styles)
+        bold, italic = _enabled(properties.get("b")), _enabled(properties.get("i"))
+        underline = properties.get("u") is not None and properties["u"].lower() != "none"
+        strike = _enabled(properties.get("strike")) or _enabled(properties.get("dstrike"))
         text = "".join(
             (node.text or "") if node.tag == f"{W}t"
             else "\n" if node.tag == f"{W}br"
@@ -474,8 +523,11 @@ def para_text(p, links=None):
         )
         if not text:
             continue
+        text = escape_markdown(text)
         if strike:
             text = _wrap_inline_style(text, "~~", "~~")
+        if italic:
+            text = _wrap_inline_style(text, "*", "*")
         if bold:
             text = _wrap_inline_style(text, "**", "**")
         if underline:
@@ -485,9 +537,6 @@ def para_text(p, links=None):
             text = _wrap_inline_style(text, "[", f"]({url})")
         out.append(text)
     joined = "".join(out)
-    joined = re.sub(r"\*\*\*\*", "", joined)
-    joined = re.sub(r"~~~~", "", joined)
-    joined = re.sub(r"</u><u>", "", joined)
     return joined
 
 
@@ -503,18 +552,25 @@ def image_alt(p, rid):
     return ""
 
 
-def validate_body(z, body, links, media_of, style_numpr=None):
+def validate_body(z, body, links, media_of, style_numpr=None, run_styles=None):
     """写出前定位所有不可保真的结构；返回空列表才允许继续。"""
-    style_numpr = style_numpr or {}
+    style_numpr, run_styles = style_numpr or {}, run_styles or {}
     unsupported = {"txbxContent", "altChunk", "footnoteReference", "endnoteReference",
                    "gridSpan", "vMerge", "ins", "del", "fldChar", "chart", "diagram",
-                   "pict", "object", "oMath", "sdt"}
+                   "pict", "object", "oMath", "sdt", "fldSimple", "instrText", "sym", "softHyphen", "noBreakHyphen", "ruby", "moveFrom", "moveTo"}
     names = set(z.namelist())
     problems = []
     for index, el in enumerate(body, 1):
         tags = {node.tag.split("}")[-1] for node in el.iter()}
         bad = sorted(tags & unsupported)
         if el.tag == f"{W}p":
+            for run in el.iter(f"{W}r"):
+                props = run_properties(run, run_styles)
+                has_text = any((node.text or "") for node in run.iter(f"{W}t"))
+                if has_text and (_enabled(props.get("vanish")) or _enabled(props.get("webHidden"))):
+                    bad.append("隐藏文字（请明确并入正文或删除）")
+                if has_text and props.get("vertAlign") in ("superscript", "subscript"):
+                    bad.append("上标/下标（Markdown 目标无法保真）")
             try:
                 numbering_info = resolve_numpr(el, style_numpr)
                 if numbering_info is not None:
@@ -522,7 +578,7 @@ def validate_body(z, body, links, media_of, style_numpr=None):
                         bad.append("编号列表项含图片（当前无法保证图片与编号项的顺序）")
                     if list(el.iter(f"{W}br")):
                         bad.append("编号列表项含手动换行（请拆分为独立列表项或子列表）")
-                    if not para_text(el, links).strip():
+                    if not para_text(el, links, run_styles).strip():
                         bad.append("空编号列表项")
             except ValueError as error:
                 bad.append(str(error))
@@ -558,11 +614,11 @@ def validate_body(z, body, links, media_of, style_numpr=None):
     return problems
 
 
-def notes_with_text(z):
+def parts_with_text(z, pattern):
     """列出含正文的脚注、尾注或批注部件；这些不能被静默丢弃。"""
     found = []
     for name in z.namelist():
-        if not re.match(r"word/(?:footnotes|endnotes|comments).*\.xml$", name):
+        if not re.match(pattern, name):
             continue
         try:
             root = ET.fromstring(z.read(name))
@@ -573,6 +629,10 @@ def notes_with_text(z):
     return found
 
 
+def notes_with_text(z):
+    return parts_with_text(z, r"word/(?:footnotes|endnotes|comments).*\.xml$")
+
+
 def plan_images(z, body, img_dir, media_of):
     """先读完并检查全部图片，再允许任何文件写入，避免半成品覆盖。"""
     planned = []
@@ -581,9 +641,10 @@ def plan_images(z, body, img_dir, media_of):
             src = media_of.get(blip.get(f"{R}embed"))
             if not src:
                 continue
-            target = os.path.join(img_dir, f"{len(planned) + 1:02d}-" + os.path.basename(src))
+            target = os.path.join(img_dir, image_filename(len(planned) + 1, src))
             data = z.read(src)
-            if os.path.exists(target):
+            output_path(target)
+            if os.path.exists(target) and not os.path.islink(target):
                 with open(target, "rb") as existing:
                     if existing.read() != data:
                         raise ValueError(f"输出图片同名不同内容，拒绝覆盖：{target}")
@@ -596,31 +657,30 @@ def write_images(out_dir, img_dir, planned):
     if planned:
         os.makedirs(img_dir, exist_ok=True)
     for target, data in planned:
-        with open(target, "wb") as output:
-            output.write(data)
+        atomic_write(target, data)
 
 
-def table_lines(table, links):
+def table_lines(table, links, run_styles=None):
     """普通表格保住行列；复杂表格已在 validate_body 拦截。"""
     source_rows = table.findall(f"{W}tr")
     if not source_rows:
         return []
     rows = []
     for row in source_rows:
-        cells = [" / ".join(para_text(p, links) for p in cell.findall(f"{W}p"))
-                 .strip().replace("|", "\\|") or " "
+        cells = [" / ".join(para_text(p, links, run_styles) for p in cell.findall(f"{W}p"))
+                 .strip() or " "
                  for cell in row.findall(f"{W}tc")]
         rows.append("| " + " | ".join(cells) + " |")
     columns = len(source_rows[0].findall(f"{W}tc"))
     return [rows[0], "|" + "---|" * columns, *rows[1:], ""]
 
 
-def paragraph_lines(paragraph, heading_of, media_of, links, image_start, list_info=None, quote_of=None):
+def paragraph_lines(paragraph, heading_of, media_of, links, image_start, list_info=None, quote_of=None, run_styles=None):
     """返回 Markdown 行、图片序号、人工核对提示与文字类别。"""
     quote_of = quote_of or set()
     lines, notices = [], []
     blips = list(paragraph.iter(f"{A}blip"))
-    text = para_text(paragraph, links).strip()
+    text = para_text(paragraph, links, run_styles).strip()
     if list_info and blips:
         raise ValueError("Word 列表项含图片；当前无法保证图片与编号项的阅读顺序，已阻断转换")
     if list_info and "\n" in text:
@@ -636,7 +696,7 @@ def paragraph_lines(paragraph, heading_of, media_of, links, image_start, list_in
         if not src:
             continue
         image_number += 1
-        filename = f"{image_number:02d}-" + os.path.basename(src)
+        filename = image_filename(image_number, src)
         alt = image_alt(paragraph, rid).replace("[", "(").replace("]", ")").replace("\n", " ")
         lines.extend([f"![{alt}](images/{filename})", ""])
         if alt:
@@ -678,7 +738,8 @@ def paragraph_lines(paragraph, heading_of, media_of, links, image_start, list_in
                 lines.append("> " + qline.strip())
         category = "paragraph"
     else:
-        lines.append(text)
+        # Literal Word text must not become a Markdown heading, directive or fence.
+        lines.append(re.sub(r"^(#{1,6}\s|>|:::|```|~~~)", r"\\\1", text))
         category = "paragraph"
     # Do not put blank lines between list items: that would restart the Markdown block.
     if category != "list":
@@ -702,6 +763,9 @@ def extract(docx_path, out_md):
                 heading_of = load_styles(z)
                 quote_of = load_quote_styles(z)
                 style_numpr = load_style_numpr(z)
+                run_styles = load_run_styles(z)
+                if len(set(z.namelist())) != len(z.namelist()):
+                    raise ValueError("DOCX 含重复 ZIP 条目，拒绝歧义解析")
                 numbering = load_numbering(z)
                 media_of = load_rels(z)
                 links = load_links(z)
@@ -713,7 +777,7 @@ def extract(docx_path, out_md):
             if body is None:
                 print("✗ docx 缺少正文 body", file=sys.stderr)
                 return 1
-            problems = validate_body(z, body, links, media_of, style_numpr)
+            problems = validate_body(z, body, links, media_of, style_numpr, run_styles)
             if problems:
                 print("✗ 转换会丢失语义，未写出成稿；请先在 Word 展平或另附材料：\n"
                       + "\n".join(problems), file=sys.stderr)
@@ -728,11 +792,11 @@ def extract(docx_path, out_md):
                       + "\n  ".join(notes), file=sys.stderr)
                 return 1
 
-            furniture = [name for name in z.namelist()
-                         if re.match(r"word/(?:header|footer).*\.xml$", name)]
+            furniture = parts_with_text(z, r"word/(?:header|footer).*\.xml$")
             if furniture:
-                print("  注意：仅提取正文；页眉页脚未转换，请人工核对是否含正文信息："
-                      + ", ".join(furniture), file=sys.stderr)
+                print("✗ 页眉/页脚含文字或页码，无法无损并入正文；请先在 Word 中处理：\n  "
+                      + "\n  ".join(furniture), file=sys.stderr)
+                return 1
 
             # Resolve every list before touching output paths. Unsupported custom formats,
             # broken numbering references, and skipped levels therefore cannot leave a
@@ -765,6 +829,12 @@ def extract(docx_path, out_md):
                 print(f"✗ Word 列表无法无损转换，未写出成稿：{error}", file=sys.stderr)
                 return 1
 
+            if os.path.realpath(out_md) == os.path.realpath(docx_path):
+                raise ValueError("输出不得覆盖输入 DOCX")
+            if os.path.splitext(out_md)[1].lower() != ".md":
+                raise ValueError("转换输出必须使用 .md 扩展名")
+            output_path(out_md)
+            report_path = output_path(os.path.splitext(out_md)[0] + ".conversion.json")
             out_dir = os.path.dirname(os.path.abspath(out_md)) or "."
             img_dir = os.path.join(out_dir, "images")
             try:
@@ -783,7 +853,7 @@ def extract(docx_path, out_md):
                         if previous_list_info and lines and lines[-1] != "":
                             lines.append("")
                         previous_list_info = None
-                        converted = table_lines(element, links)
+                        converted = table_lines(element, links, run_styles)
                         if converted:
                             lines.extend(converted)
                             tables += 1
@@ -797,7 +867,7 @@ def extract(docx_path, out_md):
 
                     converted, image_number, notices, category = paragraph_lines(
                         element, heading_of, media_of, links, image_number,
-                        list_info=list_info, quote_of=quote_of)
+                        list_info=list_info, quote_of=quote_of, run_styles=run_styles)
                     lines.extend(converted)
                     notices_all.extend(notices)
                     if category:
@@ -812,8 +882,15 @@ def extract(docx_path, out_md):
             # No numbering or structural validation remains after this point. Images and
             # Markdown are written only after the entire source has been converted.
             write_images(out_dir, img_dir, planned)
-            with open(out_md, "w", encoding="utf-8") as output:
-                output.write(markdown)
+            atomic_write(out_md, markdown)
+            report = {"status": "REVIEW" if notices_all or image_number else "PASS",
+                      "scope": "结构与文字提取，不是视觉样式复刻；图片职责/来源仍须编辑",
+                      "source_sha256": sha256(docx_path), "markdown_sha256": sha256(out_md),
+                      "counts": counts, "tables": tables, "notices": notices_all,
+                      "images": [{"path": os.path.relpath(path, out_dir).replace(os.sep, "/"),
+                                  "sha256": hashlib.sha256(data).hexdigest(),
+                                  "role": "UNVERIFIED", "provenance": "UNVERIFIED"} for path, data in planned]}
+            atomic_write(report_path, json.dumps(report, ensure_ascii=False, indent=2) + "\n")
     except (OSError, KeyError, ValueError, zipfile.BadZipFile, ET.ParseError) as error:
         print(f"✗ docx 抽取失败：{error}", file=sys.stderr)
         return 1
@@ -826,6 +903,7 @@ def extract(docx_path, out_md):
     if image_number:
         print(f"  ⚠ 抽出的 {image_number} 张图没有职责：进 render 前先补成 ![说明](路径 \"职责\")，"
               "否则 Gate 2 会判「必须改」", file=sys.stderr)
+    print(f"  转换记录 → {report_path}（REVIEW 不等于编辑/发布验收）")
     return 0
 
 def main():

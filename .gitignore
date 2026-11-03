@@ -4,7 +4,9 @@ __pycache__/
 
 # 凭证与账号相关的本地状态
 config.json
-.wechat_material_cache.json
+.wechat_material_cache*.json
+.wechat-stage-*/
+.wechat-write-*
 .wechat_publish_audit.jsonl
 
 # 交付物与临时产物

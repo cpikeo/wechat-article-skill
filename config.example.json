@@ -1,6 +1,6 @@
 {
   "_说明": {
-    "_": "复制本文件为 config.json 再填写；config.json 已 gitignore，不会提交。优先级：命令行 > --meta > config.json，空字符串视同未配置。",
+    "_": "V11：复制本文件为 config.json 再填写；config.json 已 gitignore，不会提交。优先级：命令行 > --meta > config.json，空字符串视同未配置。",
     "appid": "公众号 AppID：公众平台 → 设置与开发 → 开发接口管理。联网命令必填；--preflight 不需要凭证。",
     "secret": "公众号 AppSecret：同上页面获取。必填；只写进 config.json，不要提交到仓库或写进文章目录。",
     "author": "作者兜底：文章 frontmatter/meta.json 里有 author 时用文章的，没有才用这里。≤16 字，超出拒绝上行。",
