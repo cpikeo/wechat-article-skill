@@ -1,66 +1,48 @@
 <!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1"><title>__TITLE__ · 移动预览</title>
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>__TITLE__ · 预览</title>
 <style>
-html,body{margin:0;background:#E9E7E2}
+html,body{margin:0;background:#F2F1ED}
 body{font-family:-apple-system,BlinkMacSystemFont,'PingFang SC','Hiragino Sans GB','Microsoft YaHei',sans-serif;-webkit-font-smoothing:antialiased;color:#24231F}
-.bar{position:sticky;top:0;z-index:9;display:flex;justify-content:space-between;align-items:center;gap:10px 14px;flex-wrap:wrap;padding:10px 16px;background:#FCFCFA;border-bottom:1px solid #E3E0D8}
+.bar{position:sticky;top:0;z-index:9;display:flex;justify-content:space-between;align-items:center;gap:10px 14px;flex-wrap:wrap;padding:10px 16px;background:#FCFCFA;border-bottom:1px solid #E7E5DF}
 .bar .t{font-size:12px;color:#6C6961;letter-spacing:.02em;line-height:1.5}
 .bar .t b{color:#24231F;font-weight:600}
 .ctl{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-.seg{display:inline-flex;border:1px solid #DCD8CF;border-radius:6px;overflow:hidden;background:#fff}
+.seg{display:inline-flex;border:1px solid #E0DDD5;border-radius:6px;overflow:hidden;background:#fff}
 .seg button{border:0;background:#fff;color:#6C6961;font-size:11.5px;padding:5px 9px;cursor:pointer;font-variant-numeric:tabular-nums}
-.seg button+button{border-left:1px solid #EDEAE3}
+.seg button+button{border-left:1px solid #EFEDE7}
 .seg button[aria-pressed="true"]{background:#24231F;color:#fff}
 .btn{border:0;border-radius:6px;background:#24231F;color:#fff;font-size:12px;padding:7px 13px;cursor:pointer;white-space:nowrap}
-.btn.ghost{background:#fff;color:#3F3B35;border:1px solid #DCD8CF}
-.stage{padding:22px 12px 4px;display:flex;justify-content:center}
-.phone{width:375px;max-width:100%;background:#fff;border-radius:22px;box-shadow:0 12px 34px rgba(30,28,24,.14);overflow:hidden;transition:width .18s ease}
-.wxnav{display:flex;align-items:center;justify-content:space-between;padding:10px 14px 8px;border-bottom:1px solid #F0EEE9}
+.stage{padding:22px 12px 40px;display:flex;justify-content:center}
+.phone{width:375px;max-width:100%;background:#fff;border-radius:22px;box-shadow:0 12px 34px rgba(30,28,24,.12);overflow:hidden;transition:width .18s ease}
+.wxnav{display:flex;align-items:center;justify-content:space-between;padding:10px 14px 8px;border-bottom:1px solid #F2F0EB}
 .wxnav .ic{color:#4B4842;font-size:17px;line-height:1}
-.wxnav .cap{font-size:12.5px;color:#8A867D;letter-spacing:.04em}
-.scr{padding:14px 18px 26px;background:#fff}
+.wxnav .cap{font-size:12.5px;color:#6C6961;letter-spacing:.04em}
+.scr{padding:14px 18px 32px;background:#fff}
 .nt{margin:0 0 18px}
 .nt h1{margin:0 0 10px;font-size:22px;line-height:1.42;font-weight:700;color:#1B1B1B;letter-spacing:-.01em;line-break:strict;overflow-wrap:anywhere;word-break:normal}
-.nt .au{margin:0;font-size:13px;line-height:1.55;color:#9A9A9A}
+.nt .au{margin:0;font-size:13px;line-height:1.55;color:#666666}
 .nt .au b{color:#576B95;font-weight:500;margin-right:10px}
 .wx-title{margin:2px 0 10px;font-size:22px;line-height:1.42;font-weight:700;color:#1B1B1B;letter-spacing:-.01em;line-break:strict;overflow-wrap:anywhere;word-break:normal}
-.wx-meta{margin:0 0 16px;font-size:13px;color:#9A9A9A;line-height:1.55}
+.wx-meta{margin:0 0 16px;font-size:13px;color:#666666;line-height:1.55}
 .wx-meta b{color:#576B95;font-weight:500;margin-right:10px}
-.wx-foot{margin-top:28px;padding-top:14px;border-top:1px solid #EFEDE8;display:flex;justify-content:space-between;gap:10px;color:#A6A29A;font-size:12px;line-height:1.6}
-.badge{display:inline-block;font-size:10.5px;letter-spacing:.08em;color:#8A867D;border:1px solid #DDD9D0;border-radius:3px;padding:0 4px;margin-left:6px;vertical-align:1px}
-.note{max-width:430px;margin:14px auto 44px;padding:0 18px;font-size:12px;line-height:1.8;color:#7A756C}
-.note b{color:#4B4842;font-weight:600}
-.cv{max-width:430px;margin:18px auto 0;background:#FCFCFA;border:1px solid #E7E4DC;padding:16px;box-sizing:border-box}
-.cv.hl{background:#F1EFE7}
-.cv h4{margin:0 0 8px;font-size:12px;color:#746F66;font-weight:600;letter-spacing:.03em}
-.cv img{display:block;width:100%;background:#F0EEE9}
-.as{margin-top:12px;padding-top:10px;border-top:1px solid #EFEDE9}
-.hint{margin:12px 0 0;font-size:12px;line-height:1.75;color:#746F66}
 </style></head>
 <body>
 <div class="bar">
-  <span class="t"><b>__THEME__</b> · 移动预览 · 微信界面为模拟<span class="badge">SIMULATED</span></span>
+  <span class="t"><b>__THEME__</b> · 移动预览</span>
   <span class="ctl">
     <span class="seg" id="vw">__VIEWPORTS__</span>
     <span class="seg" id="ff"><button type="button" data-f="ios" aria-pressed="true">iOS 字体</button><button type="button" data-f="android" aria-pressed="false">Android 字体</button></span>
     <button class="btn" type="button" onclick="cp(this)">复制正文</button>
-    <button class="btn ghost" type="button" onclick="manifest()">素材清单</button>
   </span>
 </div>
 <div class="stage"><div class="phone" id="ph">
-  <div class="wxnav"><span class="ic">‹</span><span class="cap">公众号<span class="badge">模拟</span></span><span class="ic">⋯</span></div>
-  <div class="scr" id="scr">__NATIVE__<div id="c">__BODY__</div>
-    <div class="wx-foot"><span>阅读 10万+<span class="badge">模拟</span></span><span>点赞　转发　在看　留言</span></div>
-  </div>
+  <div class="wxnav"><span class="ic">‹</span><span class="cap">公众号</span><span class="ic">⋯</span></div>
+  <div class="scr" id="scr">__NATIVE__<div id="c">__BODY__</div></div>
 </div></div>
-<div class="note"><b>模拟范围</b>　宽度 __WIDTH_HINT__ 的正文栏、标题与作者行位次、底部操作栏位置、iOS 与 Android 字体栈。
-<b>不模拟</b>　微信客户端的样式清洗、后台编辑器重开效果、系统字号调整、深色模式、真机字体渲染与封面真实裁切。以上一律记为 UNVERIFIED，直至真机核对。
-<b>复制</b>　只复制正文区，不含标题模拟、底部操作栏与本说明；本地图片以路径占位，须在公众号素材中另传。</div>
-__COVER____ASSETS__
 <script>
 var FONTS=__FONTMAP__;
 function setFont(mode){
-  var list=document.querySelectorAll('#c *');
+  var list=document.querySelectorAll('#c, #c *');
   for(var i=0;i<list.length;i++){
     var el=list[i], st=el.getAttribute('style');
     if(!st||st.indexOf('font-family')<0) continue;
@@ -104,12 +86,6 @@ async function cp(btn){
     }
   }catch(e){}
   flash(btn,fallbackCopy()?'已复制正文':'请手动选择正文复制');
-}
-function manifest(){
-  var el=document.getElementById('af');
-  if(!el){flash(document.querySelector('.btn.ghost'),'本文无正文图片');return}
-  el.scrollIntoView({behavior:'smooth',block:'start'});
-  el.classList.add('hl');setTimeout(function(){el.classList.remove('hl')},1800);
 }
 </script>
 </body></html>

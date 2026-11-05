@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Editorial Intelligence V11：可定位、可复现的编辑审计层。
+"""Editorial Intelligence V14：可定位、可复现的编辑审计层。
 
 边界：
 - 本模块不做语义判决、不证实外部事实、不自动改写文字。
@@ -1535,6 +1535,6 @@ def render_report(result, facts_diff=None, ledger_problems=None, voice_diff=None
         lines += ["", "## 修改台账问题", ""] + [f"- {p}" for p in ledger_problems]
     lines += ["", "## 未验证事项（UNVERIFIED）", "",
               "- 外部独立信源逐项事实核真：UNVERIFIED",
-              "- 标题语义兑现与审美成品质感：UNVERIFIED（需编辑与四宽度截图通读）",
+              "- 标题语义兑现与审美成品质感：UNVERIFIED（需编辑与五宽度截图通读）",
               "- 微信公众号 API 草稿回读与真机客户端渲染：UNVERIFIED"]
     return "\n".join(lines) + "\n"

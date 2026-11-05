@@ -225,7 +225,7 @@ def rewrite_local_images(html, access_token, base_dir=".", image_bytes=None):
 # 并提供 get_materialcount / batchget_material / del_material 做对账与清理。
 # 临时素材（media/upload，3 天过期）不能用于草稿封面，本流水线不接入。
 
-MATERIAL_CACHE_DEFAULT = ".wechat_material_cache_v11.json"
+MATERIAL_CACHE_DEFAULT = ".wechat_material_cache.json"
 
 
 def get_material(access_token, media_id):
@@ -455,7 +455,7 @@ def prepare_submission(html_path, settings, meta_path=None):
     if not isinstance(side, dict):
         raise ValueError("meta 必须是 JSON 对象")
     if side.get("integrity_version") != 3 or side.get("skill_version") != SKILL_VERSION:
-        raise ValueError("旧版渲染记录不能上行；请用 V11 重渲染")
+        raise ValueError("旧版渲染记录不能上行；请用 V14 重渲染")
     if side.get("theme_config_sha256") != THEME_CONFIG_SHA256 or side.get("renderer_sha256") != RENDERER_SHA256:
         raise ValueError("主题或渲染代码已变化；请重渲染，不能沿用旧验收")
     if side.get("body_sha256") != hashlib.sha256(raw_html).hexdigest():
@@ -730,10 +730,16 @@ def main():
         cfg = load_config(args.config)
     except (OSError, ValueError) as e:
         ap.error(str(e))
-    if args.meta:
-        if args.html and os.path.realpath(args.meta) != os.path.realpath(os.path.splitext(args.html)[0] + ".meta.json"):
+    side = {}
+    meta_path = args.meta
+    if args.html and not meta_path:
+        candidate = os.path.splitext(args.html)[0] + ".meta.json"
+        if os.path.isfile(candidate):
+            meta_path = candidate
+    if meta_path:
+        if args.html and os.path.realpath(meta_path) != os.path.realpath(os.path.splitext(args.html)[0] + ".meta.json"):
             ap.error("--meta 必须是正文对应的同名 sidecar，避免字段与验收记录错配")
-        with open(args.meta, encoding="utf-8") as f:
+        with open(meta_path, encoding="utf-8") as f:
             side = json.load(f)
         if not isinstance(side, dict):
             ap.error("meta 必须是JSON对象")

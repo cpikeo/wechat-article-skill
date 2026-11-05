@@ -340,9 +340,11 @@ def check(html):
 
 
 def main():
-    if len(sys.argv) != 2:
-        sys.exit("用法：python3 scripts/check.py 正文.html")
-    with open(sys.argv[1], encoding="utf-8") as f:
+    import argparse
+    ap = argparse.ArgumentParser(description="Gate 1：公众号正文 HTML 静态契约检查")
+    ap.add_argument("html", help="渲染器产出的正文 HTML")
+    args = ap.parse_args()
+    with open(args.html, encoding="utf-8") as f:
         must, should = check(f.read())
     for level, msgs in (("必须改", must), ("建议改", should)):
         for msg in msgs:

@@ -35,7 +35,7 @@ python3 scripts/publish.py --delete-material <MEDIA_ID> --confirm-delete-media-i
 
 - **字段上限硬门禁**：标题 32 字、作者 16 字、摘要 120 字；超限直接拒绝上行，绝不静默截断。
 - **防陈旧稿侧车校验**：预检强制要求同名 `.meta.json`，核对 `integrity_version=3`、`skill_version`、`renderer_sha256`、`theme_config_sha256`、源 Markdown SHA-256、正文 HTML SHA-256 及全部正文图/封面 SHA-256；任一变更均要求重新运行 `render.py`。上行使用已冻结字节，不在上传时重新读取可能已变化的文件。
-- **封面缓存验活**：永久封面按账号哈希 + 内容 SHA-256 缓存在 `.wechat_material_cache_v11.json`（权限 `0600`，不存明文账号/凭证），复用前调用 `get_material` 验活；仅 `40007` 失效重传，凭证/权限错误直接终止。
+- **封面缓存验活**：永久封面按账号哈希 + 内容 SHA-256 缓存在 `.wechat_material_cache.json`（权限 `0600`，不存明文账号/凭证），复用前调用 `get_material` 验活；仅 `40007` 失效重传，凭证/权限错误直接终止。
 - **草稿回读阻断防重**：创建草稿后立即调用 `draft/get` 核对 `title`、`content`、`thumb_media_id` 及已上行的 `author`、`digest`、`content_source_url`；回读失败或字段不一致时立即停止后续发布并打印已创建的 `media_id`，防止重复建稿。
 
 ## 官方接口参考与限制
