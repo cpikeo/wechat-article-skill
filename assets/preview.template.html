@@ -108,19 +108,23 @@ function fallbackCopy(){
 }
 async function cp(btn){
   var html=bodyHtml(),text=bodyText();
+  var local=document.getElementById('c').querySelectorAll('img[data-local]').length;
+  var okMsg=local?('已复制·'+local+' 张图需随发布上传'):'已复制正文';
   try{
     if(window.ClipboardItem&&navigator.clipboard&&navigator.clipboard.write){
       await navigator.clipboard.write([new ClipboardItem({'text/html':new Blob([html],{type:'text/html'}),'text/plain':new Blob([text],{type:'text/plain'})})]);
-      flash(btn,'已复制正文');return;
+      flash(btn,okMsg);return;
     }
   }catch(e){}
-  flash(btn,fallbackCopy()?'已复制正文':'请手动选择正文复制');
+  flash(btn,fallbackCopy()?okMsg:'请手动选择正文复制');
 }
 if(COVER&&COVER.src){
   ['cw','cs'].forEach(function(id){document.getElementById(id).src=COVER.src});
   ['cw','cs'].forEach(function(id){document.getElementById(id).style.objectPosition=COVER.focal||'50% 50%'});
   var n=document.getElementById('cn');
-  n.innerHTML='取景焦点 <b>'+(COVER.focal||'50% 50%')+'</b>'+(COVER.note?' · '+COVER.note:'');
+  n.textContent='取景焦点 ';
+  var fb=document.createElement('b');fb.textContent=COVER.focal||'50% 50%';n.appendChild(fb);
+  if(COVER.note)n.appendChild(document.createTextNode(' · '+COVER.note));
 }else{
   document.getElementById('cov').hidden=true;
   document.querySelector('.btn.ghost').hidden=true;

@@ -239,7 +239,11 @@ def doc_len(blocks):
 
 
 def first_screen(meta, blocks):
-    """记录首个正文段落前的入口层；weight > 1 提示多入口抢首屏重心。"""
+    """记录首个正文段落前的入口层；weight 数的是「抢注意力的独立单元」。
+
+    刊头（栏目行 + 摘要行 + 导语）是一件事的三个部分，读者读作一个入口，
+    不能算成三个重入口；只有正文图与重点句是真正与之并列的独立单元。
+    """
     kinds = [b[0] for b in blocks]
     stop = next((i for i, k in enumerate(kinds) if k == "p"), len(kinds))
     layers = [k for k in kinds[:stop] if k in {"lead", "img", "note", "data", "bars", "table", "quote", "peak"}]
@@ -247,7 +251,8 @@ def first_screen(meta, blocks):
         layers.insert(0, "deck")
     if meta.get("kicker"):
         layers.insert(0, "kicker")
-    weight = sum(1 for k in layers if k in ("deck", "lead", "img", "peak"))
+    header = any(k in layers for k in ("kicker", "deck", "lead"))
+    weight = (1 if header else 0) + sum(1 for k in layers if k in ("img", "peak"))
     return {"layers": layers, "weight": weight}
 
 
@@ -717,13 +722,13 @@ def _affirmative_cues(text, pattern):
 
 
 def _has_doc_provenance(meta, blocks):
-    """全文是否具备明确的来源/口径声明（frontmatter.source 或带链接/年份的来源 note）。"""
+    """全文是否具备可核的出处声明：只有带链接或具名机构/通报的来源才算，年份不算出处。"""
     if re.search(r"https?://\S+", meta.get("source", "")):
         return True
     for k, v in blocks:
         if k == "note":
             joined = (v[0] or "") + " " + " ".join(v[1])
-            if re.search(r"https?://\S+|\d{4}", joined):
+            if re.search(r"https?://\S+", joined) or NAMED_SOURCE.search(joined):
                 return True
     return False
 
@@ -737,31 +742,44 @@ def promise_ledger(title, blocks, thesis=""):
     words = {"一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9, "十": 10}
     vague = ("国家", "城市", "公司", "人", "行业", "地区", "时代", "年份", "月", "周", "小时",
              "团队", "部门", "作者", "编辑", "读者", "版本", "文件")
-    m = re.search(r"([二两三四五六七八九十]|\d{1,2})\s*(个|项|种|步|条|点|问|招|件事)([^，。！？、\s]{0,2})?", text)
+    m = re.search(r"([二两三四五六七八九十]|\d{1,2})\s*(个|项|种|步|条|点|问|招|件事)([\u4e00-\u9fff]{0,4})?", text)
     if m and m.group(2) == "个" and m.group(3) and m.group(3).startswith(vague):
         m = None
     if m:
         raw = m.group(1)
         expected = int(raw) if raw.isdigit() else words[raw]
-        ordered_lists = [len(v["items"]) for k, v in blocks if k == "list" and v["ordered"]]
+        noun = m.group(3) or ""                                    # 「三种工作」→ 工作
+        list_nodes = [v for k, v in blocks if k == "list" and v["ordered"]]
+        ordered_lists = [len(node["items"]) for node in list_nodes]
         ordered = max(ordered_lists, default=0)
-        noun = re.search(r"方法|步骤|原因|问题|建议|误区|原则|技巧|理由|教训", m.group(0) + text[m.end():m.end() + 4])
+        list_text = " ".join(t for node in list_nodes for t in _list_node_text(node))
         explicit = [
             h for h in heads
             if re.match(r"^(?:第?[一二三四五六七八九十\d]+[、．.：:]?|[（(][一二三四五六七八九十\d]+[）)]|"
                         r"(?:方法|步骤|原因|问题|建议|误区|原则|技巧|理由|教训)[一二三四五六七八九十\d]+)", h)
-            or (noun and noun.group() in h and re.search(r"[一二三四五六七八九十\d]", h))
         ]
+        # 数量相等本身不是兑现证据：三节正文恰好等于「三个」只是巧合。只有当分项标题
+        # 或列表项能在字面上锚定到标题承诺的那个名词时，才承认它兑现了。
+        heads_anchored = bool(noun) and len(noun) >= 2 and noun in " ".join(heads)
+        lists_anchored = heads_anchored or (bool(noun) and len(noun) >= 2 and noun in list_text)
         candidates = (
             ([(len(explicit), "explicit")] if explicit else [])
-            + ([(len(heads), "heads")] if heads else [])
-            + [(n, "list") for n in sorted(set(ordered_lists)) if n]
+            + ([(len(heads), "heads")] if heads and heads_anchored else [])
+            + [(n, "list") for n in sorted(set(ordered_lists)) if n and lists_anchored]
         )
         hit = next((c for c in candidates if c[0] == expected), None)
         observed = hit[0] if hit else (len(explicit) or len(heads) or ordered)
+        if hit:
+            status = "fulfilled"
+        elif not observed:
+            status = "absent"
+        elif observed == expected:
+            status = "needs-judgment"      # 数量对得上，但没有可定位的分项结构
+        else:
+            status = "mismatch"
         out.append({
             "kind": "count", "promise": m.group(0), "expected": expected, "observed": observed,
-            "status": "fulfilled" if hit else ("absent" if not observed else "mismatch"),
+            "status": status,
             "locations": ([f"H2「{h}」" for h in (explicit or heads)] if hit and hit[1] != "list"
                           else ([f"有序列表 {hit[0] if hit else ordered} 项"] if (hit or ordered) else [])),
             "verification": "structural_only",
@@ -877,6 +895,7 @@ def _scan_blocks(meta, blocks, sections, type_key):
     """单次扫描生成全部形态线索（mechanical）与段落级判断入口（judgment）。"""
     issues, paragraphs, seen = [], [], {}
     doc_provenance = _has_doc_provenance(meta, blocks)
+    first_prose_idx = next((idx for idx, (k, v) in enumerate(blocks) if k == "p" and plain(v).strip()), -1)
     last_prose_idx = max((idx for idx, (k, v) in enumerate(blocks) if k == "p" and plain(v).strip()), default=-1)
     template_hits = {name: [] for name in TEMPLATES}
     meta_hits, restate_blocks = [], []
@@ -970,8 +989,11 @@ def _scan_blocks(meta, blocks, sections, type_key):
 
         cliche_match = CLICHE.search(unquoted)
         if cliche_match:
-            _add(issues, "OPENING-CLICHE", "mechanical", "should", loc,
-                 "套语占据段落入口，未提供实质信息", "删去套语，直接亮出事实、场景或判断",
+            # 套语出现在段首是结构问题（占住了入口），出现在段落中段只是文字问题。
+            at_entry = block_no == first_prose_idx + 1 or (idx > 0 and blocks[idx - 1][0] in ("h2", "h3"))
+            _add(issues, "CLICHE", "mechanical", "should" if at_entry else "note", loc,
+                 "套语占据段首，未提供实质信息" if at_entry else "段中出现套语，多为过渡填空",
+                 "删去套语，直接亮出事实、场景或判断",
                  "把首屏和段首留给有效信息", f"命中套语：{cliche_match.group(0)}")
 
         absolute_sentence = next((sentence for sentence in _sentence_list(unquoted)
@@ -1402,6 +1424,16 @@ def _judgment_issues(meta, blocks, type_key, sections, gains):
                  "让读者按类型预期找到该找的东西",
                  f"章节标题与正文均未定位到{'、'.join(missing)}", needs="editor")
 
+    # 7) 重点句的位置：它是一句判断，不是版面的门框。紧贴章节标题时，读者会把它当小标题扫过去。
+    for idx, (kind, _value) in enumerate(blocks):
+        if kind != "peak":
+            continue
+        if idx and blocks[idx - 1][0] == "h2":
+            _add(issues, "PEAK-AS-HEADING", "judgment", "should", f"块 {idx + 1}",
+                 "重点句紧接章节标题，正在替这一节充当小标题",
+                 "把它移入该节中段作为论证的收口，或改写为 H3 明确层级",
+                 "避免一句判断被读成版面门框，章节与重点因此可以分辨", "上一块为 H2 标题", needs="editor")
+
     return issues
 
 
@@ -1414,11 +1446,14 @@ def _promise_issues(promises):
                  "在正文补齐该数值及其口径，或修改标题数值",
                  "确保标题数字承诺可逐字核对", f"标题含 {p['promise']}，正文未匹配")
         elif p["kind"] == "count" and p["status"] != "fulfilled":
-            _add(issues, "PROMISE-COUNT", "judgment", "should", "标题与全文",
-                 "标题的数量承诺未在 H2 或有序列表中直接对齐",
+            # 数量相等但找不到分项锚点时，脚本没有资格判「未兑现」——只提示人工核对位置。
+            graded = p["status"] in ("absent", "mismatch")
+            _add(issues, "PROMISE-COUNT", "judgment", "should" if graded else "note", "标题与全文",
+                 "标题的数量承诺未在编号标题或有序列表中直接对齐",
                  "通读正文确认分项是否已在段落内兑现；若缺项则补齐或收窄标题",
                  "防止标题夸大条数或读者难以定位分项",
-                 f"标题承诺 {p['expected']} 项；结构可见 {p['observed']} 项", needs="editor")
+                 f"标题承诺 {p['expected']} 项；结构可见 {p['observed']} 项"
+                 + ("，但没有标题或列表能在字面上对应这些分项" if not graded else ""), needs="editor")
         elif p["kind"] == "object" and p["status"] == "absent":
             _add(issues, "PROMISE-OBJECT", "judgment", "should", "标题与全文",
                  "标题点名的专名对象未以原名在正文出现",

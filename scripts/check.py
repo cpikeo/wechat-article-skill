@@ -47,9 +47,14 @@ PARENTS = {
 }
 
 HEX = r"#[0-9a-fA-F]{6}"
-SANS = "-apple-system,BlinkMacSystemFont,'PingFang SC','Hiragino Sans GB','Microsoft YaHei','Source Han Sans SC','Noto Sans CJK SC',sans-serif"
-SERIF = "'Songti SC','STSong','SimSun','Source Han Serif SC','Noto Serif CJK SC',serif"
-MONO = "'SF Mono',Menlo,Consolas,monospace"
+# 字体栈按「平台原生优先」排列：iOS 命中 PingFang，鸿蒙/小米命中自家系统字体，
+# 其余 Android 落到 Noto/Source Han。衬线族补足 Android 侧的中文衬线候选，
+# 否则 letter/ink/bone 的标题会在没有 Songti 的机器上静默退化成无衬线。
+SANS = ("-apple-system,BlinkMacSystemFont,'PingFang SC','HarmonyOS Sans SC','MiSans','Hiragino Sans GB',"
+        "'Microsoft YaHei','Source Han Sans SC','Noto Sans CJK SC','Noto Sans SC',sans-serif")
+SERIF = ("'Songti SC','STSong','Source Han Serif SC','Source Han Serif CN','Noto Serif CJK SC',"
+         "'Noto Serif SC','SimSun',serif")
+MONO = "'SF Mono',Menlo,Consolas,'Roboto Mono','Droid Sans Mono','Noto Sans Mono',monospace"
 FONT_FAMILIES = {SANS, SERIF, MONO}
 
 

@@ -346,30 +346,77 @@ def read_draft(access_token, media_id):
     return _post_json(f"{API_BASE}/draft/get?access_token={access_token}", {"media_id": media_id})
 
 
+# 微信写入草稿时会重写正文：把 ' 转成 &#39;、给图片补 data-src 并把 src 换成 mmbiz 域名、
+# 重排 alt、在没有外链权限的账号上整体剥掉 <a>、再插一段 display:none 的 mp-style-type。
+# 因此 content 不可能逐字节相等——逐字节比对的唯一结果是「草稿建好了但永远判 FAIL」。
+# 正确的核验口径是：文字逐字相同、图片数量相同、结构块数量相同；被重写的那几项单独记账。
+_HIDDEN_MP = re.compile(r"<p[^>]*display\s*:\s*none[^>]*>.*?</p>", re.S | re.I)
+_TAG = re.compile(r"<(/?)([a-zA-Z][a-zA-Z0-9]*)([^>]*)>")
+STRICT_BLOCKS = ("section", "p", "img", "table", "tr", "td", "th")
+ADVISORY_TAGS = ("a", "span", "strong")
+
+
+def _wechat_normalize(markup):
+    """抹平微信的写入期重写，只留下「文章本身」：文字、块结构、图片数量。"""
+    text = H.unescape(markup or "")
+    text = _HIDDEN_MP.sub("", text)
+    return re.sub(r"<img\b[^>]*?/?>", "<img>", text, flags=re.I)
+
+
+def _text_and_blocks(markup):
+    counts = {}
+    for closing, name, _ in _TAG.findall(markup):
+        if not closing:
+            counts[name.lower()] = counts.get(name.lower(), 0) + 1
+    text = re.sub(r"\s+", " ", _TAG.sub("", markup)).strip()
+    return text, counts
+
+
+def compare_content(expected_html, observed_html):
+    """归一化核验草稿正文；返回 (是否通过, 记账明细)。不比对图片地址与被改写后的属性。"""
+    want_text, want_blocks = _text_and_blocks(_wechat_normalize(expected_html))
+    got_text, got_blocks = _text_and_blocks(_wechat_normalize(observed_html))
+    block_diff = {name: [want_blocks.get(name, 0), got_blocks.get(name, 0)]
+                  for name in STRICT_BLOCKS if want_blocks.get(name, 0) != got_blocks.get(name, 0)}
+    detail = {
+        "text_chars_expected": len(want_text), "text_chars_observed": len(got_text),
+        "text_match": want_text == got_text, "block_diff": block_diff,
+        "image_count": [want_blocks.get("img", 0), got_blocks.get("img", 0)],
+        "rewritten": {name: [want_blocks.get(name, 0), got_blocks.get(name, 0)]
+                      for name in ADVISORY_TAGS if want_blocks.get(name, 0) != got_blocks.get(name, 0)},
+        "basis": "剔除微信自插的 mp-style-type、图片地址与属性后，逐字比对文字并比对块数量",
+    }
+    return detail["text_match"] and not block_diff, detail
+
+
 def verify_draft(data, title, content, thumb_media_id, author=None, digest=None, source_url=None):
     items = data.get("news_item", []) if isinstance(data, dict) else []
     if not items or not isinstance(items[0], dict):
         raise ValueError("草稿回读缺少 news_item")
     item = items[0]
-    checks = [("title", api_title(title)), ("content", content), ("thumb_media_id", thumb_media_id)]
-    if author:
-        checks.append(("author", author))
-    if digest:
-        checks.append(("digest", digest))
-    if source_url:
-        checks.append(("content_source_url", source_url))
-    return [name for name, expected in checks if item.get(name) != expected]
+    failed = [name for name, expected in (
+        ("title", api_title(title)), ("thumb_media_id", thumb_media_id),
+        ("author", author), ("digest", digest), ("content_source_url", source_url),
+    ) if expected is not None and expected != "" and item.get(name) != expected]
+    ok, detail = compare_content(content, item.get("content") or "")
+    if not ok:
+        failed.insert(0, "content")
+    return failed, detail
 
-
-# ---------- 5. 发布（须核对实际账号权限） ----------
 
 def write_readback_evidence(directory, media_id, data, expected):
-    """保存脱敏回读对照；只证明 API 字段，后台重开/手机端仍 UNVERIFIED。"""
+    """保存脱敏回读对照；只证明 API 字段与正文结构，后台重开/手机端仍 UNVERIFIED。"""
     if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", media_id or ""):
         raise ValueError("media_id 不能用作证据目录名")
     item = (data.get("news_item") or [{}])[0] if isinstance(data, dict) else {}
-    fields = {}
+    fields, content_detail = {}, None
     for name, want in expected.items():
+        if name == "content":
+            ok, content_detail = compare_content(want, item.get("content") or "")
+            fields[name] = {"match": ok, "expected_sha256": hashlib.sha256(str(want).encode()).hexdigest(),
+                            "observed_sha256": hashlib.sha256(str(item.get("content") or "").encode()).hexdigest(),
+                            "observed": None, "verification": "normalized"}
+            continue
         got = item.get(name)
         fields[name] = {"match": got == want, "expected_sha256": hashlib.sha256(str(want).encode()).hexdigest(),
                         "observed_sha256": hashlib.sha256(str(got).encode()).hexdigest(),
@@ -380,7 +427,8 @@ def write_readback_evidence(directory, media_id, data, expected):
     os.makedirs(root, exist_ok=True)
     payload = {"media_id": media_id, "time": datetime.now(timezone.utc).isoformat(),
                "api_readback": "PASS" if all(f["match"] for f in fields.values()) else "FAIL",
-               "fields": fields, "backend_save_reopen": "UNVERIFIED", "wechat_mobile": "UNVERIFIED",
+               "fields": fields, "content_detail": content_detail,
+               "backend_save_reopen": "UNVERIFIED", "wechat_mobile": "UNVERIFIED",
                "note": "仅本地保存的 API 回读对照；不含 token；不等于后台或真机验收。"}
     atomic_write(os.path.join(root, "draft-readback.json"), json.dumps(payload, ensure_ascii=False, indent=2) + "\n", mode=0o600)
     return payload
@@ -600,7 +648,7 @@ def publish_html_article(appid, secret, html_path, cover_path, title, author=Non
     audit("draft_created", media_id=media_id)
     try:
         readback = read_draft(token, media_id)
-        differences = verify_draft(readback, title, html, thumb, author, digest, source_url)
+        differences, content_detail = verify_draft(readback, title, html, thumb, author, digest, source_url)
         if evidence_dir:
             expected = {"title": api_title(title), "content": html, "thumb_media_id": thumb,
                         "need_open_comment": int(open_comment), "only_fans_can_comment": int(fans_only)}
@@ -609,7 +657,14 @@ def publish_html_article(appid, secret, html_path, cover_path, title, author=Non
     except Exception as error:
         raise RuntimeError(f"草稿已创建 media_id={media_id}，回读失败；勿重复建稿（{type(error).__name__}）") from None
     if differences:
-        raise RuntimeError(f"草稿已创建 media_id={media_id}，回读不一致：{', '.join(differences)}；禁止发布")
+        detail = ""
+        if "content" in differences:
+            detail = (f"；正文归一化核验：文字{'一致' if content_detail['text_match'] else '不一致'}，"
+                      f"块差异 {content_detail['block_diff'] or '无'}，"
+                      f"图片 {content_detail['image_count'][0]}→{content_detail['image_count'][1]}")
+        raise RuntimeError(f"草稿已创建 media_id={media_id}，回读不一致：{', '.join(differences)}{detail}；禁止发布")
+    print(f"  回读核验 PASS：文字逐字一致（{content_detail['text_chars_observed']} 字），"
+          f"图片 {content_detail['image_count'][1]} 张，块结构一致")
     audit("draft_readback_match", media_id=media_id)
     if not do_submit:
         print(f"草稿已创建 media_id={media_id}；未发布。后台重开与真机仍须验收。")

@@ -30,7 +30,7 @@ from safety import atomic_write, contrast, local_path, output_path, sha256  # no
 import typography  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-SKILL_VERSION = "15.1.0"
+SKILL_VERSION = "16.0.0"
 THEMES_PATH = os.path.join(HERE, "..", "assets", "themes.json")
 with open(THEMES_PATH, "rb") as _theme_file:
     THEME_CONFIG_BYTES = _theme_file.read()
@@ -39,7 +39,7 @@ THEMES = json.loads(THEME_CONFIG_BYTES.decode("utf-8"))
 
 THEME_AXES = {
     "lead": {"brief", "letter", "ink", "report", "plate", "feature"},
-    "heading": {"index", "plain", "seal", "report", "atelier", "folio"},
+    "heading": {"gutter", "plain", "seal", "brief", "atelier", "folio"},
     "heading_num": {"above", "none"},
     "h3": {"label", "soft", "serif", "report", "atelier", "folio"},
     "peak": {"rule", "field", "line", "plate", "dark", "compact"},
@@ -50,14 +50,18 @@ THEME_AXES = {
     "data": {"columns", "stack", "ledger", "ticker", "specimen", "folio"},
     "table": {"open", "warm", "ink", "report", "atelier", "feature"},
     "list": {"index", "dash", "chinese", "report", "atelier", "folio"},
+    "code": {"rule", "flush", "ink", "field", "mat", "folio"},
 }
-TYPE_KEYS = ("deck_size", "heading_size", "heading_weight", "heading_leading", "lead_size", "lead_weight",
-             "lead_leading", "quote_size", "h3_size", "data_size")
+TYPE_KEYS = ("deck_size", "heading_size", "heading_weight", "heading_leading", "peak_size", "lead_size",
+             "lead_weight", "lead_leading", "quote_size", "h3_size", "data_size")
 TRACKING_KEYS = ("display", "heading", "label", "caption")
 COLOR_ROLES = ("page", "text", "sub", "muted", "line", "field", "accent")
 TEXT_ROLES = ("text", "sub", "muted", "accent")
 BACKGROUND_ROLES = ("page", "field")
-GRID_KEYS = ("inset", "indent", "chapter_gap", "paragraph_gap", "body", "caption")
+GRID_KEYS = ("indent", "chapter_gap", "paragraph_gap", "body", "caption")
+# 重点句的字重由主题气质决定，但必须低于同级章节标题：两者字号接近时，字重是唯一还能
+# 把「作者的一句判断」和「版面的一个门框」区分开的东西。
+PEAK_WEIGHT = {"rule": 500, "field": 400, "dark": 600, "line": 600, "plate": 400, "compact": 700}
 
 
 def contrast_pairs(t):
@@ -65,20 +69,13 @@ def contrast_pairs(t):
     return [(role, bg) for bg in BACKGROUND_ROLES for role in TEXT_ROLES]
 
 
-def peak_size(t, lead_size):
-    """重点句字号：必须稳稳高于导语，否则「重点」在视觉上让位于「导语」。"""
-    style = t.get("peak")
-    floor = lead_size + 3
-    return max(floor, 24 if style == "dark" else 26) if style in ("dark", "compact") else floor
-
-
 def side_px(t):
-    """页边按 390 设计宽换算成固定像素：微信正文容器宽度随机型变化，比例页边会在窄屏挤掉字。"""
-    return round(390 * t.get("measure", 0) / 100) + t.get("grid", {}).get("inset", 0)
+    """页边按 390 设计宽给定像素：微信正文容器宽度随机型变化，比例页边会在窄屏挤掉字。"""
+    return t.get("margin", 0)
 
 
 def content_px(t, viewport=320):
-    """指定视口下的可用正文宽度：扣掉页边与版心内缩。"""
+    """指定视口下的可用正文宽度。"""
     return viewport - 2 * side_px(t)
 
 
@@ -103,8 +100,8 @@ def validate_themes(themes):
         for key in TRACKING_KEYS:
             if key not in t.get("tracking", {}):
                 problems.append(f"{name}.tracking 缺少 {key}")
-        if not 0 <= t.get("measure", -1) <= 8:
-            problems.append(f"{name}.measure 须在 0–8%（当前 {t.get('measure')!r}）")
+        if not 0 <= t.get("margin", -1) <= 40:
+            problems.append(f"{name}.margin 须为 0–40px（当前 {t.get('margin')!r}）")
         if t.get("rhythm") not in (6, 8, 9, 10, 12):
             problems.append(f"{name}.rhythm 须为 6/8/9/10/12（当前 {t.get('rhythm')!r}）")
         if len(problems) > before:
@@ -120,8 +117,16 @@ def validate_themes(themes):
             problems.append(f"{name}：H3 {ty['h3_size']}px 小于正文 {grid['body']}px，层级倒置")
         if ty["heading_size"] - grid["body"] < 5:
             problems.append(f"{name}：H2 与正文仅差 {ty['heading_size'] - grid['body']}px，章节层级立不住")
-        if peak_size(t, ty["lead_size"]) <= ty["lead_size"]:
-            problems.append(f"{name}：重点句未高于导语 {ty['lead_size']}px")
+        # 重点句夹在导语与章节标题之间：既不能低于导语（否则「重点」让位于「导语」），
+        # 也不能贴到章节标题的高度（否则读者会把一句判断扫成一个小标题）。
+        if ty["peak_size"] <= ty["lead_size"]:
+            problems.append(f"{name}：重点句 {ty['peak_size']}px 未高于导语 {ty['lead_size']}px")
+        if ty["peak_size"] >= ty["heading_size"]:
+            problems.append(f"{name}：重点句 {ty['peak_size']}px 不低于章节标题 {ty['heading_size']}px")
+        elif (ty["heading_size"] - ty["peak_size"] < 4
+              and PEAK_WEIGHT.get(t["peak"], 600) >= ty["heading_weight"]):
+            problems.append(f"{name}：重点句 {ty['peak_size']}px 与章节标题 {ty['heading_size']}px 仅差 "
+                            f"{ty['heading_size'] - ty['peak_size']}px 且字重不低，两者会被读成同级")
         if not grid["body"] >= grid["caption"]:
             problems.append(f"{name}：正文 {grid['body']}px 小于图注 {grid['caption']}px")
         if not 15 <= grid["body"] <= 17:
@@ -172,11 +177,29 @@ ROLES = {
 PROVENANCE_ROLES = {"资料", "实拍", "archival", "photo"}
 IMAGE_MODES = {"hero", "full-width", "inset", "plate", "sequence", "comparison", "detail", "macro", "evidence", "editorial", "explainer", "data"}
 TODO = re.compile(r"(?i)^(todo|待补)")
+# 图注是作者写给读者看的说明；只有看起来像制作标签的短文本才不印，而不是按职责一刀切丢掉。
+CAPTION_LABEL = re.compile(
+    r"^(?:封面|配图|插图|图片|示意图|素材|生成图|待补|todo)\b|^(?:AI\s*生成|生成式|人工智能生成)"
+    r"|(?:素材说明|待补素材|来源[：:]|授权[：:])", re.I)
+
+
+def _caption_text(alt, role0):
+    """决定图注是否上版：事实类职责必须印；其余职责保留作者写的说明，但挡掉制作标签。"""
+    text = (alt or "").strip()
+    if not text:
+        return ""
+    if role0 in FACT_ROLES:
+        return text
+    if len(plain(text)) < 6 or CAPTION_LABEL.search(text):
+        return ""
+    return text
 COVER_RATIO = 2.35
 COVER_BAND = (1.6, 3.0)
 COVER_MIN_W = 900
 
 BR = '<span leaf=""><br></span>'
+# 由专门语法产生的块名。`::: name` 只能写原语，撞上这些名字会落进错误分支。
+STRUCTURAL_KINDS = ("lead", "quote", "p", "h2", "h3", "img", "code", "table", "list", "hr")
 INLINE = re.compile(
     r"\\(?P<escape>[\\`*_\[\]()<>~=\-#!.+|:])"
     r"|`(?P<code>[^`]+)`|==(?P<mark>.+?)==|\*\*\*(?P<bolditalic>.+?)\*\*\*|\*\*(?P<bold>.+?)\*\*"
@@ -370,6 +393,12 @@ def parse(md, plain_text=False):
                 i += 1
             if i >= len(lines):
                 raise ValueError(f"::: {kind} 未闭合")
+            if kind in STRUCTURAL_KINDS:
+                # ::: 只产生原语。lead/quote/img 等结构性块有自己的语法，同名会撞进
+                # 渲染分支并把内容错位（导语变成署名、正文消失），所以在这里拒掉。
+                hint = "`> ` 引用块（全文首个即导语）" if kind in ("lead", "quote") else "对应的 Markdown 语法"
+                raise ValueError(f"第 {i + 1} 行：::: {kind} 不是原语，请用 {hint}"
+                                 f"（原语限：peak / note / unknown / data / bars）")
             blocks.append((kind, (arg.strip(), [b for b in body if b])))
         elif re.match(r"#{1,3} ", s):
             flush()
@@ -594,9 +623,9 @@ def _column_floors(rows, pad=12):
     return floor
 
 
-def table_fits(rows, inset=0, pad=12, measure=0):
+def table_fits(rows, pad=12, margin=0):
     """320px 视口下所有列的最小可读宽度能否同时成立；放不下则转记录卡。"""
-    avail = 320 - 2 * (round(390 * measure / 100) + inset)
+    avail = 320 - 2 * margin
     if not rows or not rows[0]:
         return True
     return sum(_column_floors(rows, pad)) <= avail
@@ -647,8 +676,7 @@ class R:
         self.k = {"dense": 0.82, "airy": 1.18}.get(density, 1.0)
         self.body = self.grid.get("body", BODY)
         self.cap = self.grid.get("caption", MICRO)
-        self.inset = self.grid.get("inset", 0)
-        self.measure = t.get("measure", 0)
+        self.margin = t.get("margin", 0)
         self.rhythm = t.get("rhythm", 8)
         self.tracking = t.get("tracking", {})
         self.font = SERIF if t["display"] == "serif" else SANS
@@ -752,7 +780,7 @@ class R:
                  f"font-family:{self.font};{self.tr('display')}")
         gap = f'margin:{self.g(self.grid["chapter_gap"])}px 0 {self.g(14)}px;'
         show_num = t.get("heading_num", "above") == "above"
-        accent_num = mode in ("report", "folio")
+        accent_num = mode in ("brief", "folio")
 
         def number_row(size=12):
             if not numbered or not show_num:
@@ -777,7 +805,22 @@ class R:
                     f'margin-bottom:{self.g(12)}px;">{BR}</section>' if numbered else "")
             return (f'<section style="{gap}">{mark}'
                     + self.title_rows(text, hs, style, "") + "</section>")
-        # index / report / folio：编号在标题上方独立成行，标题因此拿满版心宽度
+        if mode == "gutter":
+            # 静纸：编号悬挂在左侧栏位，与标题同基线。网格先于装饰——标题因此不必靠
+            # 更大的字号或更粗的字重来宣示自己是章节。
+            num = (self.p(self.leaf(f"{n:02d}"), 12, t["muted"],
+                          f"width:26px;flex-shrink:0;font-weight:600;{self.tr('label')}"
+                          "font-variant-numeric:tabular-nums;") if numbered else "")
+            return (f'<section style="{gap}">'
+                    f'<section style="display:flex;align-items:baseline;gap:10px;">{num}'
+                    f'<section style="flex:1;min-width:0;">{self.title_rows(text, hs, style)}</section>'
+                    "</section></section>")
+        if mode == "brief":
+            # 简报：编号在上，标题之下压一道通栏细线，把每节做成一条独立的电讯
+            head = number_row() + self.title_rows(text, hs, style)
+            rule = f'<section style="height:1px;background:{t["line"]};margin-top:{self.g(10)}px;">{BR}</section>'
+            return f'<section style="{gap}">{head}{rule}</section>'
+        # folio：编号在标题上方独立成行，标题因此拿满版心宽度
         return (f'<section style="{gap}">' + number_row()
                 + self.title_rows(text, hs, style, "") + "</section>")
 
@@ -893,13 +936,15 @@ class R:
         raise ValueError(f"引文轴取值未实现：{mode}")
 
     def peak(self, text):
-        """重点句：全文最重的一句判断。字号由主题层级算得，各主题以字重、缩进与行距区分气质。"""
+        """重点句：全文最重的一句判断。字号由主题阶梯给出，各主题以字重、缩进与行距区分气质；
+        字重一律低于同级章节标题，避免一句判断被扫成一个小标题。"""
         t, style = self.t, self.t["peak"]
         fam = f"font-family:{self.font};{self.tr('display')}"
         inner = self.inline(text, normalize=False)
-        size = peak_size(t, self.type["lead_size"])
+        size = self.type["peak_size"]
+        weight = PEAK_WEIGHT.get(style, 600)
         if style in ("dark", "compact"):
-            weight, lh = (600, 1.72) if style == "dark" else (700, 1.52)
+            lh = 1.72 if style == "dark" else 1.52
             pad = "0 4px" if style == "dark" else "0"
             return (f'<section style="margin:{self.g(32)}px 0;padding:{pad};">'
                     + self.p(inner, size, t["text"], f"font-weight:{weight};line-height:{lh};{fam}") + "</section>")
@@ -907,20 +952,20 @@ class R:
             # 静纸：一句判断前留一道 20px 细线，作为版面里唯一的图形标记
             mark = f'<section style="width:20px;height:1px;background:{t["line"]};margin-bottom:12px;">{BR}</section>'
             return (f'<section style="margin:{self.g(30)}px 0;">{mark}'
-                    + self.p(inner, size, t["text"], f"font-weight:600;line-height:1.62;{fam}") + "</section>")
+                    + self.p(inner, size, t["text"], f"font-weight:{weight};line-height:1.62;{fam}") + "</section>")
         if style == "field":
             # 信笺：衬线、首行缩进 1em，像信里单独另起的一行重话
             return (f'<section style="margin:{self.g(28)}px 0;padding:0 2px;">'
                     + self.p(inner, size, t["text"],
-                             f"font-weight:400;line-height:1.86;text-indent:1em;{fam}") + "</section>")
+                             f"font-weight:{weight};line-height:1.86;text-indent:1em;{fam}") + "</section>")
         if style == "line":
-            # 简报：无衬线加粗、上下内边距收紧，像报表里的夹注
+            # 简报：加粗夹注，上下内边距收紧，读作一条被拎出来的电讯行而不是章节
             return (f'<section style="margin:{self.g(26)}px 0;padding:8px 0;">'
-                    + self.p(inner, size, t["text"], f"font-weight:700;line-height:1.58;{fam}") + "</section>")
+                    + self.p(inner, size, t["text"], f"font-weight:{weight};line-height:1.58;{fam}") + "</section>")
         if style == "plate":
             # 器物牌：衬线常规字重、左右收进 6%，像展签上的说明
             return (f'<section style="margin:{self.g(30)}px 6%;padding:0;">'
-                    + self.p(inner, size, t["text"], f"font-weight:400;line-height:1.82;{fam}") + "</section>")
+                    + self.p(inner, size, t["text"], f"font-weight:{weight};line-height:1.82;{fam}") + "</section>")
         raise ValueError(f"重点轴取值未实现：{style}")
 
     def unknown(self, label, lines):
@@ -995,8 +1040,9 @@ class R:
 
         if mode in ("stack", "ticker", "folio"):
             spec = {
-                "stack": (0.38, 16, t["accent"], f"font-weight:600;line-height:1.3;font-family:{self.font};",
-                          f"padding:14px 16px;background:{t['field']};border-radius:{t['radius']}px;"),
+                # 信笺不设底色卡片：数值与标签靠一道发丝线与缩进分开，像信纸上的一栏小账
+                "stack": (0.38, 0, t["accent"], f"font-weight:600;line-height:1.3;font-family:{self.font};",
+                          f"border-top:1px solid {t['line']};"),
                 "ticker": (0.40, 0, t["text"], "font-weight:700;line-height:1.25;",
                            f"border-top:2px solid {t['text']};border-bottom:1px solid {t['text']};"),
                 "folio": (0.42, 0, t["accent"], f"font-weight:700;line-height:1.18;font-family:{self.font};letter-spacing:-0.02em;",
@@ -1006,8 +1052,8 @@ class R:
             side_fits = values_fit(avail * ratio - 2 * pad_x)
             rows = []
             for idx, (v, lab) in enumerate(items):
-                row_pad = ("padding-top:10px;margin-top:10px;" if idx else "margin:0;") if mode == "stack" else ("padding:9px 0;" if mode == "ticker" else "padding:12px 0;")
-                sep = f"border-top:1px solid {t['line']};" if idx else ""
+                row_pad = ("padding:11px 0;" if mode == "stack" else ("padding:9px 0;" if mode == "ticker" else "padding:12px 0;"))
+                sep = f"border-top:1px solid {t['line']};" if idx and mode != "stack" else ""
                 if side_fits:
                     rows.append(
                         f'<section style="display:flex;align-items:baseline;gap:12px;{sep}{row_pad}">'
@@ -1022,8 +1068,6 @@ class R:
                         + self.p(self.inline(lab), SMALL, t["sub" if mode != "folio" else "text"], "margin-top:4px;line-height:1.65;")
                         + "</section>"
                     )
-            outer = (f"padding:6px 16px;background:{t['field']};border-radius:{t['radius']}px;"
-                     if mode == "stack" and len(items) > 1 else outer)
             return f'<section style="{margin}{outer}">{"".join(rows)}</section>'
 
         raise ValueError(f"数据轴取值未实现：{mode}")
@@ -1062,7 +1106,7 @@ class R:
             raise ValueError("表格行列数不一致，不能对齐数据")
         hpad = table_pad(t) // 2
         table_avail = content_px(t, 320)
-        if not table_fits(rows, self.inset, 2 * hpad, t.get("measure", 0)):
+        if not table_fits(rows, 2 * hpad, self.margin):
             return self.table_stack(rows, below)
         widths = col_widths(rows, table_avail, 2 * hpad)
         table_extra = {
@@ -1118,11 +1162,11 @@ class R:
         if len(rows) == 1:
             return f'<section style="margin:{self.g(24)}px 0;">' + "".join(self.p(self.inline(label), SMALL, t["sub"], "padding:6px 0;") for label in head) + "</section>"
         for n, row in enumerate(rows[1:], 1):
-            # 若首列为短名称（≤8字），直接把首列作为卡片小标题，省去机械的“记录 01”冗余头
+            # 若首列是名称，直接把它作为卡片标题；否则不写任何标号——「记录 01」只对编辑器有意义
             lead_key = plain(row[0]).strip() if row else ""
-            use_first_as_title = bool(lead_key and len(lead_key) <= 10 and len(head) >= 3)
+            use_first_as_title = bool(lead_key and len(lead_key) <= 18 and len(head) >= 3)
             pairs = list(zip(head[1:], row[1:])) if use_first_as_title else list(zip(head, row))
-            card_title = self.inline(head[0]) + self.leaf(" · ") + self.inline(row[0]) if use_first_as_title else self.leaf(f"记录 {n:02d}")
+            card_title = (self.inline(head[0]) + self.leaf(" · ") + self.inline(row[0])) if use_first_as_title else ""
             cells = [
                 '<section style="display:flex;gap:12px;padding:4px 0;">'
                 + self.p(self.inline(label), self.cap, t["muted"], "width:32%;flex-shrink:0;min-width:0;line-height:1.65;")
@@ -1138,8 +1182,8 @@ class R:
             )
             blocks.append(
                 f'<section style="{card_style}">'
-                + self.p(card_title, SMALL, t["accent"] if mode == "feature" else t["text"],
-                         f"margin-bottom:6px;font-weight:600;font-family:{self.font};")
+                + (self.p(card_title, SMALL, t["accent"] if mode == "feature" else t["text"],
+                          f"margin-bottom:6px;font-weight:600;font-family:{self.font};") if card_title else "")
                 + "".join(cells) + "</section>"
             )
         return (f'<section style="margin:{self.g(24)}px 0 {below if below is not None else self.g(24)}px;">'
@@ -1193,16 +1237,30 @@ class R:
         return f'<section style="margin:{self.g(8)}px 0 {self.g(22)}px;">{"".join(out)}</section>'
 
     def code(self, lang, body):
-        t = self.t
+        """代码块不是统一的灰卡片：六个主题各自决定它如何与正文分开（线、底色或缩进）。"""
+        t, axis = self.t, self.t["code"]
+        # break-word 只在长标识符真的放不下时才断词；anywhere 会把每一行都切碎
+        line = (f"margin:0;font-family:{MONO};font-size:{SMALL}px;line-height:1.68;white-space:pre-wrap;"
+                f"overflow-wrap:break-word;word-break:normal;tab-size:4;color:{t['text']};")
         rows = "".join(
-            f'<p style="margin:0;font-family:{MONO};font-size:{SMALL}px;line-height:1.68;white-space:pre-wrap;'
-            f'overflow-wrap:anywhere;word-break:normal;tab-size:4;color:{t["text"]};">'
-            + (self.leaf(ln) if ln.strip() else BR)
-            + "</p>" for ln in body
+            f'<p style="{line}">' + (self.leaf(ln) if ln.strip() else BR) + "</p>" for ln in body
         )
         label = self.micro(lang.upper(), extra=f"margin-bottom:8px;font-family:{MONO};") if lang else ""
-        return (f'<section style="margin:{self.g(22)}px 0;padding:14px 16px;background:{t["field"]};'
-                f'border-radius:{t["radius"]}px;">{label}{rows}</section>')
+        if axis == "flush":
+            box = "padding:0 4px;"
+        elif axis == "ink":
+            box = f"padding:0 0 0 12px;border-left:2px solid {t['accent']};"
+        elif axis == "field":
+            box = f"padding:12px 14px;background:{t['field']};"
+        elif axis == "mat":
+            # 素作：像贴在卡纸上的标本——浅底之外还有上下发丝线，与纯底色的简报区分开
+            box = (f"padding:14px 16px;background:{t['field']};"
+                   f"border-top:1px solid {t['line']};border-bottom:1px solid {t['line']};")
+        elif axis == "folio":
+            box = f"padding:14px 0;border-top:3px solid {t['text']};border-bottom:1px solid {t['line']};"
+        else:
+            box = f"padding:14px 2px;border-top:1px solid {t['line']};border-bottom:1px solid {t['line']};"
+        return f'<section style="margin:{self.g(22)}px 0;{box}">{label}{rows}</section>'
 
     def img(self, alt, src, role, below=None, above=None):
         """图片只做构图与间距；职责/来源留在 Markdown 与侧车，不在版面印制作标签。"""
@@ -1244,7 +1302,7 @@ class R:
             cap_extra = "margin-top:10px;line-height:1.66;padding-left:1.1em;text-indent:-1.1em;"
         cap_style = f"{cap_extra}text-align:{cap_align};{self.tr('caption')}"
         box = f"margin:{mt}px {side}% {mb}px;" if side else f"margin:{mt}px 0 {mb}px;"
-        cap = (alt or "") if role0 in FACT_ROLES else ""
+        cap = _caption_text(alt, role0)
         return (
             f'<section style="{box}">'
             f'<img src="{H.escape(src)}" alt="{H.escape(alt or "")}" style="{img_extra}" />'
@@ -1284,12 +1342,16 @@ class R:
                 + "".join(out) + "</section>") if out else ""
 
     def toc(self, heads):
-        """目录即版面索引：六主题各用一套目录语法，读者看目录就知道这是哪种刊物。"""
+        """目录即版面索引：目录与章节开门说同一种语言，读者看目录就知道这是哪种刊物。"""
         t, mode = self.t, self.t["heading"]
-        numbered = mode in ("index", "report", "folio")
+        # 编号方式必须与章节开门一致：开篇挂左栏的主题，目录也挂左栏；
+        # 开篇不用编号的主题，目录加编号就成了另一本刊物的目录。
+        numbered = mode in ("gutter", "brief", "folio")
+        num_w = 26 if mode == "gutter" else 22
         rows = []
         for n, h in enumerate(heads, 1):
             label = plain(h)
+            top = self.g(8) if n > 1 else 0
             if mode == "seal":
                 # 卷目：不编号，靠衬线、行距与「卷目」二字成篇，与章节页的印记对应
                 rows.append(
@@ -1299,9 +1361,9 @@ class R:
                 )
             elif numbered and not ORDINAL.match(h.strip()):
                 rows.append(
-                    f'<section style="display:flex;align-items:baseline;gap:10px;margin-top:{8 if n > 1 else 0}px;">'
+                    f'<section style="display:flex;align-items:baseline;gap:10px;margin-top:{top}px;">'
                     + self.p(self.leaf(f"{n:02d}"), 12, t["accent"] if mode == "folio" else t["muted"],
-                             f"width:22px;flex-shrink:0;font-weight:600;{self.tr('label')}"
+                             f"width:{num_w}px;flex-shrink:0;font-weight:600;{self.tr('label')}"
                              "font-variant-numeric:tabular-nums;")
                     + self.p(self.leaf(label), SMALL, t["text"],
                              f"flex:1;min-width:0;line-height:1.62;font-family:{self.font};"
@@ -1311,13 +1373,14 @@ class R:
             else:
                 rows.append(
                     self.p(self.leaf(label), SMALL, t["text"],
-                           f"margin-top:{8 if n > 1 else 0}px;line-height:1.66;font-family:{self.font};")
+                           f"margin-top:{top}px;line-height:1.66;font-family:{self.font};")
                 )
         if mode == "plain":
             # 信笺：整段居中，像一页手写目录，不加任何框线
             box = f"margin:{self.g(9)}px 0 {self.g(27)}px;padding:0 6px;"
             align = "text-align:center;"
         elif mode == "seal":
+            # 卷目：无框线，靠行距与衬线成篇——框线会把书页变成表单
             box = f"margin:{self.g(10)}px 0 {self.g(30)}px;padding:{self.g(4)}px 0;"
             align = ""
         elif mode == "atelier":
@@ -1325,11 +1388,17 @@ class R:
             box = (f"margin:{self.g(9)}px 0 {self.g(27)}px;padding:{self.g(12)}px 0;"
                    f"border-top:1px solid {t['line']};border-bottom:1px solid {t['line']};")
             align = ""
-        elif mode == "report":
+        elif mode == "brief":
+            # 北霜：顶部一道 2px 实线收口，与章节开门下方那道通栏细线首尾呼应
             box = (f"margin:{self.g(8)}px 0 {self.g(24)}px;padding:{self.g(12)}px 0;"
-                   f"border-top:2px solid {t['text']};border-bottom:1px solid {t['line']};")
+                   f"border-top:2px solid {t['text']};")
+            align = ""
+        elif mode == "folio":
+            # 特稿：无框线，让加粗条目与 accent 编号自己撑起层级
+            box = f"margin:{self.g(8)}px 0 {self.g(28)}px;padding:0;"
             align = ""
         else:
+            # 静纸：左发丝线做栏位，编号挂在线上——与章节标题的悬挂编号同一套网格
             box = (f"margin:{self.g(6)}px 0 {self.g(30)}px;padding:{self.g(12)}px 0 "
                    f"{self.g(12)}px {self.g(14)}px;border-left:1px solid {t['line']};")
             align = ""
@@ -1516,9 +1585,10 @@ def _data_gate(meta, blocks, key):
         if k not in ("bars", "data"):
             continue
         note = blocks[i + 1][1] if i + 1 < len(blocks) and blocks[i + 1][0] == "note" else ("", [])
+        # 来源行接受链接、年份（含「（2025）」全角括号）、季度/半年/全年口径，或明写假设/演示
         source = " ".join(note[1])
-        # 来源行接受链接、年份（含「（2025）」全角括号）、或明写假设/演示
-        if not re.search(r"https?://\S+|\d{4}\s*(?:年|[-–/]\s*\d{1,2}|[)）]|$)|假设|演示|非统计", source):
+        if not re.search(r"https?://\S+|\d{4}\s*(?:年|[-–/]\s*\d{1,2}|[)）]|$)"
+                         r"|Q[1-4]|[1-4一二三四]\s*季度|上半年|下半年|全年|假设|演示|非统计", source):
             must.append(f"{k} 缺少紧邻来源 note：写清主体与日期（或一行地址），或明写假设/演示")
         if k == "data":
             if not b[1]:
@@ -1553,7 +1623,6 @@ def _data_gate(meta, blocks, key):
 def _structure_gate(meta, blocks, key):
     must, should = [], []
     th = THEMES.get(key or meta.get("theme", "paper"), THEMES["paper"])
-    inset = th.get("grid", {}).get("inset", 0)
     for i, (k, b) in enumerate(blocks):
         if k == "h2":
             # 章节标题是版面的门框：超过两行就不再是标题，而是段落；宽度按 375 设计基准算
@@ -1570,7 +1639,7 @@ def _structure_gate(meta, blocks, key):
         if k == "table":
             if not b or any(len(row) != len(b[0]) for row in b):
                 must.append("表格行列数不一致，不能对齐数据")
-            elif not table_fits(b, inset, table_pad(th), th.get("measure", 0)):
+            elif not table_fits(b, table_pad(th), th.get("margin", 0)):
                 should.append(f"表格 {len(b[0])} 列在 320px 无法维持可读列宽，已自动降级为记录卡堆叠")
         if k == "note":
             label, lines = b[0] or "", b[1]
@@ -1609,9 +1678,9 @@ def compose_gate(meta, blocks, base=".", key=None, review=None):
 
 PREVIEW_TEMPLATE = os.path.join(HERE, "..", "assets", "preview.template.html")
 VIEWPORTS = (320, 360, 375, 390, 430)
-ANDROID_SANS = "'Roboto','Noto Sans CJK SC','Source Han Sans SC',sans-serif"
-ANDROID_SERIF = "'Noto Serif CJK SC','Source Han Serif SC',serif"
-ANDROID_MONO = "'Droid Sans Mono',monospace"
+ANDROID_SANS = "'Roboto','HarmonyOS Sans SC','MiSans','Noto Sans CJK SC','Source Han Sans SC',sans-serif"
+ANDROID_SERIF = "'Noto Serif CJK SC','Noto Serif SC','Source Han Serif SC','Source Han Serif CN',serif"
+ANDROID_MONO = "'Roboto Mono','Droid Sans Mono','Noto Sans Mono',monospace"
 
 
 def preview_page(meta, theme_name, native, body, base=".", cover=None):
@@ -1693,11 +1762,15 @@ def render(md, theme=None, plain_text=False):
                    + "</section>")
 
     heads = [b[1] for b in blocks if b[0] == "h2"]
-    toc_done = meta.get("toc", "").lower() not in ("true", "yes", "1") or len(heads) < 3
-    toc_after_p, seen_p = any(k == "p" for k, _ in blocks), False
+    # 目录是刊头与正文之间的版面索引：插在第一个章节标题之前。
+    # 早先按「第一段之后」插入，一旦正文没有引言段，目录就会落进第一章内部，
+    # 读者读第一章时被一张全篇目录横断——位置错了，再好看的目录也是错的。
+    toc_on = meta.get("toc", "").lower() in ("true", "yes", "1") and len(heads) >= 3
+    toc_at = next((i for i, (k, _) in enumerate(blocks) if k == "h2"), None) if toc_on else None
     has_lead = any(k == "lead" for k, _ in blocks)
     attach = ("bars", "data", "table", "img")
     consumed = set()
+    seen_para = False
 
     for i, (kind, b) in enumerate(blocks):
         if i in consumed:
@@ -1705,11 +1778,10 @@ def render(md, theme=None, plain_text=False):
         nxt = blocks[i + 1][0] if i + 1 < len(blocks) else ""
         prev = blocks[i - 1][0] if i > 0 else ""
         below = 8 if nxt == "note" else None
-        will_insert_toc_after = (kind == "p" and not seen_p and not toc_done and nxt != "lead")
 
-        if not toc_done and kind != "lead" and (seen_p or not toc_after_p):
+        if toc_at is not None and i == toc_at:
             out.append(r.toc(heads))
-            toc_done = True
+            toc_at = None
 
         if kind == "h2":
             n += 1
@@ -1717,9 +1789,8 @@ def render(md, theme=None, plain_text=False):
         elif kind == "h3":
             out.append(r.h3(b))
         elif kind == "p":
-            effective_next = "toc" if will_insert_toc_after else nxt
-            out.append(r.para(b, next_kind=effective_next, initial=not seen_p and not has_lead))
-            seen_p = True
+            out.append(r.para(b, next_kind=nxt, initial=not seen_para and not has_lead))
+            seen_para = True
         elif kind == "lead":
             out.append(r.lead(b[0], " ".join(b[1])))
         elif kind == "quote":

@@ -37,6 +37,7 @@ python3 scripts/publish.py --delete-material <MEDIA_ID> --confirm-delete-media-i
 - **防陈旧稿侧车校验**：预检强制要求同名 `.meta.json`，核对 `integrity_version=3`、`skill_version`、`renderer_sha256`、`theme_config_sha256`、源 Markdown SHA-256、正文 HTML SHA-256 及全部正文图/封面 SHA-256；任一变更均要求重新运行 `render.py`。上行使用已冻结字节，不在上传时重新读取可能已变化的文件。
 - **封面缓存验活**：永久封面按账号哈希 + 内容 SHA-256 缓存在 `.wechat_material_cache.json`（权限 `0600`，不存明文账号/凭证），复用前调用 `get_material` 验活；仅 `40007` 失效重传，凭证/权限错误直接终止。
 - **草稿回读阻断防重**：创建草稿后立即调用 `draft/get` 核对 `title`、`content`、`thumb_media_id` 及已上行的 `author`、`digest`、`content_source_url`；回读失败或字段不一致时立即停止后续发布并打印已创建的 `media_id`，防止重复建稿。
+- **正文按归一化核验，不要求逐字节相等**：微信写入期一定会重写正文——`'`→`&#39;`（字体栈造成）、图片 `src` 换成 `mmbiz.qpic.cn` 地址并补 `data-src`、重排 `alt`、无外链权限时整体剥掉 `<a>`、插入 `display:none` 的 `mp-style-type` 段落。要求 `content` 与本地 HTML 逐字节相等，唯一结果是草稿建好了而核验永远 FAIL。现在的核验口径是：标题逐字一致、纯文本逐字一致（先剔除微信插入的隐藏节点与图片地址）、`section/p/img/span[leaf]` 块计数一致、图片张数一致；不通过时证据文件记下两侧字数、块差异与图片张数，供人工定位。**这仍然不等于真机效果**，客户端清洗与后台重开需另行确认。
 
 ## 官方接口参考与限制
 
