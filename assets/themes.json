@@ -2,26 +2,36 @@
   "paper": {
     "name": "静纸 Silent Paper",
     "page": "#F7F6F1",
-    "text": "#24231F",
-    "sub": "#5C584F",
+    "text": "#232220",
+    "sub": "#55514A",
     "muted": "#6C6961",
-    "line": "#DFDDD5",
+    "line": "#DEDCD3",
     "field": "#F1EFE7",
-    "accent": "#526354",
+    "accent": "#4E6152",
     "display": "sans",
-    "leading": 1.82,
+    "body_font": "sans",
+    "leading": 1.88,
     "radius": 0,
+    "measure": 4,
+    "rhythm": 8,
     "toc_label": "目录",
     "grid": {
       "inset": 0,
       "indent": 0,
-      "chapter_gap": 38,
+      "chapter_gap": 40,
       "paragraph_gap": 18,
       "body": 16,
-      "caption": 13
+      "caption": 12.5
+    },
+    "tracking": {
+      "display": 0.01,
+      "heading": 0.07,
+      "label": 0.14,
+      "caption": 0.02
     },
     "lead": "brief",
     "heading": "index",
+    "heading_num": "above",
     "h3": "label",
     "peak": "rule",
     "divider": "short-rule",
@@ -32,41 +42,51 @@
     "table": "open",
     "list": "index",
     "type": {
-      "heading_size": 22,
+      "deck_size": 17,
+      "heading_size": 24,
       "heading_weight": 600,
-      "heading_leading": 1.4,
-      "lead_size": 18,
-      "lead_weight": 600,
-      "lead_leading": 1.62,
+      "heading_leading": 1.36,
+      "lead_size": 19,
+      "lead_weight": 500,
+      "lead_leading": 1.78,
       "quote_size": 17,
-      "h3_size": 16,
-      "data_size": 22
-    },
-    "body_font": "sans"
+      "h3_size": 17,
+      "data_size": 27
+    }
   },
   "letter": {
     "name": "暖信笺 Warm Letter",
     "page": "#FBF7F0",
     "text": "#33281F",
     "sub": "#6B5443",
-    "muted": "#7A6555",
+    "muted": "#78624F",
     "line": "#EADCCA",
     "field": "#F5EBDE",
     "accent": "#8F5A46",
     "display": "serif",
-    "leading": 1.94,
+    "body_font": "serif",
+    "leading": 1.98,
     "radius": 0,
+    "measure": 6,
+    "rhythm": 9,
     "toc_label": "篇章导览",
     "grid": {
       "inset": 2,
       "indent": 2,
-      "chapter_gap": 42,
-      "paragraph_gap": 12,
+      "chapter_gap": 45,
+      "paragraph_gap": 10,
       "body": 16,
-      "caption": 13
+      "caption": 12.5
+    },
+    "tracking": {
+      "display": 0.03,
+      "heading": 0.03,
+      "label": 0.1,
+      "caption": 0.03
     },
     "lead": "letter",
     "heading": "plain",
+    "heading_num": "none",
     "h3": "soft",
     "peak": "field",
     "divider": "pause",
@@ -77,17 +97,17 @@
     "table": "warm",
     "list": "dash",
     "type": {
-      "heading_size": 22,
-      "heading_weight": 600,
-      "heading_leading": 1.55,
-      "lead_size": 18,
-      "lead_weight": 500,
-      "lead_leading": 1.88,
+      "deck_size": 16,
+      "heading_size": 23,
+      "heading_weight": 500,
+      "heading_leading": 1.58,
+      "lead_size": 19,
+      "lead_weight": 400,
+      "lead_leading": 1.92,
       "quote_size": 18,
       "h3_size": 17,
-      "data_size": 22
-    },
-    "body_font": "serif"
+      "data_size": 24
+    }
   },
   "ink": {
     "name": "酌墨 Wine Ink",
@@ -99,19 +119,29 @@
     "field": "#F2EBE4",
     "accent": "#9A3430",
     "display": "serif",
-    "leading": 1.94,
+    "body_font": "serif",
+    "leading": 1.96,
     "radius": 0,
+    "measure": 3,
+    "rhythm": 10,
     "toc_label": "卷目",
     "grid": {
       "inset": 4,
       "indent": 0,
-      "chapter_gap": 42,
+      "chapter_gap": 46,
       "paragraph_gap": 20,
       "body": 16,
-      "caption": 13
+      "caption": 12.5
+    },
+    "tracking": {
+      "display": 0.05,
+      "heading": 0.05,
+      "label": 0.12,
+      "caption": 0.04
     },
     "lead": "ink",
     "heading": "seal",
+    "heading_num": "none",
     "h3": "serif",
     "peak": "dark",
     "divider": "seal",
@@ -122,17 +152,17 @@
     "table": "ink",
     "list": "chinese",
     "type": {
-      "heading_size": 22,
+      "deck_size": 16,
+      "heading_size": 25,
       "heading_weight": 700,
-      "heading_leading": 1.45,
+      "heading_leading": 1.42,
       "lead_size": 18,
       "lead_weight": 400,
-      "lead_leading": 1.88,
+      "lead_leading": 1.94,
       "quote_size": 17,
       "h3_size": 17,
-      "data_size": 22
-    },
-    "body_font": "serif"
+      "data_size": 27
+    }
   },
   "frost": {
     "name": "北霜 North Frost",
@@ -144,19 +174,29 @@
     "field": "#EAF0F2",
     "accent": "#2E4A50",
     "display": "sans",
-    "leading": 1.76,
+    "body_font": "sans",
+    "leading": 1.78,
     "radius": 0,
+    "measure": 0,
+    "rhythm": 8,
     "toc_label": "本期要点",
     "grid": {
       "inset": 0,
       "indent": 0,
-      "chapter_gap": 30,
-      "paragraph_gap": 16,
+      "chapter_gap": 32,
+      "paragraph_gap": 15,
       "body": 16,
-      "caption": 13
+      "caption": 12
+    },
+    "tracking": {
+      "display": -0.01,
+      "heading": 0,
+      "label": 0.14,
+      "caption": 0.01
     },
     "lead": "report",
     "heading": "report",
+    "heading_num": "above",
     "h3": "report",
     "peak": "line",
     "divider": "hairline",
@@ -167,17 +207,17 @@
     "table": "report",
     "list": "report",
     "type": {
-      "heading_size": 20,
+      "deck_size": 16,
+      "heading_size": 21,
       "heading_weight": 700,
-      "heading_leading": 1.42,
+      "heading_leading": 1.38,
       "lead_size": 17,
       "lead_weight": 600,
-      "lead_leading": 1.68,
+      "lead_leading": 1.72,
       "quote_size": 17,
       "h3_size": 16,
-      "data_size": 22
-    },
-    "body_font": "sans"
+      "data_size": 24
+    }
   },
   "bone": {
     "name": "素作 Atelier Bone",
@@ -189,19 +229,29 @@
     "field": "#F1EDE4",
     "accent": "#7A5F3C",
     "display": "serif",
-    "leading": 1.9,
+    "body_font": "sans",
+    "leading": 1.94,
     "radius": 0,
+    "measure": 5,
+    "rhythm": 9,
     "toc_label": "目录",
     "grid": {
       "inset": 4,
       "indent": 0,
-      "chapter_gap": 44,
-      "paragraph_gap": 20,
+      "chapter_gap": 46,
+      "paragraph_gap": 22,
       "body": 16,
-      "caption": 13
+      "caption": 12.5
+    },
+    "tracking": {
+      "display": 0.06,
+      "heading": 0.06,
+      "label": 0.16,
+      "caption": 0.04
     },
     "lead": "plate",
     "heading": "atelier",
+    "heading_num": "none",
     "h3": "atelier",
     "peak": "plate",
     "divider": "double",
@@ -212,17 +262,17 @@
     "table": "atelier",
     "list": "atelier",
     "type": {
+      "deck_size": 16,
       "heading_size": 22,
       "heading_weight": 600,
-      "heading_leading": 1.5,
+      "heading_leading": 1.66,
       "lead_size": 18,
       "lead_weight": 400,
-      "lead_leading": 1.85,
+      "lead_leading": 1.9,
       "quote_size": 17,
       "h3_size": 17,
-      "data_size": 22
-    },
-    "body_font": "sans"
+      "data_size": 24
+    }
   },
   "folio": {
     "name": "特稿 Feature Folio",
@@ -234,19 +284,29 @@
     "field": "#F0EDE7",
     "accent": "#783F3C",
     "display": "sans",
+    "body_font": "sans",
     "leading": 1.8,
     "radius": 0,
+    "measure": 0,
+    "rhythm": 8,
     "toc_label": "特稿目录",
     "grid": {
       "inset": 0,
       "indent": 0,
-      "chapter_gap": 40,
+      "chapter_gap": 42,
       "paragraph_gap": 19,
       "body": 16,
-      "caption": 13
+      "caption": 12.5
+    },
+    "tracking": {
+      "display": -0.015,
+      "heading": 0,
+      "label": 0.13,
+      "caption": 0.01
     },
     "lead": "feature",
     "heading": "folio",
+    "heading_num": "above",
     "h3": "folio",
     "peak": "compact",
     "divider": "dot",
@@ -257,16 +317,16 @@
     "table": "feature",
     "list": "folio",
     "type": {
-      "heading_size": 25,
+      "deck_size": 18,
+      "heading_size": 30,
       "heading_weight": 700,
-      "heading_leading": 1.32,
-      "lead_size": 20,
+      "heading_leading": 1.24,
+      "lead_size": 21,
       "lead_weight": 600,
-      "lead_leading": 1.62,
+      "lead_leading": 1.6,
       "quote_size": 20,
-      "h3_size": 17,
-      "data_size": 26
-    },
-    "body_font": "sans"
+      "h3_size": 18,
+      "data_size": 30
+    }
   }
 }

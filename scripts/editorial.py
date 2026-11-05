@@ -948,13 +948,13 @@ def _scan_blocks(meta, blocks, sections, type_key):
                  "匿名或模糊来源表述（「数据显示/业内人士」等）缺少就近可核依据",
                  "补具体机构与时间出处，或降级为有边界的转述",
                  "读者能分辨可核事实与泛泛转述", "出现匿名归属词且邻近无具体来源",
-                 "不编造无法核实的出处", needs="fact-check")
+                 needs="fact-check")
         elif re.search(r"\d+(?:\.\d+)?(?:%|％|亿元|万元|万人|倍|小时|美元)", raw_text) and not (local_source or doc_provenance):
             _add(issues, "NUM-NO-SOURCE", "mechanical", "should", loc,
                  "关键统计数值附近未见来源、归属主体或全文出处声明",
-                 "核实数值并就近补主体与期间口径",
+                 "核实数值并就近补主体与期间口径；无法确认时标明未核，不补写来源",
                  "读者可核对数字口径与时效", "邻近块及全文未见来源说明或明确归属",
-                 "不补写无法确认的来源；必要时标明未核", needs="fact-check")
+                 needs="fact-check")
 
         unquoted = _unquoted_prose(clean)
         causal_sentence = next((sentence for sentence in _sentence_list(unquoted)
@@ -1047,6 +1047,10 @@ def _scan_blocks(meta, blocks, sections, type_key):
 
         for sentence in sentences:
             if INFER_HEAD.search(sentence) and len(sentence) >= 12:
+                # 只追问带具体结论的推断：纯议论里的「因此」承接的是上文论证，不是缺一条数据
+                specific = bool(re.search(r"\d|%|％|亿元|万元|亿美元|个百分点|倍", sentence)) or bool(CAUSAL.search(sentence))
+                if not specific:
+                    break
                 prev_window = blocks[max(0, idx - 2):idx + 1]
                 prev_text = " ".join(block_text(k, b) for k, b in prev_window)
                 backed = bool(
@@ -1147,41 +1151,59 @@ def _judgment_issues(meta, blocks, type_key, sections, gains):
     """六类文章的差异化判断入口（全部 judgment：只定位疑点，不冒充语义判决）。"""
     issues = []
     strategy = TYPES.get(type_key)
-    doc_provenance = _has_doc_provenance(meta, blocks)
     full_body = " ".join(block_text(k, b) for k, b in blocks)
 
-    # 1) 段落级主张与证据邻接定位
+    # 1) 段落级主张与证据定位：以「章」为单位，而不是逐段索要邻接证据。
+    #    一篇文章的判断句本就不该每句都挂一条来源；要查的是「这一章有没有任何可核依据」。
+    section_backed, current = {}, 0
+    for kind, value in blocks:
+        if kind == "h2":
+            current += 1
+        section_backed.setdefault(current, False)
+        if kind in ("note", "data", "bars", "table", "code") and block_text(kind, value).strip():
+            section_backed[current] = True
+        elif kind == "quote" and value[1]:  # 无出处的引文不算证据
+            section_backed[current] = True
+        elif kind == "p" and (re.search(r"https?://", value) or NAMED_SOURCE.search(value)):
+            section_backed[current] = True
+
+    current = 0
     for idx, (kind, value) in enumerate(blocks):
+        if kind == "h2":
+            current += 1
         if kind != "p":
             continue
         raw_text = block_text(kind, value)
         unquoted = _unquoted_prose(plain(value))
         if len(unquoted) <= 40:
             continue
+        # 只追问「可被证伪的断言」：带量化的结论，或明确因果。价值判断与推论不是证据问题。
+        quantitative = bool(re.search(
+            r"\d+(?:\.\d+)?\s*(?:%|％|个百分点|倍|亿元|万元|亿美元|万人|人|家|年|个月|天|小时)", unquoted))
+        causal = bool(CAUSAL.search(unquoted))
         if type_key == "tutorial":
             claim_like = bool(re.search(r"版本|兼容|支持(?:的|率|到)|不支持|报告显示|数据显示|研究表明|据统计", unquoted))
-        else:
-            claim_like = bool(re.search(r"应该|必须|意味着|说明|证明|表明|因此|所以|结论|关键|本质", unquoted))
-        if not claim_like:
+            quantitative, causal = quantitative and claim_like, False
+        if not (quantitative or causal):
             continue
         # 明确表达边界、例外或反驳限定的句子本身是在收窄主张，不是无据断言
         is_boundary_statement = bool(re.search(r"例外|不能|不等于|无法|未必|不足以|尚不能|并非唯一", unquoted))
-        if is_boundary_statement and doc_provenance:
+        if is_boundary_statement:
             continue
         window = blocks[max(0, idx - 2):min(len(blocks), idx + 3)]
         backed = (
             any(k in EVIDENCE_KINDS for k, _ in window)
-            or bool(re.search(r"https?://|\d{4}", raw_text))
+            or bool(re.search(r"https?://", raw_text))  # 年份不是出处，链接与具名来源才是
             or bool(NAMED_SOURCE.search(raw_text))
+            or section_backed.get(current, False)
             or (type_key in ("opinion", "longform") and any(quoted_spans(block_text(k, v)) for k, v in window))
         )
-        rhetorical_q = unquoted.rstrip().endswith(("?", "？")) and not re.search(r"\d|必须|应该|证明|表明", unquoted)
-        if not backed and not rhetorical_q:
-            severity = "note" if type_key in ("opinion", "tutorial") else "should"
+        if not backed:
+            severity = "note" if type_key in ("opinion", "tutorial", "longform") else "should"
             _add(issues, "ORPHAN-CLAIM", "judgment", severity, f"块 {idx + 1}",
-                 "判断性语句邻近未见显式证据块；价值判断或已归属论述可由编辑豁免",
-                 "确认该句是否需要事实支撑：需支撑则补同口径依据，属观点则明示前提",
-                 "防止关键论断悬空", "前后两块内未定位到来源、数据、表格、引语或代码", needs="fact-check")
+                 "量化或因果断言在本章内没有找到可核依据",
+                 "确认该结论是否需要出处：需要则补同口径来源，属作者推断则写明依据与边界",
+                 "防止关键数字悬空", "本章未见来源、数据、表格、代码或可归属引语", needs="fact-check")
 
     # 2) 章节首段复述 thesis
     thesis = re.sub(r"\s+", "", plain(meta.get("thesis", "")))
