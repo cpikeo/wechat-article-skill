@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Composed Markdown → 公众号正文 HTML + 独立移动预览 + Gate 1/2（V11）。
+"""Composed Markdown → 公众号正文 HTML + 独立移动预览 + Gate 1/2（V11.1）。
 
     render.py article.md [--theme paper|letter|ink|frost|bone|folio] [-o out.html]
     render.py article.md --against 原稿.md [--ledger 台账.md]
@@ -27,9 +27,10 @@ from editorial import (  # noqa: E402
     LEDGER_HEAD, locate, parse_ledger, peak_text, plain, render_report, split_row, strategy_notes,
 )
 from safety import atomic_write, contrast, local_path, output_path, sha256  # noqa: E402
+import typography  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-SKILL_VERSION = "11.0.0"
+SKILL_VERSION = "11.1.0"
 THEMES_PATH = os.path.join(HERE, "..", "assets", "themes.json")
 with open(THEMES_PATH, "rb") as _theme_file:
     THEME_CONFIG_BYTES = _theme_file.read()
@@ -41,7 +42,7 @@ THEME_AXES = {
     "heading": {"index", "plain", "seal", "report", "atelier", "folio"},
     "h3": {"label", "soft", "serif", "report", "atelier", "folio"},
     "peak": {"rule", "field", "line", "plate", "dark", "compact"},
-    "divider": {"short-rule", "pause", "seal", "hairline", "double", "slash"},
+    "divider": {"short-rule", "pause", "seal", "hairline", "double", "dot"},
     "quote": {"rule", "voice", "serif", "report", "atelier", "folio"},
     "image": {"flush", "soft", "inkline", "report", "mat", "folio"},
     "data": {"columns", "stack", "ledger", "ticker", "specimen", "folio"},
@@ -50,7 +51,8 @@ THEME_AXES = {
 }
 TYPE_KEYS = ("heading_size", "heading_weight", "heading_leading", "lead_size", "lead_weight",
              "lead_leading", "quote_size", "h3_size", "data_size")
-COLOR_ROLES = ("text", "sub", "muted", "line", "field", "accent")
+COLOR_ROLES = ("page", "text", "sub", "muted", "line", "field", "accent")
+CONTRAST_PAIRS = (("text", 4.5), ("sub", 4.5), ("muted", 4.5), ("accent", 4.5))
 GRID_KEYS = ("inset", "indent", "chapter_gap", "paragraph_gap", "body", "caption")
 
 
@@ -87,6 +89,10 @@ def validate_themes(themes):
             problems.append(f"{name}：正文字号 {grid['body']}px 超出 15–17px 手机阅读区间")
         if not 12 <= grid["caption"] <= 15:
             problems.append(f"{name}：图注字号 {grid['caption']}px 超出 12–15px")
+        for role, floor in CONTRAST_PAIRS:
+            if contrast(t[role], t["page"]) < floor:
+                problems.append(f"{name}：{role} {t[role]} 在主题底色 {t['page']} 上对比 "
+                                f"{contrast(t[role], t['page']):.2f}，低于 WCAG AA {floor}:1")
     return problems
 
 
@@ -101,8 +107,9 @@ MICRO, SMALL, BODY, DISPLAY = 13, 14, 16, 20
 @functools.lru_cache(maxsize=1)
 def renderer_fingerprint():
     root = os.path.dirname(HERE)
-    paths = [os.path.join(root, "assets", "themes.json")] + [
-        os.path.join(HERE, name + ".py") for name in ("render", "editorial", "check", "safety")]
+    paths = [os.path.join(root, "assets", "themes.json"),
+             os.path.join(root, "assets", "preview.template.html")] + [
+        os.path.join(HERE, name + ".py") for name in ("render", "editorial", "check", "safety", "typography")]
     h = hashlib.sha256()
     for path in sorted(paths):
         with open(path, "rb") as stream:
@@ -145,13 +152,14 @@ PROSE_ATOM = re.compile(
 
 
 def typo(s):
-    """归一中文语境半角标点；保护行内代码、链接与 URL。"""
+    """归一中文语境半角标点与出版口径字符；保护行内代码、链接与 URL。"""
     def prose(text):
-        return re.sub(
+        text = re.sub(
             f"(?<=[{CJK}])([,;:!?])|(?<=[A-Za-z0-9])([,;!?])\\s*(?=[{CJK}])",
             lambda m: dict(zip(",;:!?", "，；：！？"))[m[1] or m[2]],
             text,
         )
+        return typography.publish(text)
     return "".join(
         part if i % 2 else prose(part)
         for i, part in enumerate(re.split(r"(`[^`]+`|“[^”]*”|「[^」]*」|『[^』]*』|\[(?:\[[^\]\n]*\]|[^\]]+)\]\([^)\s]+\)|https?://[^\s<>\u3000，；。！？）\"]+)", s))
@@ -633,7 +641,9 @@ class R:
                         f'{seal_box}' + self.p(title, hs, extra=style + "flex:1;min-width:0;") + "</section>")
             return f'<section style="{gap}">' + self.p(title, hs, extra=style) + "</section>"
         if mode == "report":
-            marker = self.micro(f"{n:02d} /", color=t["accent"], extra="margin-bottom:5px;font-weight:700;font-variant-numeric:tabular-nums;") if numbered else ""
+            marker = self.micro(f"{n:02d}", color=t["accent"],
+                                 extra="margin-bottom:5px;font-weight:700;letter-spacing:0.08em;"
+                                       "font-variant-numeric:tabular-nums;") if numbered else ""
             return (f'<section style="{gap}padding-top:10px;border-top:1px solid {t["text"]};">{marker}'
                     + self.p(title, hs, extra=style) + "</section>")
         if mode == "atelier":
@@ -1028,7 +1038,7 @@ class R:
                     "chinese": (chinese[number - 1] + "、") if number <= len(chinese) else f"{number}、",
                     "report": f"{number:02d}",
                     "atelier": (chinese[number - 1] + "　") if number <= len(chinese) else f"{number}　",
-                    "folio": f"{number:02d}/",
+                    "folio": f"{number:02d}",
                 }[mode]
             else:
                 marker = {"index": "·", "dash": "—", "chinese": "·", "report": "—",
@@ -1150,8 +1160,8 @@ class R:
         elif kind == "double":
             inner = (f'<section style="width:44px;height:1px;background:{t["text"]};margin:0 auto 4px;">{BR}</section>'
                      f'<section style="width:22px;height:1px;background:{t["line"]};margin:0 auto;">{BR}</section>')
-        elif kind == "slash":
-            inner = self.p(self.leaf("／"), DISPLAY - 2, t["accent"], "font-weight:700;line-height:1;text-align:center;")
+        elif kind == "dot":
+            inner = self.p(self.leaf("·"), DISPLAY - 2, t["accent"], "font-weight:700;line-height:1;text-align:center;")
         else:
             raise ValueError(f"分隔轴取值未实现：{kind}")
         return f'<section style="margin:{self.g(36)}px 0;text-align:center;">{inner}</section>'
@@ -1172,7 +1182,7 @@ class R:
         for n, h in enumerate(heads, 1):
             label = plain(h)
             if numbered and not ORDINAL.match(h.strip()):
-                prefix = {"index": f"{n:02d}", "seal": f"{n:02d}", "report": f"{n:02d}/", "folio": f"{n:02d}"}[mode]
+                prefix = {"index": f"{n:02d}", "seal": f"{n:02d}", "report": f"{n:02d}", "folio": f"{n:02d}"}[mode]
                 rows.append(
                     f'<section style="display:flex;align-items:baseline;gap:8px;margin-top:{6 if n > 1 else 0}px;">'
                     + self.p(self.leaf(prefix), self.cap, t["accent"] if mode == "folio" else t["muted"],
@@ -1196,7 +1206,7 @@ class R:
 
 
 def api_title(t):
-    return t.replace("|", "｜").strip()
+    return typography.publish(t.replace("|", "｜")).strip()
 
 
 def auto_digest(meta, blocks, limit=120):
@@ -1448,35 +1458,40 @@ def evidence(meta, blocks, key=None):
             out.append(f"图示 · {k} · {b[0]} · {len(b[1])}项 · {note[0] or '来源待补'}（字面存在不等于已核真）")
         if k == "table" and b and not table_fits(b, inset, table_pad(th)):
             out.append(f"表格 · {len(b)}行×{len(b[0])}列 · 320px 下已自动降级为记录卡")
-    out.append("复核 · 对照 320/360/390/430px 检查断行、溢出与图文关系；封面双裁切见独立预览")
+    out.append("复核 · 对照 320/360/375/390/430px 检查断行、溢出与图文关系；封面双裁切见独立预览")
+    out.append("字符 · 出版口径：可见文本不含斜杠、直角引号与编辑说明；逐字审计结果见侧车 typography 字段")
     return out
 
 
-PREVIEW = """<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1"><title>{title}</title>
-<style>body{{margin:0;background:#ECEAE5;font-family:-apple-system,'PingFang SC','Noto Sans CJK SC',sans-serif}}
-.bar{{display:flex;justify-content:space-between;align-items:center;gap:10px 12px;flex-wrap:wrap;padding:10px 16px;
-background:#fff;border-bottom:1px solid #E5E3DD;font-size:12px;color:#6E6A63}}
-button{{border:0;background:#1F1D1A;color:#fff;padding:7px 14px;border-radius:5px;font-size:12px;cursor:pointer;white-space:nowrap;flex-shrink:0}}
-.phone{{position:relative;max-width:430px;margin:20px auto 48px;background:#fff;padding:24px 16px 44px;box-sizing:border-box}}
-.nt{{margin-bottom:20px}}
-.nt h1{{margin:0 0 10px;font-size:22px;line-height:1.4;font-weight:700;color:#191919;letter-spacing:-.01em;
-font-family:-apple-system,BlinkMacSystemFont,'PingFang SC','Noto Sans CJK SC',sans-serif;line-break:strict;overflow-wrap:anywhere;word-break:normal;text-wrap:pretty}}
-.nt .au{{margin:0;font-size:14px;line-height:1.5;color:#888888}}
-.nt .au b{{font-weight:500;color:#576B95;margin-right:8px}}
-.cv{{max-width:430px;margin:20px auto 0;background:#fff;padding:16px;box-sizing:border-box}}
-.cv h4{{margin:0 0 8px;font-size:12px;color:#746F66;font-weight:600}}
-.cv img{{display:block;width:100%;background:#F0EEE9}}
-.as{{margin-top:12px;padding-top:10px;border-top:1px solid #EFEDE9}}
-.hint{{margin:14px 0 0;font-size:12px;line-height:1.7;color:#746F66}}</style></head>
-<body><div class="bar"><span>{theme} · 移动预览（原生标题栏仅为模拟）</span><button onclick="cp(this)">复制正文（图片另传）</button></div>
-<div class="phone">{native}<div id="c">{body}</div></div>{cover}{assets}
-<script>function cp(b){{var c=document.getElementById('c'), r=document.createRange();r.selectNodeContents(c);
-var s=getSelection();s.removeAllRanges();s.addRange(r);
-function copy(e){{var n=c.cloneNode(true);n.querySelectorAll('img').forEach(function(i){{i.setAttribute('src',i.dataset.local||i.getAttribute('src'));i.removeAttribute('data-local')}});e.clipboardData.setData('text/html',n.innerHTML);e.clipboardData.setData('text/plain',c.innerText);e.preventDefault()}}
-document.addEventListener('copy',copy);var ok=false;try{{ok=document.execCommand('copy')}}finally{{document.removeEventListener('copy',copy)}}
-if(ok)s.removeAllRanges();b.textContent=ok?'正文已复制；本地图片须另传':'请手动复制正文，图片另传';setTimeout(function(){{b.textContent='复制正文（图片另传）'}},2200)}}</script>
-</body></html>"""
+PREVIEW_TEMPLATE = os.path.join(HERE, "..", "assets", "preview.template.html")
+VIEWPORTS = (320, 360, 375, 390, 430)
+ANDROID_SANS = "'Roboto','Noto Sans CJK SC','Source Han Sans SC',sans-serif"
+ANDROID_SERIF = "'Noto Serif CJK SC','Source Han Serif SC',serif"
+ANDROID_MONO = "'Droid Sans Mono',monospace"
+
+
+def preview_page(meta, theme_name, native, body, cover, assets, base="."):
+    """移动预览：五宽度、双字体栈、微信界面模拟与显式模拟范围声明，复制只含正文。"""
+    with open(PREVIEW_TEMPLATE, encoding="utf-8") as stream:
+        html = stream.read()
+    viewports = "".join(
+        f'<button type="button" data-w="{w}" aria-pressed="{"true" if w == 375 else "false"}">{w}</button>'
+        for w in VIEWPORTS)
+    fontmap = json.dumps({"pairs": [[SANS, ANDROID_SANS], [SERIF, ANDROID_SERIF], [MONO, ANDROID_MONO]]},
+                         ensure_ascii=False)
+    for token, value in (
+        ("__TITLE__", H.escape(api_title(meta.get("title", "")))),
+        ("__THEME__", H.escape(theme_name)),
+        ("__NATIVE__", native),
+        ("__BODY__", body),
+        ("__COVER__", cover),
+        ("__ASSETS__", assets),
+        ("__VIEWPORTS__", viewports),
+        ("__WIDTH_HINT__", " / ".join(str(w) for w in VIEWPORTS)),
+        ("__FONTMAP__", fontmap),
+    ):
+        html = html.replace(token, value)
+    return html
 
 
 def preview_image(src, base):
@@ -1526,13 +1541,52 @@ def asset_sheet(blocks, base="."):
         wh, kb = img_size(fp), os.path.getsize(fp) // 1024
         info = f"{wh[0]}×{wh[1]}（{wh[0] / wh[1]:.2f}:1）· {kb}KB" if wh else f"{kb}KB"
         rows.append(f'<div class="as"><p class="hint" style="margin:0">{H.escape(src)} · {tag} · {info}<br>{H.escape(alt or "（无说明）")}</p></div>')
-    return (f'<div class="cv"><h4>正文资产卡 · {len(imgs)} 张</h4>'
+    return (f'<div class="cv" id="af"><h4>正文资产清单 · {len(imgs)} 张 · 核对后须在素材库另传</h4>'
             + "".join(rows)
             + '<p class="hint">未亲眼核验原图前，可见主体、景别、安全区一律记为 UNVERIFIED，不得凭文件名或 alt 推断。</p></div>')
 
 
+def _block_text(kind, b):
+    if isinstance(b, str):
+        return b
+    if kind in ("note", "data", "bars"):
+        return " ".join([b[0] or ""] + [str(x) for x in (b[1] or [])])
+    if kind == "lead":
+        return b[0] or ""
+    if kind == "quote":
+        return b[0] or ""
+    if kind == "unknown":
+        return " ".join([b[0] or ""] + [str(x) for x in (b[1] or [])])
+    if kind == "img":
+        return b[0] or ""
+    if kind == "list":
+        return " ".join(str(x) for x in str(b).split("\n")[:1])
+    return str(b)[:60]
+
+
+def strip_editorial(blocks):
+    """摘掉交代改稿动作的模块（编辑说明一类），并在侧车留痕；不改写成正文。"""
+    kept, dropped, skipping = [], [], False
+    for kind, b in blocks:
+        text = _block_text(kind, b)
+        if kind in ("h2", "h3"):
+            if typography.is_editorial(text):
+                skipping, _ = True, dropped.append(text.strip())
+                continue
+            skipping = False
+        elif skipping:
+            dropped.append(text.strip()[:40])
+            continue
+        if kind in ("note", "p", "unknown") and typography.is_editorial(text):
+            dropped.append(text.strip()[:40])
+            continue
+        kept.append((kind, b))
+    return kept, dropped
+
+
 def render(md, theme=None, plain_text=False):
     meta, blocks = parse(md, plain_text=plain_text)
+    blocks, removed_editorial = strip_editorial(blocks)
     key = theme or meta.get("theme", "paper")
     if key not in THEMES:
         raise ValueError(f"未知主题 {key}，可选：{', '.join(THEMES)}")
@@ -1574,7 +1628,7 @@ def render(md, theme=None, plain_text=False):
             out.append(r.para(b, next_kind=effective_next))
             seen_p = True
         elif kind == "lead":
-            out.append(r.lead(b[0], b[1]))
+            out.append(r.lead(b[0], " ".join(b[1])))
         elif kind == "quote":
             out.append(r.quote(b[0], b[1]))
         elif kind == "peak":
@@ -1643,16 +1697,18 @@ def render(md, theme=None, plain_text=False):
         out.append(sig)
     t = THEMES[key]
     pad = f"padding-left:{r.inset}px;padding-right:{r.inset}px;" if r.inset else ""
-    body = (f'<section style="font-family:{r.reading_font};font-size:{r.body}px;color:{t["text"]};line-height:{t["leading"]};'
-            f'letter-spacing:normal;text-align:left;line-break:strict;overflow-wrap:break-word;{pad}">'
-            + "".join(out) + "</section>")
-    return key, meta, blocks, body
+    body = (f'<section style="background:{t["page"]};font-family:{r.reading_font};font-size:{r.body}px;color:{t["text"]};'
+            f'line-height:{t["leading"]};letter-spacing:normal;text-align:left;line-break:strict;overflow-wrap:break-word;'
+            f'padding:{r.g(2)}px {r.inset}px {r.g(6)}px;">'
+            + typography.sanitize_html("".join(out)) + "</section>")
+    return key, meta, blocks, body, removed_editorial
 
 
 def contrast_checks(theme):
     t = THEMES[theme]
-    pairs = [(role, "#FFFFFF") for role in ("text", "sub", "muted", "accent")]
+    pairs = [(role, t["page"]) for role in ("text", "sub", "muted", "accent")]
     pairs += [(role, t["field"]) for role in ("text", "sub", "muted")]
+    pairs += [("accent", t["field"])]
 
     return [{"foreground_role": role, "foreground": t[role], "background": bg,
              "ratio": round(contrast(t[role], bg), 3), "required": 4.5,
@@ -1671,7 +1727,8 @@ def build(md_path, theme=None, out=None, against=None, ledger=None, delivery=Fal
         source_bytes = stream.read()
     source_text = source_bytes.decode("utf-8")
     source_digest = hashlib.sha256(source_bytes).hexdigest()
-    key, meta, blocks, body = render(source_text, theme, plain_text=os.path.splitext(md_path)[1].lower() == ".txt")
+    key, meta, blocks, body, removed_editorial = render(
+        source_text, theme, plain_text=os.path.splitext(md_path)[1].lower() == ".txt")
     out = os.path.abspath(out or f"{os.path.splitext(md_path)[0]}_{key}.html")
     if os.path.splitext(out)[1].lower() != ".html":
         raise ValueError("正文输出必须使用 .html 扩展名，拒绝覆盖源稿或其他文件")
@@ -1760,7 +1817,12 @@ def build(md_path, theme=None, out=None, against=None, ledger=None, delivery=Fal
         ledger_problems.extend(f"台账位置「{row['位置']}」无法在成稿定位" for row in ledger_rows if not locate(row["位置"], blocks))
         m2.extend(f"修改台账不合格：{x}" for x in ledger_problems)
     contrasts = contrast_checks(key)
-    m2.extend(f"色彩对比不足：{x['foreground_role']} / {x['background']}" for x in contrasts if not x["pass"])
+    m2.extend(f"色彩对比不足：{x['foreground_role']} 在 {x['background']} 上 "
+              f"{x['ratio']}:1，低于 WCAG AA" for x in contrasts if not x["pass"])
+    leftover = typography.violations(body)
+    m2.extend(f"出版口径残留禁用字符 {x['char']}：…{x['context']}…" for x in leftover[:5])
+    s2.extend(f"数字比「{h}」已改写为中文比：确认读起来通顺，或改写为中文计量表达"
+              for h in typography.slash_hints(body))
     fs = first_screen(meta, blocks)
     if fs["weight"] > 1:
         s2.append(f"首屏含 {fs['weight']} 个重入口：建议只保留一个主入口")
@@ -1771,10 +1833,8 @@ def build(md_path, theme=None, out=None, against=None, ledger=None, delivery=Fal
             atomic_write(local_path(src, stage), data)
         atomic_write(os.path.join(stage, "正文.html"), body)
         source_name = "源稿.md" if delivery else os.path.abspath(md_path)
-        preview = PREVIEW.format(
-            title=H.escape(api_title(meta.get("title", ""))), theme=H.escape(THEMES[key]["name"]),
-            cover=cover_block(meta, stage), assets=asset_sheet(blocks, stage),
-            native=native_header(meta), body=body)
+        preview = preview_page(meta, THEMES[key]["name"], native_header(meta), body,
+                               cover_block(meta, stage), asset_sheet(blocks, stage))
         preview = re.sub(r'(<img\b[^>]*src=")([^"]+)(")',
                          lambda m: m[1] + H.escape(preview_image(H.unescape(m[2]), stage)) + m[3] + ' data-local="' + m[2] + '"', preview)
         atomic_write(os.path.join(stage, "预览.html"), preview)
@@ -1791,6 +1851,11 @@ def build(md_path, theme=None, out=None, against=None, ledger=None, delivery=Fal
             "cover": cover if cover and not TODO.match(cover) else "", "source_url": meta.get("source", ""),
             "theme": key, "skill_version": SKILL_VERSION, "theme_config_sha256": THEME_CONFIG_SHA256,
             "renderer_sha256": renderer_fingerprint(),
+            "typography": {"policy": "V11.1 出版口径：可见文本无斜杠、无直角引号、无编辑说明",
+                           "banned_visible": leftover,
+                           "removed_editorial": removed_editorial,
+                           "preview_viewports": list(VIEWPORTS),
+                           "preview_fonts": ["ios", "android"]},
             "theme_profile": {axis: THEMES[key][axis] for axis in THEME_AXES},
             "grid": dict(THEMES[key]["grid"]), "contrast_checks": contrasts,
             "decision": review["decision"], "article_type": review["type"]["key"],

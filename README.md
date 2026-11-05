@@ -1,8 +1,10 @@
-# WeChat Article Skill · V11.0.0
+# WeChat Article Skill · V11.1.0
 
 将 Markdown、Word `.docx` 或纯文本编辑并排版为可信、克制、适合手机阅读的微信公众号正文 HTML、独立移动预览与可核验交付包。本仓库是遵循开放标准的 AI 编辑与视觉排版 Skill，零第三方运行时依赖，仅使用 Python 3 标准库。
 
-**工作流：THINK → EDIT → DESIGN → COMPOSE → RENDER → VERIFY。** 内容判断先于视觉，关系组织先于装饰；删除 > 合并 > 简化 > 复用 > 新增。完整规则与编辑/设计契约以唯一核心入口 [`SKILL.md`](SKILL.md) 为准。
+**工作流：THINK → EDIT → DESIGN → COMPOSE → RENDER → VERIFY。** 内容判断先于视觉，关系组织先于装饰；删除 > 合并 > 简化 > 复用 > 新增。
+
+**V11.1 出版口径**：读者可见文本不出现斜杠与直角引号（分隔用「·」，引述用弯引号），不出现编辑说明；独立预览支持 320 / 360 / 375 / 390 / 430 五宽度与 iOS、Android 双字体栈，并标明微信界面为模拟。完整规则与编辑/设计契约以唯一核心入口 [`SKILL.md`](SKILL.md) 为准。
 
 ## 目录结构
 
@@ -15,7 +17,9 @@
 | `scripts/extract_docx.py` | `.docx` → Markdown 结构保真优先提取（标题、粗体/斜体/下划线/删除线、引用块、多级编号、普通表格；有损结构显式阻断；输出转换记录） |
 | `scripts/publish.py` | 微信公众号官方 API：离线预检 → 素材复用 → 草稿创建与回读核验 → 单次确认发布 |
 | `scripts/safety.py` | 相对路径穿越/符号链接拦截、SHA-256 指纹与 WCAG 对比度计算 |
-| `assets/themes.json` | 六套主题（`paper`/`letter`/`ink`/`frost`/`bone`/`folio`）唯一参数真源 |
+| `scripts/typography.py` | 出版口径：斜杠与直角引号改写、编辑说明识别与移除、可见文本逐字审计 |
+| `assets/themes.json` | 六套主题（`paper`/`letter`/`ink`/`frost`/`bone`/`folio`）唯一参数真源，含 `page` 底色角色与 WCAG AA 校验 |
+| `assets/preview.template.html` | 独立移动预览模板：五宽度、双字体栈、微信界面模拟、复制与素材清单 |
 | `references/` | 按需工程参考：[`direction.md`](references/direction.md)（素材工艺）、[`platform.md`](references/platform.md)（HTML 门禁）、[`publish.md`](references/publish.md)（API 交付） |
 | `config.example.json` | 公众号配置示例（复制为已被 Git 忽略的 `config.json` 使用） |
 
@@ -46,18 +50,30 @@ python3 scripts/publish.py --html 交付目录/正文.html --meta 交付目录/�
 ## V11 验证与交付
 
 ```bash
-# 开发环境（运行时不需要这些依赖）
+# 单元回归（仅标准库）
+python3 -m unittest discover -s dev/tests -v
+
+# 浏览器核对（开发依赖）
 python3 -m pip install -r dev/requirements.txt
 python3 -m playwright install chromium
-python3 -m unittest discover -s dev/tests -v
+python3 dev/browser_check.py            # 六主题 × 七样稿 × 五宽度
+python3 dev/make_comparison.py          # 六主题视觉对照（单文件）
+
+# 编辑线索与声音形态
 python3 dev/evaluate.py
 python3 dev/voice_evaluate.py
-python3 dev/browser_check.py --output dev/reports/browser
 ```
 
-- 六主题同稿、320/360/390/430px 真实 Chromium 截图与 JSON 指标：`dev/reports/browser/`。
+| 入口 | 能证明 | 不能证明 |
+|---|---|---|
+| `dev/tests`（27 项） | 出版口径、主题硬约束、WCAG AA、预览与门禁的确定性契约 | 文章质量 |
+| `dev/browser_check.py`（210 项） | 本机 Chromium 五宽度无横向溢出、可见字号 ≥12px | 微信客户端清洗与真机 |
+| `dev/evaluate.py` | 已标注线索的触发情况（正样 7 / 负样 5） | 语义编辑准确率 |
+| 微信 API 回读与真机截图 | 草稿逐字一致、客户端最终排版 | 跨账号差异与平台改版 |
+
+- 六主题同稿、320/360/375/390/430px 真实 Chromium 截图与 JSON 指标：`dev/reports/browser/`。
 - 可离线打开的视觉对照：`dev/reports/visual-comparison.html`。
-- 九维结果、修改/删除/保留清单、未验证事项与下阶段优先级：`dev/reports/V11-验收报告.md`。
+- 九维结果、修改/删除/保留清单、未验证事项与下阶段优先级：`dev/reports/V11.1-验收报告.md`；审计与整改记录：`dev/reports/V11.1-审计与整改.md`。
 - 编辑评测含 12 篇原创完整情境正负样稿与 6 组真实发表来源短片段；所有注入缺陷均显式标注。检测率只衡量已标注线索，不冒充语义编辑准确率。
 - 发布预检冻结 HTML/侧车/源稿/封面/正文图字节；API 仅允许 HTTPS 官方 `api.weixin.qq.com/cgi-bin/`，拒绝重定向；封面缓存按账号隔离并验活。
 
@@ -66,7 +82,7 @@ python3 dev/browser_check.py --output dev/reports/browser
 - **编辑不造假**：机器线索只定位回看原文的地址，不代替语义判决，不虚构事实、来源、引语或图片内容。
 - **六主题不靠换色**：`paper`（静纸）、`letter`（暖信笺）、`ink`（酌墨）、`frost`（北霜）、`bone`（素作）、`folio`（特稿）由字体、网格、标题结构与组件语法驱动，去色后仍清晰可辨；320px 窄屏自动执行多栏自适应与表格记录卡降级。
 - **安全与门禁闭环**：禁止路径越界、外链图片直引、危险 CSS/脚本与持久发布授权；草稿回读或删除永久素材均有独立强校验与 `0600` 脱敏审计日志。
-- **三级验收分离**：严格区分本地四宽度浏览器验证、微信 API 草稿回读与微信客户端真机验收；未执行项如实记为 `UNVERIFIED` 或 `BLOCKED`。
+- **三级验收分离**：严格区分本地五宽度浏览器验证、微信 API 草稿回读与微信客户端真机验收；未执行项如实记为 `UNVERIFIED` 或 `BLOCKED`。
 
 ## 许可
 
