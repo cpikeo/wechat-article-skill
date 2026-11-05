@@ -1,4 +1,4 @@
-# 运行时与开发均在本地生成的输出，一律不入库
+# 运行时生成物，一律不入库
 __pycache__/
 *.pyc
 
@@ -9,8 +9,5 @@ config.json
 .wechat-write-*
 .wechat_publish_audit.jsonl
 
-# 交付物与临时产物
+# 交付物
 交付/
-
-# 开发评测产物（报告、截图、临时渲染）
-dev/reports/

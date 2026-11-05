@@ -455,7 +455,7 @@ def prepare_submission(html_path, settings, meta_path=None):
     if not isinstance(side, dict):
         raise ValueError("meta 必须是 JSON 对象")
     if side.get("integrity_version") != 3 or side.get("skill_version") != SKILL_VERSION:
-        raise ValueError("旧版渲染记录不能上行；请用 V14 重渲染")
+        raise ValueError("旧版渲染记录不能上行；请用当前版本重渲染")
     if side.get("theme_config_sha256") != THEME_CONFIG_SHA256 or side.get("renderer_sha256") != RENDERER_SHA256:
         raise ValueError("主题或渲染代码已变化；请重渲染，不能沿用旧验收")
     if side.get("body_sha256") != hashlib.sha256(raw_html).hexdigest():

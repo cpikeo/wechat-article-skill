@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Editorial Intelligence V14：可定位、可复现的编辑审计层。
+"""Editorial Intelligence：可定位、可复现的编辑审计层。
 
 边界：
 - 本模块不做语义判决、不证实外部事实、不自动改写文字。
@@ -115,6 +115,43 @@ TYPES = {
         "semantic_review": ["主线张力与标题兑现", "伏笔、转折与回收", "中段推进与章节增量", "结尾收束无突兀新证", "叙事呼吸与作者声音"],
     },
 }
+
+# 每类文章只检验两个真正决定其成立的结构环节：缺了它，读者按类型预期要找的东西就不在。
+# 这不是评分表，而是「到正文里回看哪一环」的定位器。
+STRUCTURE_RINGS = {
+    "news": [("时间与归属", r"(?:19|20)\d{2}|月\d{1,2}日|昨日|今日|本周|日前"),
+             ("影响范围", r"影响|波及|涉及|受此|后果|冲击|意味着")],
+    "analysis": [("作用机制", r"机制|原因|因为|取决于|传导|路径|逻辑|为何"),
+                 ("现实含义", r"意味着|接下来|未来|或将|对.{0,8}而言|影响|结论")],
+    "tutorial": [("目标结果", r"完成|得到|实现|你将|最终|效果|可以做到"),
+                 ("步骤序列", r"第[一二三四五六七八九十\d]|步骤|首先|然后|接着|最后")],
+    "profile": [("具体切口", r"(?:19|20)\d{2}|月\d{1,2}日|那天|当时|第一次|那年"),
+                ("有据意义", r"后来|此后|如今|今天|至今|留下|影响|因此")],
+    "opinion": [("理由链", r"因为|理由|首先|其一|第一|由于|说到底"),
+                ("结论限定", r"前提|边界|并非|未必|在一定|限于|不适用于|至少")],
+    "longform": [("关键转折", r"直到|然而|但|转折|突然|几年后|后来"),
+                 ("主线回收", r"回到|再次|最初|开头|终究|最终|那条|那个")],
+}
+
+# 开篇入口：每类第一段要交付的东西不同，同一段开场白不可能同时满足六类读者任务。
+# 第二项是缺环时的具体改写方向，不复用通用话术。
+OPENING_SIGNALS = {
+    "news": (r"(?:19|20)\d{2}|月\d{1,2}日|昨日|今日|本周|日前|通报|宣布|发布|确认",
+             "首段未见事件时间或发布主体", "把「何时发生、谁确认」写进第一句，再交代背景"),
+    "analysis": (r"\d|意味着|判断|问题|取决于|不是.{0,12}(?:而是|是)|真正的",
+                 "首段停留在背景铺垫，未见判断或数据", "开篇直接给出判断，以及它依赖的证据类型与口径"),
+    "tutorial": (r"完成|得到|实现|你将|最终|做到|结果",
+                 "首段未说明读者做完会得到什么", "先写可验证的完成结果，再交代环境与版本前提"),
+    "profile": (r"(?:19|20)\d{2}|月\d{1,2}日|那天|第一次|当时|他在|她在|她走进|他走进",
+                "首段缺少可核实的时间节点或具体动作", "从一个具体场景、时间或动作切入，不用定语定性人物"),
+    "opinion": (r"我认为|应当|必须|不能|问题在于|值得|不该|真正的",
+                "首段未亮明主张", "把主张连同它的代价或前提放在开头，先于抒情铺垫"),
+    "longform": (r"(?:19|20)\d{2}|[「“]|那天|当时|\d",
+                 "开篇切口不够具体，读者难以进入场景", "用一个具体场景、动作或细节开场，把全文张力立起来"),
+}
+
+# 开篇入口与结构环节指向同一件事时只报一次
+OPENING_RING = {"news": "时间与归属", "profile": "具体切口", "tutorial": "目标结果"}
 
 TYPE_ALIASES = {
     "新闻": "news", "报道": "news", "新闻报道": "news",
@@ -589,12 +626,42 @@ _HEAD_STOP = {
 
 
 def _add(issues, code, cls, severity, location, problem, action, benefit, evidence,
-         preservation="保留原意、事实、语气与限定条件", needs="none"):
+         needs="none"):
     issues.append({
         "code": code, "class": cls, "severity": severity, "location": location,
         "problem": problem, "action": action, "benefit": benefit, "evidence": evidence,
-        "preservation": preservation, "needs": needs,
+        "needs": needs,
     })
+
+
+def structure_coverage(blocks, type_key):
+    """六类的结构环节各在哪：先看章节标题，再看正文；只报位置，不判质量。"""
+    rings = STRUCTURE_RINGS.get(type_key) or []
+    if not rings:
+        return []
+    heads = " ".join(plain(v) for k, v in blocks if k in ("h2", "h3"))
+    body = " ".join(block_text(k, b) for k, b in blocks)
+    out = []
+    for name, pattern in rings:
+        hit = "标题" if re.search(pattern, heads) else ("正文" if re.search(pattern, body) else "")
+        out.append({"ring": name, "located": hit, "status": "located" if hit else "missing"})
+    return out
+
+
+def opening_gap(meta, blocks, type_key):
+    """开篇入口是否兑现该类型的读者任务；thesis 已写明主张时不再要求首段重复。"""
+    signal = OPENING_SIGNALS.get(type_key)
+    if not signal:
+        return None
+    first = next((plain(block_text(k, b)) for k, b in blocks if k in ("lead", "p") and plain(block_text(k, b))), "")
+    if not first:
+        return None
+    pattern, problem, action = signal
+    if re.search(pattern, first[:160]):
+        return None
+    if type_key in ("opinion", "analysis") and meta.get("thesis"):
+        return None
+    return {"problem": problem, "action": action, "evidence": f"首段「{first[:32]}…」未见该类入口标记"}
 
 
 def _head_token(clause):
@@ -1295,6 +1362,24 @@ def _judgment_issues(meta, blocks, type_key, sections, gains):
                      "保证每一节都交付新的信息增量",
                      f"与前文相似度 {g['similarity_to_previous']:.2f}；新事实 0", needs="editor")
 
+    # 6) 六类各有自己的开篇任务与结构承诺：同一段开场白不可能同时满足六类读者
+    if strategy:
+        gap = opening_gap(meta, blocks, type_key)
+        if gap:
+            _add(issues, "OPENING-ENTRY", "judgment", "should", "首段",
+                 gap["problem"], gap["action"],
+                 f"满足{strategy['label']}读者第一眼的判断需求", gap["evidence"], needs="editor")
+        missing = [r["ring"] for r in structure_coverage(blocks, type_key) if r["status"] == "missing"]
+        # 开篇已就同一件事报过一次，结构层不再重复同一环
+        if gap:
+            missing = [x for x in missing if x != OPENING_RING.get(type_key)]
+        if missing:
+            _add(issues, "STRUCTURE-GAP", "judgment", "should", "全文",
+                 f"本篇结构缺环：{'、'.join(missing)}",
+                 f"按{strategy['label']}的推进结构补齐：{' → '.join(strategy['structure'])}",
+                 "让读者按类型预期找到该找的东西",
+                 f"章节标题与正文均未定位到{'、'.join(missing)}", needs="editor")
+
     return issues
 
 
@@ -1330,6 +1415,31 @@ def _promise_issues(promises):
     return issues
 
 
+def _title_issues(title, blocks):
+    """标题的移动端可读性：列表页只露出前十几个字，标题必须自己先立住。"""
+    issues = []
+    text = plain(title).strip()
+    if not text:
+        return issues
+    if len(text) > 24:
+        _add(issues, "TITLE-LONG", "judgment", "should", "标题",
+             f"标题 {len(text)} 字，公众号列表与转发卡片会截断前半段",
+             "把结论性信息压进前 12 字，其余移到副题或导语",
+             "让标题在列表页就完成信息交付", f"「{text[:24]}…」共 {len(text)} 字")
+    elif len(text) < 6:
+        _add(issues, "TITLE-THIN", "judgment", "note", "标题",
+             f"标题仅 {len(text)} 字，读者无法据此判断文章内容",
+             "补上对象与判断，而不是加形容词",
+             "降低点开才发现不对题的损耗", f"「{text}」")
+    first = plain(next((block_text(k, b) for k, b in blocks if k in ("lead", "p")), ""))
+    if len(text) >= 6 and text in first:
+        _add(issues, "TITLE-RESTATED", "mechanical", "note", "标题与首段",
+             "标题原句在首段逐字复述，首屏没有新增信息",
+             "首段直接推进到具体事实、场景或代价", "把首屏留给标题之外的内容",
+             "首段出现与标题相同的完整句子")
+    return issues
+
+
 def audit(meta, blocks):
     """执行完整编辑审计：形态线索、判断入口、标题承诺、逐节增量、作者声音与设计决策链。"""
     title = meta.get("title", "").replace("|", "｜")
@@ -1342,6 +1452,7 @@ def audit(meta, blocks):
     issues.extend(_judgment_issues(meta, blocks, type_key, sections, gains))
     promises = promise_ledger(title, blocks, meta.get("thesis", ""))
     issues.extend(_promise_issues(promises))
+    issues.extend(_title_issues(title, blocks))
 
     brief_keys = ("audience", "reading_context", "purpose", "thesis")
     missing = [k for k in brief_keys if not meta.get(k)]
@@ -1416,6 +1527,7 @@ def audit(meta, blocks):
             "verification": "外部事实核真、语义兑现、审美与真机验收一律标为 UNVERIFIED",
         },
         "section_gain": gains,
+        "structure_rings": structure_coverage(blocks, type_key),
         "voice": voice_profile(blocks),
         "decision_chain": decision_chain(meta, blocks),
         "fact_verification": "not_performed",
@@ -1460,6 +1572,9 @@ def render_report(result, facts_diff=None, ledger_problems=None, voice_diff=None
     lines.append(f"- 形态线索 {s['mechanical']} 项 · 判断入口 {s['judgment']} 项 · 必须修 {s['must']} 项")
     lines.append(f"- 未填 brief 字段：{'、'.join(result['missing_brief']) or '无'}")
     lines.append("- 语义验收项（均 UNVERIFIED）：" + " / ".join(result["semantic_review"]["required"]))
+    if result.get("structure_rings"):
+        located = " · ".join(f"{r['ring']}→{r['located'] or '未定位'}" for r in result["structure_rings"])
+        lines.append(f"- 结构环节（字面定位，不判质量）：{located}")
     if result["promise"]:
         lines += ["", "## 标题承诺", "", "| 类型 | 承诺 | 期望 | 可见 | 状态 |", "|---|---|---:|---:|---|"]
         for p in result["promise"]:

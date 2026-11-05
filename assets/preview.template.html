@@ -6,12 +6,23 @@ body{font-family:-apple-system,BlinkMacSystemFont,'PingFang SC','Hiragino Sans G
 .bar{position:sticky;top:0;z-index:9;display:flex;justify-content:space-between;align-items:center;gap:10px 14px;flex-wrap:wrap;padding:10px 16px;background:#FCFCFA;border-bottom:1px solid #E7E5DF}
 .bar .t{font-size:12px;color:#6C6961;letter-spacing:.02em;line-height:1.5}
 .bar .t b{color:#24231F;font-weight:600}
+.bar .t i{font-style:normal;font-variant-numeric:tabular-nums}
 .ctl{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .seg{display:inline-flex;border:1px solid #E0DDD5;border-radius:6px;overflow:hidden;background:#fff}
 .seg button{border:0;background:#fff;color:#6C6961;font-size:11.5px;padding:5px 9px;cursor:pointer;font-variant-numeric:tabular-nums}
 .seg button+button{border-left:1px solid #EFEDE7}
 .seg button[aria-pressed="true"]{background:#24231F;color:#fff}
 .btn{border:0;border-radius:6px;background:#24231F;color:#fff;font-size:12px;padding:7px 13px;cursor:pointer;white-space:nowrap}
+.btn.ghost{background:#fff;color:#4B4842;border:1px solid #E0DDD5}
+.panel{max-width:620px;margin:0 auto;padding:16px 18px 18px;background:#FCFCFA;border-bottom:1px solid #E7E5DF}
+.panel .h{font-size:12px;color:#6C6961;margin:0 0 10px;letter-spacing:.02em}
+.crops{display:flex;align-items:flex-end;gap:14px;flex-wrap:wrap}
+.crop{position:relative;overflow:hidden;background:#E9E6DF}
+.crop.wide{flex:1;min-width:220px;aspect-ratio:2.35}
+.crop.sq{width:96px;height:96px;flex:none}
+.crop img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;display:block}
+.panel .n{font-size:11.5px;color:#7A776F;line-height:1.7;margin:10px 0 0}
+.panel .n b{color:#4B4842;font-weight:600}
 .stage{padding:22px 12px 40px;display:flex;justify-content:center}
 .phone{width:375px;max-width:100%;background:#fff;border-radius:22px;box-shadow:0 12px 34px rgba(30,28,24,.12);overflow:hidden;transition:width .18s ease}
 .wxnav{display:flex;align-items:center;justify-content:space-between;padding:10px 14px 8px;border-bottom:1px solid #F2F0EB}
@@ -28,19 +39,28 @@ body{font-family:-apple-system,BlinkMacSystemFont,'PingFang SC','Hiragino Sans G
 </style></head>
 <body>
 <div class="bar">
-  <span class="t"><b>__THEME__</b> · 移动预览</span>
+  <span class="t"><b>__THEME__</b> · 移动预览 · <i id="wc">—</i></span>
   <span class="ctl">
     <span class="seg" id="vw">__VIEWPORTS__</span>
     <span class="seg" id="ff"><button type="button" data-f="ios" aria-pressed="true">iOS 字体</button><button type="button" data-f="android" aria-pressed="false">Android 字体</button></span>
+    <button class="btn ghost" type="button" onclick="tg('cov',this)">封面裁切</button>
     <button class="btn" type="button" onclick="cp(this)">复制正文</button>
   </span>
+</div>
+<div class="panel" id="cov" hidden>
+  <p class="h">封面裁切核对 · 公众号列表 2.35:1 与小图 1:1（用 cover_focal 模拟客户端取景）</p>
+  <div class="crops">
+    <div class="crop wide"><img id="cw" alt="封面 2.35:1 裁切"></div>
+    <div class="crop sq"><img id="cs" alt="封面 1:1 裁切"></div>
+  </div>
+  <p class="n" id="cn"></p>
 </div>
 <div class="stage"><div class="phone" id="ph">
   <div class="wxnav"><span class="ic">‹</span><span class="cap">公众号</span><span class="ic">⋯</span></div>
   <div class="scr" id="scr">__NATIVE__<div id="c">__BODY__</div></div>
 </div></div>
 <script>
-var FONTS=__FONTMAP__;
+var FONTS=__FONTMAP__, COVER=__COVER__;
 function setFont(mode){
   var list=document.querySelectorAll('#c, #c *');
   for(var i=0;i<list.length;i++){
@@ -61,6 +81,15 @@ function setWidth(w){
 }
 document.getElementById('vw').addEventListener('click',function(e){var b=e.target.closest('button');if(b)setWidth(Number(b.dataset.w))});
 document.getElementById('ff').addEventListener('click',function(e){var b=e.target.closest('button');if(b)setFont(b.dataset.f)});
+function tg(id,btn){
+  var el=document.getElementById(id);el.hidden=!el.hidden;
+  btn.textContent=el.hidden?'封面裁切':'收起裁切';
+}
+function wordcount(){
+  var t=(document.getElementById('c').innerText||'').replace(/\s+/g,'');
+  var n=t.length;if(!n)return;
+  document.getElementById('wc').textContent=n+' 字 · 约 '+Math.max(1,Math.round(n/400))+' 分钟';
+}
 function normalize(clone){
   clone.querySelectorAll('img').forEach(function(i){var l=i.getAttribute('data-local');if(l)i.setAttribute('src',l);i.removeAttribute('data-local')});
   return clone;
@@ -87,5 +116,15 @@ async function cp(btn){
   }catch(e){}
   flash(btn,fallbackCopy()?'已复制正文':'请手动选择正文复制');
 }
+if(COVER&&COVER.src){
+  ['cw','cs'].forEach(function(id){document.getElementById(id).src=COVER.src});
+  ['cw','cs'].forEach(function(id){document.getElementById(id).style.objectPosition=COVER.focal||'50% 50%'});
+  var n=document.getElementById('cn');
+  n.innerHTML='取景焦点 <b>'+(COVER.focal||'50% 50%')+'</b>'+(COVER.note?' · '+COVER.note:'');
+}else{
+  document.getElementById('cov').hidden=true;
+  document.querySelector('.btn.ghost').hidden=true;
+}
+wordcount();
 </script>
 </body></html>

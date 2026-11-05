@@ -1,46 +1,44 @@
-# WeChat Article Skill · V14.0.0
+# WeChat Article Skill · V15.0.0
 
-将 Markdown、Word `.docx` 或纯文本编辑并排版为可信、克制、适合手机阅读的微信公众号正文 HTML、独立移动预览与可核验交付包。零第三方运行时依赖，仅使用 Python 3 标准库。
+把 Markdown、Word `.docx` 或纯文本编辑成可信、克制、适合手机阅读的微信公众号正文 HTML、独立移动预览与可核验交付包。零第三方运行时依赖，只用 Python 3 标准库。
 
-**工作流：THINK → EDIT → DESIGN → COMPOSE → RENDER → VERIFY。** 内容判断先于视觉；删除 > 合并 > 简化 > 复用 > 新增。完整编辑/设计契约以 [`SKILL.md`](SKILL.md) 为唯一核心入口。
+**工作流：THINK → EDIT → DESIGN → COMPOSE → RENDER → VERIFY。** 内容判断先于视觉；删除 > 合并 > 简化 > 复用 > 新增。编辑与设计契约的唯一入口是 [`SKILL.md`](SKILL.md)。
 
-## V14 重点
+## V15 修了什么
 
-- 读者版面去制作化：正文与预览不再印「AI 生成示意 / 素材说明 / 来源 / 来源与授权 / 待补素材 / 资产清单」等模板标签与占位模块；来源与合规记录保留在侧车，必要归属以一句散文简洁呈现。
-- 视觉降噪：移除图片衬底/圆角/描边、导语与引文色块边框、章节装饰线与首字下沉；六主题靠字体、字重、间距与低饱和色辨识，版面更干净耐读。
-- 预览只保留读者可见内容与宽度/字体/复制控件；封面裁切对照移至开发报告 `V14-visual-comparison.html`。
-- 样稿图片与内容重新对齐：色彩校样/色样静物/编辑工序封面替换无关配图；流程图重绘为清晰中文。
+**内容保真**
+- 修复技术单位被误改写：`次/日`、`吨/小时`、`元/度` 曾按装饰性斜杠变成「次 · 日」，现在按单位比保护；`与/或` 一类逻辑连词一并保护，装饰性斜杠规则不再触碰事实载体。
+- 修复数据来源门禁误判全角年份「（2025）」为缺来源，不再要求把中文括号改成半角。
 
-## V13 重点（保留）
+**六主题成为六种设计**
+- 兑现两条此前只存在于配置里的设计轴：`image`（图像版心与图注对齐）与 `divider`（分节符号）。六主题现在在**标题语法、数据语汇、图像版心、分节符号**四条轴上各不相同，去色后仍可辨认。
+- 酌墨主题的章节改为朱砂短印（不编号），并启用开篇首字放大；此前它的标题语法与静纸完全相同。
+- 修复层级倒置：三级标题曾小于正文（15px < 16px），重点句只比导语大 1px；现在 H3 ≥ 正文、重点句 ≥ 导语 + 2px，且六主题重点句各有字重、缩进与行距语法。
 
-- 图片艺术指导：生成前七项策划单、六类视觉表达、构图/材质/光影/色彩方向、整篇视觉叙事与生成后看图淘汰；详见 `references/direction.md`。
-- 封面 `cover_focal` 焦点裁切（2.35:1 与 1:1 双模拟）；AI 生成图硬拦截冒充资料/实拍/证据/数据；全文同表达方式同质化预警；新增 `macro`/`收束` 语法。
+**编辑判断**
+- 六类文章各增 `OPENING-ENTRY`（开篇入口）与 `STRUCTURE-GAP`（结构缺环）定位，六种类型不再共用一套模板；同一环节只报一次。
+- 新增标题移动端可读性检查：过长（列表截断）、过薄（信息不足）、逐字复述首段。
 
-## V12 重点（保留）
-
-- 主题载入即校验所有文字色 × 背景色 WCAG AA ≥ 4.5:1，覆盖 `page` 与 `field` 两类背景。
-- 排版保护事实载体：直接引语内部、URL、行内代码、技术单位与数字比不被斜杠规则改写。
-- 封面 `cover_note` 与素材侧车记录来源、授权与是否 AI 生成（内部合规，不在版面显示）。
-- 独立预览支持 320/360/375/390/430 五宽度与 iOS/Android 字体栈切换；复制只含正文。
-- 修复预览字体切换未作用于正文根节点、`check.py --help`、无 `--meta` 时侧车自动发现等问题。
+**预览与交付**
+- 预览新增「封面裁切」面板：以 `cover_focal` 模拟公众号 2.35:1 与 1:1 双裁切，`cover_focal` 从只写不读变成可核对项；工具条显示字数与预计阅读时长。
+- 清理失效引用：删除全部指向不存在 `dev/` 目录的测试、评测与报告说明；正式包只保留运行所需文件。
 
 ## 目录
 
 | 路径 | 职责 |
 |---|---|
-| [`SKILL.md`](SKILL.md) | 唯一核心入口：六类编辑策略、六主题设计系统、构图与三级验收 |
+| [`SKILL.md`](SKILL.md) | 唯一核心入口：六类编辑策略、六主题设计系统、图片契约、三级验收 |
 | `scripts/render.py` | Markdown 解析、六主题排版、预览、侧车与 Gate 1/2 交付 |
-| `scripts/editorial.py` | 编辑审计：类型策略、文风线索、标题承诺、事实与声音比对 |
+| `scripts/editorial.py` | 编辑审计：类型策略、结构缺环、标题承诺、事实与声音比对 |
 | `scripts/check.py` | 公众号 HTML 标签、属性、协议、内联 CSS 白名单静态门禁 |
 | `scripts/extract_docx.py` | `.docx` → Markdown 结构保真提取，有损结构阻断 |
 | `scripts/publish.py` | 官方 API：离线预检 → 素材复用 → 草稿回读 → 单次确认发布 |
+| `scripts/typography.py` | 装饰性分隔归一、编辑说明移除、单位比与引语保护 |
 | `scripts/safety.py` | 路径边界、哈希、原子写入与 WCAG 对比度 |
-| `scripts/typography.py` | 装饰性分隔归一、编辑说明移除、代码/引语保护 |
 | `assets/themes.json` | 六主题唯一参数真源 |
-| `assets/preview.template.html` | 移动预览：五宽度、双字体栈、复制；只呈现读者可见内容 |
-| `references/` | 工程参考：[素材](references/direction.md)、[HTML 门禁](references/platform.md)、[API 交付](references/publish.md) |
+| `assets/preview.template.html` | 移动预览：五宽度、双字体栈、封面双裁切、复制只含正文 |
+| `references/` | 按需读取：[图片艺术指导](references/direction.md)、[HTML 门禁](references/platform.md)、[API 交付](references/publish.md) |
 | `config.example.json` | 公众号配置示例；复制为被 Git 忽略的 `config.json` |
-| `dev/` | 测试、样稿、浏览器评测与审计；不进入正式运行包 |
 
 ## 快速开始
 
@@ -55,30 +53,10 @@ python3 scripts/publish.py --html 交付目录/正文.html --meta 交付目录/�
   --submit --confirm-title "逐字标题"
 ```
 
-## 验证
-
-```bash
-python3 -m unittest discover -s dev -p 'test_*.py' -v
-python3 dev/evaluate.py
-python3 -m pip install -r dev/requirements.txt
-python3 -m playwright install chromium
-python3 dev/browser_check.py
-python3 dev/audit.py
-```
-
-| 入口 | 能证明 | 不能证明 |
-|---|---|---|
-| `dev/test_skill.py` | 主题、排版、预览、交付、DOCX、发布安全的确定性契约 | 文章语义质量 |
-| `dev/evaluate.py` | 六类样稿与注入缺陷的机器线索触发 | 语义编辑准确率 |
-| `dev/browser_check.py` | 真实 Chromium 五宽度 × 双字体栈、复制隔离、截图 | 微信客户端清洗与真机 |
-| `dev/audit.py` | 文件规模、import 图与引用图 | 删除决策本身 |
-
-证据输出：`dev/reports/browser.json`、`dev/reports/editorial.json`、`dev/reports/audit.json`、`dev/reports/visual-comparison.html`、`dev/reports/V14-visual-comparison.html` 与 `dev/reports/browser/` 截图。验收报告：`dev/reports/V14-验收报告.md`；图片策划与淘汰：`dev/reports/V13-image-briefs.md`。
-
 ## 边界
 
 - 机器线索只定位回看原文的地址，不代替语义判决，不虚构事实、来源、引语或图片内容。
-- 六主题由字体、网格、标题结构与组件语法驱动，去色后仍可辨；320px 自动执行数据自适应与表格记录卡降级。
+- 主题载入即校验字号层级与全部文字色 × 背景色对比度；320px 自动执行数据自适应与表格记录卡降级。
 - 禁止路径越界、外链图片直引、危险 CSS/脚本与持久发布授权；草稿回读与删除永久素材均有独立强校验。
 - 浏览器 PASS、API 回读 PASS、微信真机 PASS 严格分离；未执行项如实记为 `UNVERIFIED` 或 `BLOCKED`。
 
