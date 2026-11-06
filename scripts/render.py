@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Composed Markdown → 公众号正文 HTML + 独立移动预览 + Gate 1/2（V17）。
+"""Composed Markdown → 公众号正文 HTML + 独立移动预览 + Gate 1/2（V19）。
 
     render.py article.md [--theme paper|letter|ink|frost|bone|folio] [-o out.html]
     render.py article.md --against 原稿.md [--ledger 台账.md]
@@ -28,7 +28,7 @@ from safety import atomic_write, contrast, local_path, output_path, sha256  # no
 import typography  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-SKILL_VERSION = "18.0.0"
+SKILL_VERSION = "19.0.0"
 THEMES_PATH = os.path.join(HERE, "..", "assets", "themes.json")
 with open(THEMES_PATH, "rb") as _theme_file:
     THEME_CONFIG_BYTES = _theme_file.read()
@@ -100,6 +100,8 @@ def validate_themes(themes):
         for role in COLOR_ROLES + ("display", "toc_label", "body_font", "initial"):
             if role not in t:
                 problems.append(f"{name} 缺少 {role}")
+        if not (t.get("stance") or "").strip():
+            problems.append(f"{name} 缺少 stance：每套主题必须先说清它是哪一种世界，配色与版式才有判断依据")
         for key in GRID_KEYS:
             if key not in t.get("grid", {}):
                 problems.append(f"{name}.grid 缺少 {key}")
@@ -150,6 +152,17 @@ def validate_themes(themes):
             problems.append(f"{name}：标题字距 {t['tracking']['display']}em 超出 -0.03–0.08em")
         if not 0 <= t["tracking"]["label"] <= 0.20:
             problems.append(f"{name}：标签字距 {t['tracking']['label']}em 超出 0–0.20em")
+        # 分隔线是这套版面的骨架：章节印记、表格边框、柱图轨道、目录栏位全靠它。
+        # 1.45:1 以下在手机屏上等于不存在，3.2:1 以上会抢过正文；两个边界都是实测口径。
+        rule = contrast(t["line"], t["page"])
+        if not 1.45 <= rule <= 3.2:
+            problems.append(f"{name}：分隔线 {t['line']} 在底色 {t['page']} 上 {rule:.2f}:1，"
+                            + ("低于 1.45:1 会在手机上消失" if rule < 1.45 else "高于 3.2:1 会抢过正文"))
+        if contrast(t["line"], t["field"]) < 1.30:
+            problems.append(f"{name}：分隔线 {t['line']} 在浅底 {t['field']} 上不足 1.30:1，表格与代码块的边框会看不见")
+        # 浅底若与页底几乎同色，靠底色区分的块（代码、记录卡、数据格）就失去了边界。
+        if contrast(t["field"], t["page"]) < 1.04:
+            problems.append(f"{name}：浅底 {t['field']} 与页底 {t['page']} 几乎同色，块与块之间没有分界")
         for role, bg in contrast_pairs(t):
             ratio = contrast(t[role], t[bg])
             if ratio < 4.5:
@@ -163,6 +176,9 @@ if _THEME_PROBLEMS:
     raise ValueError("主题配置不合格：\n  " + "\n  ".join(_THEME_PROBLEMS))
 
 CJK = "\u4e00-\u9fff\u3400-\u4dbf"
+# 行首标点悬挂：中文正文的起笔线是一条直线，引号与书名号退进页边半个字。
+HANGING = "“‘「『（《【"
+
 MICRO, SMALL, BODY = 13, 14, 16
 
 
@@ -178,7 +194,7 @@ def renderer_fingerprint():
             h.update(os.path.relpath(path, root).encode() + b"\0" + stream.read() + b"\0")
     return h.hexdigest()
 
-IMAGE_MODES = {"hero", "full-width", "inset", "plate", "sequence", "comparison", "detail", "macro", "evidence", "editorial", "explainer", "data"}
+IMAGE_MODES = {"hero", "full-width", "bleed", "inset", "plate", "sequence", "comparison", "detail", "macro", "evidence", "editorial", "explainer", "data"}
 TODO = re.compile(r"(?i)^(todo|待补)")
 # 图注是作者写给读者看的说明；只有看起来像制作标签的短文本才不印，而不是按职责一刀切丢掉。
 CAPTION_LABEL = re.compile(
@@ -404,7 +420,7 @@ def parse(md, plain_text=False):
                 # 渲染分支并把内容错位（导语变成署名、正文消失），所以在这里拒掉。
                 hint = "`> ` 引用块（全文首个即导语）" if kind in ("lead", "quote") else "对应的 Markdown 语法"
                 raise ValueError(f"第 {i + 1} 行：::: {kind} 不是原语，请用 {hint}"
-                                 f"（原语限：peak / note / unknown / data / bars）")
+                                 f"（原语限：peak / note / unknown / data / bars / timeline）")
             blocks.append((kind, (arg.strip(), [b for b in body if b])))
         elif re.match(r"#{1,3} ", s):
             flush()
@@ -598,6 +614,22 @@ def balance_title(text, size, width, tracking=0.0, narrow=None):
     return lines
 
 
+def orphan_cells(rows, widths, avail, pad, size=SMALL):
+    """单元格折行后只剩一两个字，就是孤字行——这张表在手机上已经读不成了。
+    列数不足三列时不判：两列表的列本来就宽，尾行两个字读得下去。"""
+    if not rows or len(rows[0]) < 3:
+        return False
+    for row in rows:
+        for j, cell in enumerate(row):
+            room = widths[j] / 100 * avail - pad
+            if room <= 0:
+                return True
+            lines = _greedy_wrap(plain(str(cell)).strip(), size, room)
+            if len(lines) > 1 and len(lines[-1]) <= 2:
+                return True
+    return False
+
+
 def table_pad(t):
     return 14 if t.get("table") in ("warm", "atelier") else 12
 
@@ -668,7 +700,7 @@ def col_widths(rows, avail, pad=12):
 
 
 class R:
-    """六主题共享排版引擎：一切视觉差异由架构比例、字体、网格与组件语法驱动，而非换色。"""
+    """六主题共享排版引擎：视觉差异由彩色关系、架构比例、字体与网格驱动，而非换一套色。"""
 
     def __init__(self, t, density):
         self.t = t
@@ -678,6 +710,9 @@ class R:
         self.body = self.grid.get("body", BODY)
         self.cap = self.grid.get("caption", MICRO)
         self.margin = t.get("margin", 0)
+        # 左右页边可以不等：出血图要把图反推回屏幕边缘，必须先知道自己站在哪条边上
+        self.pad_left = t.get("side_left", self.margin)
+        self.pad_right = t.get("side_right", self.margin)
         self.rhythm = t.get("rhythm", 8)
         self.tracking = t.get("tracking", {})
         self.font = SERIF if t["display"] == "serif" else SANS
@@ -772,14 +807,17 @@ class R:
             return self.p(self.inline(text), size, extra=extra + align)
         return "".join(self.p(self.leaf(line), size, extra=extra + align) for line in lines)
 
-    def h2(self, text, n):
+    def h2(self, text, n, weight="normal"):
         t, mode = self.t, self.t["heading"]
         numbered = not ORDINAL.match(text.strip())
         hs = self.type["heading_size"]
         # 字距是主题的排版语言，不随单条标题变动；断行只在真出孤字时由 balance_title 接管
         style = (f"font-weight:{self.type['heading_weight']};line-height:{self.type['heading_leading']};"
                  f"font-family:{self.font};{self.tr('display')}")
-        gap = f'margin:{self.g(self.grid["chapter_gap"])}px 0 {self.g(14)}px;'
+        # 章节间距不是常数：开篇第一章要立起整篇的门框，两段就翻过去的短章只是一次停顿——
+        # 把它收近上文，读者才不会把一个停顿读成一个新部次。距离就是关系。
+        lead_in = {"open": 1.34, "beat": 0.72}.get(weight, 1.0)
+        gap = f'margin:{self.g(self.grid["chapter_gap"] * lead_in)}px 0 {self.g(14)}px;'
         show_num = t.get("heading_num", "above") == "above"
         accent_num = mode in ("rail", "brief", "folio")
 
@@ -817,13 +855,18 @@ class R:
             return (f'<section style="{gap}">{mark}'
                     + self.title_rows(text, hs, style, "") + "</section>")
         if mode == "gutter":
-            # 静纸：编号悬挂在左侧栏位，与标题同基线。网格先于装饰——标题因此不必靠
-            # 更大的字号或更粗的字重来宣示自己是章节。
+            # 静纸：编号悬挂在页边里，标题与正文共用同一条起笔线。网格先于装饰——
+            # 标题因此不必靠更大的字号或更粗的字重来宣示自己是章节。
+            # 悬挂额度 = 两位数字的宽度 + 与标题的光学间隙；页边塞不下就退回标题左侧成缩进，
+            # 而不是把数字压在屏幕边上、或者让它顶到标题的第一个字。
+            HANG, GAP = 15, 5
+            hang = self.pad_left >= HANG + GAP + 2
             num = (self.p(self.leaf(f"{n:02d}"), 12, t["muted"],
-                          f"width:26px;flex-shrink:0;font-weight:600;{self.tr('label')}"
-                          "font-variant-numeric:tabular-nums;") if numbered else "")
+                          f"width:{HANG}px;flex-shrink:0;font-weight:600;white-space:nowrap;"
+                          "font-variant-numeric:tabular-nums;"
+                          + (f"margin-left:-{HANG + GAP}px;margin-right:{GAP}px;" if hang else "")) if numbered else "")
             return (f'<section style="{gap}">'
-                    f'<section style="display:flex;align-items:baseline;gap:10px;">{num}'
+                    f'<section style="display:flex;align-items:baseline;">{num}'
                     f'<section style="flex:1;min-width:0;">{self.title_rows(text, hs, style)}</section>'
                     "</section></section>")
         if mode == "brief":
@@ -875,11 +918,13 @@ class R:
             # 特稿：摘要紧贴标题压下来，接近导语的重量，先声夺人
             return (f'<section style="margin-bottom:{self.g(22)}px;">'
                     f'{deck_p(t["text"], 600, "line-height:1.52;")}</section>')
-        # 静纸：一道通栏发丝线起印，摘要右端收进 32%——留白是版面的第一件工具
+        # 静纸：一道通栏发丝线起印，摘要右端收进 22%——留白是版面的第一件工具。
+        # 收进 32% 会让 390px 上的摘要只剩四个字宽，折成四行、尾行掉一个字，
+        # 那就不再是留白，是版面被咬掉一口。
         rule = (f'<section style="height:1px;background:{t["line"]};'
                 f'margin-bottom:{self.g(12)}px;">{BR}</section>')
         return (f'<section style="margin-bottom:{self.g(24)}px;">{rule}'
-                f'<section style="padding-right:32%;">{deck_p(t["sub"])}</section></section>')
+                f'<section style="padding-right:22%;">{deck_p(t["sub"])}</section></section>')
 
     def h3(self, text):
         """三级标题：字重、字族、字距、上下间距与前置记号全部由 H3_AXIS 单一决定。
@@ -911,6 +956,10 @@ class R:
         extra = "text-align:left;"
         if indent:
             extra += f"text-indent:{indent:g}em;"
+        elif text.lstrip()[:1] in HANGING:
+            # 悬挂标点只做在无缩进主题上：段首是引号时把它退进页边半个字，
+            # 十行正文的起笔线才是一条直线；缩进主题的起笔线本来分两段，再悬挂就乱了。
+            extra += "text-indent:-0.5em;"
         # 段首缩进主题在连续正文段之间保持紧凑流，但在进入其他结构组件前留出完整呼吸间距
         # 段距跟行距走，不跟版式网格走：段距是对齐基准线的文本参数，再削一刀会让段落粘在一起
         gap = self.grid["paragraph_gap"] if (not indent or next_kind == "p") else max(20, self.grid["paragraph_gap"] * 2)
@@ -1007,38 +1056,47 @@ class R:
 
     def peak(self, text):
         """重点句：全文最重的一句判断。字号由主题阶梯给出，各主题以字重、缩进与行距区分气质；
-        字重一律低于同级章节标题，避免一句判断被扫成一个小标题。"""
+        字重一律低于同级章节标题，避免一句判断被扫成一个小标题。
+
+        断行规则与章节标题一致：一句 22px 的话落在 280px 版心上只剩两行，尾行掉下一两个字
+        就是排版事故——那句话读起来会像是被截断的。"""
         t, style = self.t, self.t["peak"]
         fam = f"font-family:{self.font};{self.tr('display')}"
-        inner = self.inline(text, normalize=False)
         size = self.type["peak_size"]
         weight = PEAK_WEIGHT.get(style, 600)
+
+        def rows(extra):
+            lines = self.heading_lines(text, size)
+            if not lines:
+                return self.p(self.inline(text, normalize=False), size, t["text"], extra)
+            return "".join(self.p(self.leaf(line), size, t["text"], extra) for line in lines)
+
         if style in ("dark", "compact"):
             lh = 1.72 if style == "dark" else 1.52
             pad = "0 4px" if style == "dark" else "0"
             return (f'<section style="margin:{self.g(32)}px 0;padding:{pad};">'
-                    + self.p(inner, size, t["text"], f"font-weight:{weight};line-height:{lh};{fam}") + "</section>")
+                    + rows(f"font-weight:{weight};line-height:{lh};{fam}") + "</section>")
         if style == "rule":
             # 静纸：一句判断前留一道 20px 细线，作为版面里唯一的图形标记
             mark = f'<section style="width:20px;height:1px;background:{t["line"]};margin-bottom:12px;">{BR}</section>'
             return (f'<section style="margin:{self.g(30)}px 0;">{mark}'
-                    + self.p(inner, size, t["text"], f"font-weight:{weight};line-height:1.62;{fam}") + "</section>")
+                    + rows(f"font-weight:{weight};line-height:1.62;{fam}") + "</section>")
         if style == "bar":
             # 信笺：重点句靠“栏宽”而不是图形立住——上方一道发丝线把这段话从正文里划出来，
             # 右端收进 12%，行比正文短、字比正文大一号；不加大面积底色，也不做成居中金句。
             # 线只画到文字结束的地方：线的长度就是这句话的栏宽，多一寸都会读成章节分隔
             return (f'<section style="margin:{self.g(28)}px 0;">'
                     f'<section style="width:88%;padding-top:14px;border-top:1px solid {t["line"]};">'
-                    + self.p(inner, size, t["text"], f"font-weight:{weight};line-height:1.72;{fam}")
+                    + rows(f"font-weight:{weight};line-height:1.72;{fam}")
                     + "</section></section>")
         if style == "line":
             # 简报：加粗夹注，上下内边距收紧，读作一条被拎出来的电讯行而不是章节
             return (f'<section style="margin:{self.g(26)}px 0;padding:8px 0;">'
-                    + self.p(inner, size, t["text"], f"font-weight:{weight};line-height:1.58;{fam}") + "</section>")
+                    + rows(f"font-weight:{weight};line-height:1.58;{fam}") + "</section>")
         if style == "plate":
             # 器物牌：衬线常规字重、左右收进 6%，像展签上的说明
             return (f'<section style="margin:{self.g(30)}px 6%;padding:0;">'
-                    + self.p(inner, size, t["text"], f"font-weight:{weight};line-height:1.82;{fam}") + "</section>")
+                    + rows(f"font-weight:{weight};line-height:1.82;{fam}") + "</section>")
         raise ValueError(f"重点轴取值未实现：{style}")
 
     def unknown(self, label, lines):
@@ -1071,9 +1129,18 @@ class R:
 
         if mode in ("columns", "specimen"):
             gap = 16 if mode == "columns" else 12
-            per = next((p for p in (([3, 2] if mode == "columns" and len(items) >= 3 else [2])
-                                    if len(items) >= 2 else [1])
-                        if values_fit((avail - gap * (p - 1)) / p)), 1)
+            if mode != "columns":
+                prefs = [2]
+            elif len(items) == 2:
+                prefs = [2]
+            elif len(items) % 3 == 0:
+                prefs = [3]
+            elif len(items) % 3 == 2:
+                prefs = [3, 2]
+            else:
+                prefs = [2]
+            # 末行只落一项时，分栏就散了：四项排 2+2，绝不排 3+1。
+            per = next((p for p in prefs if values_fit((avail - gap * (p - 1)) / p)), 1)
             if per >= 2:
                 edge = t["text"] if mode == "columns" else t["line"]
                 rows = []
@@ -1151,6 +1218,9 @@ class R:
 
 
     def bars(self, lines, label="", below=None):
+        """同单位分量比较。形态由数据形状决定，不由主题决定：
+        三四项、标签短的离散量是一张图（竖柱，看得见高低差），
+        项多或标签长的一串是一张表（横条，读得完标签）。"""
         t, rows, items = self.t, [], []
         for ln in lines:
             val, _, lab = ln.replace("|", "｜").partition("｜")
@@ -1160,8 +1230,33 @@ class R:
         nums = [float(v) for v, _ in items]
         nums = [v if math.isfinite(v) else 0 for v in nums]
         mx = max(nums, default=0)
+        gap = 14
+        slot = (content_px(t, 320) - gap * (len(items) - 1)) / max(len(items), 1)
+        column = (2 <= len(items) <= 4
+                  and all(text_px(lab, SMALL) <= slot * 0.94 for _, lab in items)
+                  and all(text_px(v, self.body) <= slot for v, _ in items))
         if label:
             rows.append(self.p(self.inline(label), SMALL, t["text"], f"font-weight:600;{self.tr('caption')}"))
+        if column:
+            cells, labels = [], []
+            for (val, lab), num in zip(items, nums):
+                height = (8 + round(num / mx * 88)) if mx else 8
+                cells.append('<section style="flex:1;min-width:0;">'
+                             + self.p(self.leaf(val), self.body, t["text"],
+                                      f"font-weight:600;text-align:center;line-height:1.3;font-family:{self.font};"
+                                      "font-variant-numeric:tabular-nums;white-space:nowrap;")
+                             + f'<section style="height:{height}px;background:{t["accent"]};margin-top:{self.g(6)}px;">{BR}</section>'
+                             + "</section>")
+                labels.append('<section style="flex:1;min-width:0;">'
+                              + self.p(self.inline(lab), self.cap, t["sub"], "text-align:center;line-height:1.55;")
+                              + "</section>")
+            # 基线就是零起点：竖柱一旦画在轴上，读者不必再被告知“从零开始”
+            return (f'<section style="margin:{self.g(28)}px 0 {below if below is not None else self.g(28)}px;">'
+                    + "".join(rows)
+                    + f'<section style="display:flex;align-items:flex-end;gap:{gap}px;">{"".join(cells)}</section>'
+                    + f'<section style="height:1px;background:{t["text"]};">{BR}</section>'
+                    + f'<section style="display:flex;gap:{gap}px;margin-top:{self.g(8)}px;">{"".join(labels)}</section>'
+                    + "</section>")
         # 零基线是读图前提，用一行小字交代；“最长条代表最大值”属于方法说明，留在侧车不印在版面
         rows.append(self.p(self.leaf("零起点"), 12, t["muted"], f"margin-top:2px;{self.tr('label')}"))
         for (val, lab), num in zip(items, nums):
@@ -1177,6 +1272,29 @@ class R:
             )
         return f'<section style="margin:{self.g(28)}px 0 {below if below is not None else self.g(28)}px;">{"".join(rows)}</section>'
 
+    def timeline(self, label, lines, below=None):
+        """时间关系：日期挂在左侧栏、事件贴着一条竖轴往下走。
+        这不是“带日期的列表”——日期必须能竖着扫读，事件必须在同一条轴上排队，
+        读者才看得见间隔（两个月还是三年）本身就是信息。"""
+        t = self.t
+        rows, baseline = [], f"line-height:{self.body * self.t['leading']:.0f}px;"
+        for idx, ln in enumerate(lines):
+            when, _, what = ln.replace("|", "｜").partition("｜")
+            last = idx == len(lines) - 1
+            rows.append(
+                '<section style="display:flex;gap:12px;">'
+                + self.p(self.leaf(when.strip()), 12, t["muted"],
+                         f"width:62px;flex-shrink:0;text-align:right;{baseline}font-weight:600;"
+                         f"font-variant-numeric:tabular-nums;{self.tr('label')}")
+                + f'<section style="flex:1;min-width:0;border-left:1px solid {t["line"]};'
+                + f'padding-left:14px;' + ("" if last else f"padding-bottom:{self.g(16)}px;") + '">'
+                + self.p(self.inline(what.strip()), self.body, t["text"], baseline)
+                + "</section></section>"
+            )
+        head = self.p(self.inline(label), SMALL, t["text"], f"font-weight:600;margin-bottom:{self.g(14)}px;{self.tr('caption')}") if label else ""
+        return (f'<section style="margin:{self.g(28)}px 0 {below if below is not None else self.g(28)}px;">'
+                + head + "".join(rows) + "</section>")
+
     def table(self, rows, below=None):
         """语义表格：320px 下所有列均满足最小可读宽度才维持表格，否则自动降级为记录卡。"""
         t, out, mode = self.t, [], self.t["table"]
@@ -1187,6 +1305,9 @@ class R:
         if not table_fits(rows, 2 * hpad, self.margin):
             return self.table_stack(rows, below)
         widths = col_widths(rows, table_avail, 2 * hpad)
+        if orphan_cells(rows, widths, table_avail, 2 * hpad):
+            # 能放下不等于读得成：三列以上出现孤字行时，记录卡比一张挤扁的表清楚得多
+            return self.table_stack(rows, below)
         table_extra = {
             "open": f"border-top:1px solid {t['text']};border-bottom:1px solid {t['line']};",
             "ink": f"border-top:2px solid {t['text']};border-bottom:1px solid {t['text']};",
@@ -1292,15 +1413,20 @@ class R:
                           "atelier": "◇", "folio": "▪"}[mode]
             marker_color = t["accent"] if item.get("marker") or mode in ("dash", "folio") else t["muted"]
             marker_family = SERIF if mode in ("chinese", "atelier") else self.font
+            marker_size = SMALL if (ordered or item.get("marker")) else self.body
             marker_html = self.p(
                 self.leaf(marker),
-                SMALL if ordered or item.get("marker") else self.body,
+                marker_size,
                 marker_color,
                 f"font-weight:{600 if ordered or item.get('marker') else 500};font-family:{marker_family};",
             )
+            # 无序列表的记号按正文字号排，所以栏位必须按记号的真实宽度给：
+            # 给 18px 的固定栏位，“—”会顶到正文上，读起来像一个错字而不是一个条目。
             width = (max(26, min(64, round(text_px(marker, SMALL) + 8))) if item.get("marker")
                      else 32 if mode in ("chinese", "atelier", "folio")
-                     else 26 if ordered else 18)
+                     else 26 if ordered
+                     else round(text_px(marker, marker_size)) + 12)
+
             # 仅顶层条目可使用报表分隔线，嵌套子列表不重复画横线
             rule = f"border-top:1px solid {t['line']};padding-top:9px;" if (mode == "report" and depth == 0 and index > 0) else ""
             children = "".join(self.lst(child, depth + 1) for child in item.get("children", []))
@@ -1351,7 +1477,7 @@ class R:
         if not src or TODO.match(src):
             return ""
         img_extra, side = "max-width:100%;height:auto;display:block;", 0
-        if mode in ("hero", "full-width"):
+        if mode in ("hero", "full-width", "bleed"):
             img_extra += "width:100%;"
         elif mode == "inset":
             side = 8
@@ -1381,8 +1507,17 @@ class R:
             # 特稿图注悬挂：首行顶格，续行与正文对齐，图与注读作一块
             cap_extra = "margin-top:10px;line-height:1.66;padding-left:1.1em;text-indent:-1.1em;"
         cap_style = f"{cap_extra}text-align:{cap_align};{self.tr('caption')}"
-        box = f"margin:{mt}px {side}% {mb}px;" if side else f"margin:{mt}px 0 {mb}px;"
         cap = _caption_text(alt, role0)
+        if mode == "bleed":
+            # 出血：图反推到屏幕两缘，页边在图上取消；图注退回到正文起笔线。
+            # 全篇只有少数几张图值得吃掉页边——尺寸的阶跃本身就是一次呼吸，
+            # 每张都出血等于没有出血。
+            caption = (f'<section style="padding:0 {self.pad_left}px;">'
+                       + self.p(self.leaf(typo(cap)), cap_size, t["sub"], cap_style) + "</section>") if cap else ""
+            return (f'<section style="margin:{mt}px -{self.pad_right}px {mb}px -{self.pad_left}px;">'
+                    f'<img src="{H.escape(src)}" alt="{H.escape(alt or "")}" style="{img_extra}" />'
+                    + caption + "</section>")
+        box = f"margin:{mt}px {side}% {mb}px;" if side else f"margin:{mt}px 0 {mb}px;"
         return (
             f'<section style="{box}">'
             f'<img src="{H.escape(src)}" alt="{H.escape(alt or "")}" style="{img_extra}" />'
@@ -1555,8 +1690,9 @@ def _near_text(blocks, idx):
     return " ".join(out)
 
 
-def _asset_gate(meta, blocks, base):
+def _asset_gate(meta, blocks, base, key=None):
     must, should = [], []
+    th = THEMES.get(key or meta.get("theme", "paper"), THEMES["paper"])
     imgs = [(i, b[1]) for i, b in enumerate(blocks) if b[0] == "img"]
     consecutive_standalone = 0
     prev_img_idx = -2
@@ -1606,6 +1742,14 @@ def _asset_gate(meta, blocks, base):
             must.append("证据类图必须写清出处 / 口径 / 时间；解释图也需说明")
         if role0 in FACT_ROLES and not _has_adjacent_explanation(blocks, idx):
             should.append(f"图片 {src}（{role0}）未紧邻解释文字：说明/证据类图片须靠近其解释对象")
+        shown = _caption_text(alt, role0)
+        if shown:
+            # 图注会被印出来，就同样不许掉孤字：尾行只剩一两个字时，读到的是半句话。
+            folded = _greedy_wrap(shown, th["grid"]["caption"], content_px(th, 320),
+                                  th["tracking"]["caption"])
+            if len(folded) > 1 and len(folded[-1]) <= 2:
+                should.append(f"图注在 320px 下折出孤字行（尾行“……{folded[-1]}”）："
+                              f"压到 {len(folded[0]) * (len(folded) - 1)} 字以内，或把定语删掉")
         if role0 in PROVENANCE_ROLES and re.search(r"(?:^|\s)(?:ai|generated)(?:\s|$)", role, re.I):
             must.append(f"图片 {src}：AI 生成图不能承担资料/实拍职责；请改用真实来源或改为隐喻/场景示意")
         if role0 in PROVENANCE_ROLES:
@@ -1699,10 +1843,12 @@ def _data_gate(meta, blocks, key):
         if k not in ("bars", "data"):
             continue
         note = blocks[i + 1][1] if i + 1 < len(blocks) and blocks[i + 1][0] == "note" else ("", [])
-        # 来源行接受链接、年份（含“（2025）”全角括号）、季度/半年/全年口径，或明写假设/演示
+        # 来源行接受链接、年份（含“（2025）”全角括号）、季度/半年/全年口径、标准号，或明写假设/演示
         source = " ".join(note[1])
         if not re.search(r"https?://\S+|\d{4}\s*(?:年|[-–/]\s*\d{1,2}|[)）]|$)"
-                         r"|Q[1-4]|[1-4一二三四]\s*季度|上半年|下半年|全年|假设|演示|非统计", source):
+                         r"|Q[1-4]|[1-4一二三四]\s*季度|上半年|下半年|全年"
+                         r"|(?:EN|DIN|ISO|GB|ANSI|JIS)\s?/?\s?[A-Z]?\s?\d{2,5}"
+                         r"|假设|演示|非统计|推算|测算|常见值|通行值", source):
             must.append(f"{k} 缺少紧邻来源 note：写清主体与日期（或一行地址），或明写假设/演示")
         if k == "data":
             if not b[1]:
@@ -1755,21 +1901,22 @@ def _structure_gate(meta, blocks, key):
                 must.append("表格行列数不一致，不能对齐数据")
             elif not table_fits(b, table_pad(th), th.get("margin", 0)):
                 should.append(f"表格 {len(b[0])} 列在 320px 无法维持可读列宽，已自动降级为记录卡堆叠")
-            else:
-                # 折行判断只用同一把尺子：按 col_widths 实际分到的像素比对最长单元格，
-                # 而不是拿平均列宽和字数去猜（半宽数字多的表格会被误报）。
-                avail, pad = content_px(th, 320), table_pad(th)
-                widths = col_widths(b, avail, pad)
-                tight = []
-                for j, pct in enumerate(widths):
-                    need = max((text_px(re.sub(r"[`*=~]", "", plain(str(r[j]))).strip(), SMALL)
-                                for r in b if j < len(r)), default=0.0)
-                    if need > pct / 100 * avail - pad:
-                        tight.append(j)
-                if tight:
-                    cols = "、".join(f"“{plain(str(b[0][j]))[:8]}”" for j in tight[:2])
-                    should.append(f"表格在 320px 下 {len(b[0])} 列挤不开：{cols}列会折出孤字行——"
-                                  "减一列、把标签压进表注，或改成记录卡")
+            elif orphan_cells(b, col_widths(b, content_px(th, 320), table_pad(th)),
+                              content_px(th, 320), table_pad(th)):
+                should.append(f"表格在 320px 下 {len(b[0])} 列会折出孤字行，已自动降级为记录卡——"
+                              "想保住表格就减一列或把单元格压短")
+        if k == "timeline":
+            rows = [ln for ln in b[1] if ln.strip()]
+            if len(rows) < 2:
+                must.append("timeline 至少两行：只有一个时间点就没有间隔可读，改用一句正文")
+            for ln in rows:
+                when, _, what = ln.replace("|", "｜").partition("｜")
+                if not when.strip() or not what.strip():
+                    must.append(f"timeline 每行须为“日期｜事件”：{ln[:24]}")
+                    break
+                if text_px(when.strip(), 12) > 60:
+                    must.append(f"timeline 日期列放不下“{when.strip()[:12]}”：压到 6 字以内（如 2024.06）")
+                    break
         if k == "note":
             label, lines = b[0] or "", b[1]
             text = [ln for ln in lines if not re.fullmatch(r"\s*https?://\S+\s*", ln)]
@@ -1785,6 +1932,16 @@ def _structure_gate(meta, blocks, key):
                       "请删除 frontmatter 里的这一行")
     if not api_title(title):
         must.append("缺少标题")
+    deck = meta.get("deck", "")
+    if deck:
+        # 摘要行是全篇第一句被印出来的话，同样不许掉孤字
+        folded = _greedy_wrap(plain(deck), th["type"]["deck_size"],
+                              content_px(th, 320) * (0.78 if th["header"] == "rule" else 1),
+                              th["tracking"]["caption"])
+        if len(folded) > 1 and len(folded[-1]) <= 2:
+            should.append(f"摘要行在 320px 下折出孤字行（尾行“……{folded[-1]}”）："
+                          f"压到 {len(folded[0]) * (len(folded) - 1)} 字以内")
+
     for field, value, cap in (("title", api_title(title), 32), ("author", meta.get("author", ""), 16), ("digest", meta.get("digest", ""), 120)):
         if len(value) > cap:
             must.append(f"{field} 超过发布上限 {cap}：请编辑收窄，不静默截断")
@@ -1795,7 +1952,7 @@ def _structure_gate(meta, blocks, key):
 
 def compose_gate(meta, blocks, base=".", key=None, review=None):
     must, should = [], []
-    for m, s in (_asset_gate(meta, blocks, base), _data_gate(meta, blocks, key), _structure_gate(meta, blocks, key)):
+    for m, s in (_asset_gate(meta, blocks, base, key), _data_gate(meta, blocks, key), _structure_gate(meta, blocks, key)):
         must.extend(m)
         should.extend(s)
     review = review or audit(meta, blocks)
@@ -1886,9 +2043,17 @@ def render(md, theme=None, plain_text=False):
     toc_on = meta.get("toc", "").lower() in ("true", "yes", "1") and len(heads) >= 3
     toc_at = next((i for i, (k, _) in enumerate(blocks) if k == "h2"), None) if toc_on else None
     has_lead = any(k == "lead" for k, _ in blocks)
-    attach = ("bars", "data", "table", "img")
+    attach = ("bars", "data", "table", "img", "timeline")
     consumed = set()
     seen_para = False
+    # 章节的分量由它在全文里的位置与长度决定：开篇一章立门框，两段就过去的短章只是一次停顿。
+    h2_at = [i for i, (k, _) in enumerate(blocks) if k == "h2"]
+    section_weight = {}
+    for order, idx in enumerate(h2_at):
+        end = h2_at[order + 1] if order + 1 < len(h2_at) else len(blocks)
+        opens_image = idx + 1 < len(blocks) and blocks[idx + 1][0] == "img"
+        section_weight[idx] = ("open" if order == 0
+                               else "beat" if (end - idx - 1 <= 2 and not opens_image) else "normal")
 
     for i, (kind, b) in enumerate(blocks):
         if i in consumed:
@@ -1903,7 +2068,7 @@ def render(md, theme=None, plain_text=False):
 
         if kind == "h2":
             n += 1
-            out.append(r.h2(b, n))
+            out.append(r.h2(b, n, section_weight.get(i, "normal")))
         elif kind == "h3":
             out.append(r.h3(b))
         elif kind == "p":
@@ -1923,6 +2088,8 @@ def render(md, theme=None, plain_text=False):
             out.append(r.data(b[1], below=below))
         elif kind == "bars":
             out.append(r.bars(b[1], b[0], below=below))
+        elif kind == "timeline":
+            out.append(r.timeline(b[0], b[1], below=below))
         elif kind == "table":
             out.append(r.table(b, below=below))
         elif kind == "list":
@@ -1972,7 +2139,7 @@ def render(md, theme=None, plain_text=False):
                 continue
             out.append(r.hr())
         else:
-            raise ValueError(f"未知原语 ::: {kind}（可用：peak / note / unknown / data / bars）")
+            raise ValueError(f"未知原语 ::: {kind}（可用：peak / note / unknown / data / bars / timeline）")
 
     sig = r.signature(meta)
     if sig:
@@ -2138,7 +2305,8 @@ def build(md_path, theme=None, out=None, against=None, ledger=None, delivery=Fal
                        "removed_editorial": removed_editorial,
                        "preview_viewports": list(VIEWPORTS),
                        "preview_fonts": ["ios", "android"]},
-        "theme_profile": {axis: THEMES[key][axis] for axis in THEME_AXES},
+        "theme_profile": dict({axis: THEMES[key][axis] for axis in THEME_AXES},
+                              stance=THEMES[key].get("stance", "")),
         "grid": dict(THEMES[key]["grid"]), "contrast_checks": contrasts,
         "decision": review["decision"], "article_type": review["type"]["key"],
         "composition_evidence": {"first_screen_layers": fs["layers"], "first_screen_weight": fs["weight"],
@@ -2238,7 +2406,8 @@ def main():
     review = result["review"]
     for issue in review["issues"]:
         print(f"编辑提示 · {issue['severity']} · {issue['location']} · {issue['code']}：{issue['problem']} → {issue['action']}")
-    print(f"{THEMES[result['key']]['name']} → {result['out']}\n预览 → {result['preview']}\n侧车 → {result['meta_path']}")
+    print(f"{THEMES[result['key']]['name']} — {THEMES[result['key']].get('stance', '')}")
+    print(f"→ {result['out']}\n预览 → {result['preview']}\n侧车 → {result['meta_path']}")
     failed = False
     for gate, must, should in result["gates"]:
         failed |= bool(must)

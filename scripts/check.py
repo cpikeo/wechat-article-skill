@@ -75,11 +75,28 @@ def _length(value, units=("px", "em", "%"), *, negative=False, auto=False,
     return unit in units and n <= limit
 
 
-def _length_list(value, *, auto=False, max_px=300, max_em=4, max_pct=100):
+def _length_list(value, *, auto=False, max_px=300, max_em=4, max_pct=100, negative_px=None):
     parts = value.split()
-    return (1 <= len(parts) <= 4 and all(
-        _length(part, auto=auto, max_px=max_px, max_em=max_em, max_pct=max_pct)
-        for part in parts))
+    check = ((lambda p: _length(p, auto=auto, max_px=max_px, max_em=max_em, max_pct=max_pct))
+             if negative_px is None else (lambda p: _margin_length(p, auto=auto, negative_px=negative_px)))
+    return 1 <= len(parts) <= 4 and all(check(part) for part in parts)
+
+
+def _margin_length(value, *, auto=True, negative_px=40):
+    """外边距。负值只用于出血：把图反推到屏幕两缘，额度小于一档页边，防止版面被拖出屏幕。"""
+    if auto and value == "auto":
+        return True
+    if value == "0":
+        return True
+    m = re.fullmatch(r"(-?)(\d+(?:\.\d+)?)(px|em|%)", value)
+    if not m:
+        return False
+    sign, number, unit = m.groups()
+    n = float(number)
+    if sign:
+        return unit == "px" and n <= negative_px
+    return n <= {"px": 300, "em": 4, "%": 100}[unit]
+
 
 
 def _border(value):
@@ -132,10 +149,10 @@ CSS_RULES = {
     "letter-spacing": _letter_spacing,
     "line-break": lambda v: v == "strict",
     "line-height": _line_height,
-    "margin": lambda v: _length_list(v, auto=True),
+    "margin": lambda v: _length_list(v, auto=True, negative_px=40),
     "margin-bottom": lambda v: _length(v),
-    "margin-left": lambda v: _length(v),
-    "margin-right": lambda v: _length(v),
+    "margin-left": lambda v: _margin_length(v, auto=False),
+    "margin-right": lambda v: _margin_length(v, auto=False),
     "margin-top": lambda v: _length(v),
     "max-width": lambda v: v == "100%",
     "min-width": lambda v: v == "0",
