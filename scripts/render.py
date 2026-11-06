@@ -68,6 +68,14 @@ LEADING_BAND = (1.65, 1.78)
 HEADING_LEADING_BAND = (1.20, 1.35)
 PARAGRAPH_GAP_BAND = (12, 16)
 MARGIN_BAND = (16, 20)
+# 装饰横线只有两个合法形态：短到读成“点”，或长到读成“线”。
+# 12–24px 是禁区——那正好是一个汉字的宽度，一条 16px 的横线贴在左页边上，
+# 读者会读成“一”，然后困惑这句话为什么以破折号开头。
+# 禁区内的横线要么改成方点（长 ≤8px 且高 ≥2px），要么拉到 48px 以上。
+STROKE_FORBIDDEN = (8, 24)
+MARK_STROKE = 64     # 发丝线（1px 高）：摘要、三级标题、重点句的起印线
+MARK_SEAL = 48       # 朱砂印（2px 高）：章节印记与摘要朱印
+MARK_DIVIDER = 96    # 居中分隔短横：要走完一个“线”的跨度
 # 重点句的字重由主题气质决定，但必须低于同级章节标题：两者字号接近时，字重是唯一还能
 # 把“作者的一句判断”和“版面的一个门框”区分开的东西。
 PEAK_WEIGHT = {"rule": 500, "bar": 500, "quiet": 600, "line": 600, "plate": 400, "compact": 700}
@@ -927,10 +935,10 @@ class R:
         # 其余模式：先画章节印记（韵墨的朱砂印、素作的展签线），再落标题
         mark = ""
         if mode == "seal":
-            mark = (f'<section style="width:12px;height:2px;background:{t["accent"]};'
+            mark = (f'<section style="width:{MARK_SEAL}px;height:2px;background:{t["accent"]};'
                     f'margin-bottom:{self.g(10)}px;">{BR}</section>')
         elif mode == "atelier":
-            mark = (f'<section style="width:16px;height:1px;background:{t["line"]};'
+            mark = (f'<section style="width:{MARK_STROKE}px;height:1px;background:{t["line"]};'
                     f'margin-bottom:{self.g(10)}px;">{BR}</section>')
         if place == "inline":
             # 编号与标题同处一条起笔线：读者先读到标题，再回头发现“这里有个编号”。
@@ -969,7 +977,7 @@ class R:
                     f'{deck_p(t["sub"])}</section>')
         if mode == "seal":
             # 酌墨：摘要之前一道朱砂短印，与章节印记同一笔
-            seal = (f'<section style="width:12px;height:2px;background:{t["accent"]};'
+            seal = (f'<section style="width:{MARK_SEAL}px;height:2px;background:{t["accent"]};'
                     f'margin-bottom:{self.g(10)}px;">{BR}</section>')
             return f'<section style="margin-bottom:{self.g(24)}px;">{seal}{deck_p(t["sub"])}</section>'
         if mode == "band":
@@ -977,11 +985,13 @@ class R:
             return (f'<section style="border-top:2px solid {t["text"]};padding-top:{self.g(9)}px;'
                     f'margin-bottom:{self.g(20)}px;">{deck_p(t["sub"], 600)}</section>')
         if mode == "plate":
-            # 素作：16px 发丝线起印，摘要左右各收 6%，像展签的说明栏
-            hair = (f'<section style="width:16px;height:1px;background:{t["line"]};'
+            # 素作：一道发丝线起印，摘要左右各收 6%，像展签的说明栏。
+            # 起印线必须跟摘要同处一个内缩容器——线在页边、字在 6% 处，
+            # 那道线就不再是“这段话的开头”，而是一根挂在正文外面的短棍。
+            hair = (f'<section style="width:{MARK_STROKE}px;height:1px;background:{t["line"]};'
                     f'margin-bottom:{self.g(10)}px;">{BR}</section>')
-            return (f'<section style="margin-bottom:{self.g(26)}px;">{hair}'
-                    f'<section style="margin:0 6%;">{deck_p(t["sub"])}</section></section>')
+            return (f'<section style="margin-bottom:{self.g(26)}px;">'
+                    f'<section style="margin:0 6%;">{hair}{deck_p(t["sub"])}</section></section>')
         if mode == "feature":
             # 特稿：摘要紧贴标题压下来，接近导语的重量，先声夺人。
             # 压缩靠上间距与字重，不靠压行高——行高取主题自己的 lead_leading，
@@ -1014,7 +1024,7 @@ class R:
         elif mark == "hair":
             # 发丝记号是块级对象，必须落在段落之外：微信只接受 p 内的行内内容，
             # 把 section 塞进 p 会被 Gate 1 直接判非法结构。
-            lead = (f'<section style="width:16px;height:1px;background:{t["line"]};'
+            lead = (f'<section style="width:{MARK_STROKE}px;height:1px;background:{t["line"]};'
                     f'margin-bottom:{self.g(6)}px;">{BR}</section>')
         heading = self.p((lead if mark == "seal" else "") + self.inline(text), size, t["text"],
                          f"font-weight:{weight};font-family:{font};{self.tr(track)}")
@@ -1157,8 +1167,9 @@ class R:
             return (f'<section style="margin:{self.g(30)}px 0;padding:{pad};">'
                     + rows(f"font-weight:{weight};line-height:{lh};{fam}") + "</section>")
         if style == "rule":
-            # 静纸：一句判断前留一道 20px 细线，作为版面里唯一的图形标记
-            mark = f'<section style="width:20px;height:1px;background:{t["line"]};margin-bottom:12px;">{BR}</section>'
+            # 静纸：一句判断前留一道细线，作为版面里唯一的图形标记
+            mark = (f'<section style="width:{MARK_STROKE}px;height:1px;background:{t["line"]};'
+                    f'margin-bottom:12px;">{BR}</section>')
             return (f'<section style="margin:{self.g(30)}px 0;">{mark}'
                     + rows(f"font-weight:{weight};line-height:1.66;{fam}") + "</section>")
         if style == "bar":
@@ -1620,17 +1631,17 @@ class R:
             # 暖信笺：只留一段呼吸，画任何记号都属于多余的排版动作
             return f'<section style="{box}">{BR}</section>'
         mark = {
-            "short-rule": (24, 1, t["line"]),
+            "short-rule": (MARK_DIVIDER, 1, t["line"]),
             "hairline": ("100%", 1, t["line"]),
-            "double": (18, 1, t["line"]),
+            "double": (72, 1, t["line"]),
             "seal": (6, 6, t["accent"]),
-            "dot": (36, 2, t["accent"]),
+            "dot": (48, 2, t["accent"]),
         }[axis]
         width, height, color = mark
         unit = "" if isinstance(width, str) else "px"
         rule = (f'<section style="width:{width}{unit};height:{height}px;background:{color};margin:0 auto;">{BR}</section>')
         if axis == "double":
-            rule += (f'<section style="width:10px;height:1px;background:{color};'
+            rule += (f'<section style="width:48px;height:1px;background:{color};'
                      f'margin:4px auto 0;">{BR}</section>')
         return f'<section style="{box}text-align:center;">{rule}</section>'
 
@@ -2111,6 +2122,22 @@ def strip_editorial(blocks):
     return kept, dropped
 
 
+_STROKE = re.compile(r'width:(\d{1,3})px;height:([12])px')
+
+
+def stroke_gate(body):
+    """装饰横线的宽度门禁。
+
+    短横线读成「一」是中文版面的隐性事故：白名单通过、对比度通过、结构通过，
+    没有任何一条现有规则会拦它——只有读者会在句子开头看到一个破折号。
+    所以把它做成硬门禁：落在禁区里的宽度必须改，不接受「看起来还行」。
+    """
+    low, high = STROKE_FORBIDDEN
+    bad = sorted({int(w) for w, _ in _STROKE.findall(body) if low <= int(w) <= high})
+    return [f"装饰横线宽 {w}px：落在 {low}–{high}px 禁区，会被读成汉字“一”；"
+            f"改成方点（≤8px 且 ≥2px 粗）或拉到 {MARK_SEAL}px 以上" for w in bad]
+
+
 def render(md, theme=None, plain_text=False):
     meta, blocks = parse(md, plain_text=plain_text)
     blocks, removed_editorial = strip_editorial(blocks)
@@ -2325,6 +2352,7 @@ def build(md_path, theme=None, out=None, against=None, ledger=None, delivery=Fal
     review = audit(meta, blocks)
     m1, s1 = check(body)
     m2, s2 = compose_gate(meta, blocks, base, key, review)
+    m2.extend(stroke_gate(body))
     s2 = [f"平台层建议：{x}" for x in s1] + s2
     facts_diff = voice_diff = None
     ledger_rows, ledger_problems = [], []
