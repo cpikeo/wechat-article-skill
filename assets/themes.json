@@ -27,6 +27,7 @@
       "label": 0.14,
       "caption": 0.02
     },
+    "header": "rule",
     "lead": "brief",
     "heading": "gutter",
     "heading_num": "above",
@@ -84,6 +85,7 @@
       "label": 0.1,
       "caption": 0.03
     },
+    "header": "lede",
     "lead": "deck",
     "heading": "rail",
     "heading_num": "above",
@@ -111,7 +113,6 @@
       "data_size": 24
     }
   },
-  
   "ink": {
     "name": "酌墨 Wine Ink",
     "page": "#FAF7F2",
@@ -140,6 +141,7 @@
       "label": 0.12,
       "caption": 0.04
     },
+    "header": "seal",
     "lead": "ink",
     "heading": "seal",
     "heading_num": "none",
@@ -195,6 +197,7 @@
       "label": 0.14,
       "caption": 0.01
     },
+    "header": "band",
     "lead": "report",
     "heading": "brief",
     "heading_num": "above",
@@ -250,6 +253,7 @@
       "label": 0.16,
       "caption": 0.04
     },
+    "header": "plate",
     "lead": "plate",
     "heading": "atelier",
     "heading_num": "none",
@@ -305,6 +309,7 @@
       "label": 0.13,
       "caption": 0.01
     },
+    "header": "feature",
     "lead": "feature",
     "heading": "folio",
     "heading_num": "above",
@@ -325,10 +330,10 @@
       "heading_leading": 1.24,
       "peak_size": 25,
       "lead_size": 21,
-      "lead_weight": 600,
+      "lead_weight": 500,
       "lead_leading": 1.6,
       "quote_size": 20,
-      "h3_size": 18,
+      "h3_size": 19,
       "data_size": 30
     }
   }

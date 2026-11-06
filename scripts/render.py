@@ -12,10 +12,8 @@ import hashlib
 import html as H
 import json
 import math
-import mimetypes
 import os
 import re
-import tempfile
 import struct
 import sys
 
@@ -30,7 +28,7 @@ from safety import atomic_write, contrast, local_path, output_path, sha256  # no
 import typography  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-SKILL_VERSION = "17.2.0"
+SKILL_VERSION = "18.0.0"
 THEMES_PATH = os.path.join(HERE, "..", "assets", "themes.json")
 with open(THEMES_PATH, "rb") as _theme_file:
     THEME_CONFIG_BYTES = _theme_file.read()
@@ -38,6 +36,7 @@ THEME_CONFIG_SHA256 = hashlib.sha256(THEME_CONFIG_BYTES).hexdigest()
 THEMES = json.loads(THEME_CONFIG_BYTES.decode("utf-8"))
 
 THEME_AXES = {
+    "header": {"rule", "lede", "seal", "band", "plate", "feature"},
     "lead": {"brief", "deck", "ink", "report", "plate", "feature"},
     "heading": {"gutter", "rail", "seal", "brief", "atelier", "folio"},
     "heading_num": {"above", "none"},
@@ -62,6 +61,16 @@ GRID_KEYS = ("indent", "chapter_gap", "paragraph_gap", "body", "caption")
 # 重点句的字重由主题气质决定，但必须低于同级章节标题：两者字号接近时，字重是唯一还能
 # 把“作者的一句判断”和“版面的一个门框”区分开的东西。
 PEAK_WEIGHT = {"rule": 500, "bar": 500, "dark": 600, "line": 600, "plate": 400, "compact": 700}
+# 三级标题轴：字重 + 字族 + 字距 + 上下间距 + 前置记号。六档必须真的不同——
+# 若四种取值落到同一组参数，这条轴就只是 themes.json 里的一个装饰性字段。
+H3_AXIS = {
+    "label": (600, "sans", "heading", 30, 10, ""),
+    "soft": (600, "serif", "caption", 30, 8, ""),
+    "serif": (600, "serif", "heading", 34, 10, "seal"),
+    "report": (700, "sans", "heading", 24, 6, ""),
+    "atelier": (600, "serif", "heading", 32, 10, "hair"),
+    "folio": (700, "sans", "display", 24, 8, ""),
+}
 
 
 def contrast_pairs(t):
@@ -216,14 +225,18 @@ PROSE_ATOM = re.compile(
 
 
 def typo(s):
-    """归一中文语境半角标点与出版口径字符；保护行内代码、链接与 URL。"""
+    """中文语境半角标点归一；保护行内代码、链接与 URL。
+
+    只做“源码级”改写：引号转形与装饰斜杠归一是文本节点的排版政策，统一在
+    `typography.sanitize_html()` 里对最终文本节点执行一次。两处都做等于每个
+    字都被 publish 两遍，而第二遍从未产出不同的结果。
+    """
     def prose(text):
-        text = re.sub(
+        return re.sub(
             f"(?<=[{CJK}])([,;:!?])|(?<=[A-Za-z0-9])([,;!?])\\s*(?=[{CJK}])",
             lambda m: dict(zip(",;:!?", "，；：！？"))[m[1] or m[2]],
             text,
         )
-        return typography.publish(text)
     return "".join(
         part if i % 2 else prose(part)
         for i, part in enumerate(re.split(r"(`[^`]+`|“[^”]*”|\u300c[^\u300d]*\u300d|\u300e[^\u300f]*\u300f|\[(?:\[[^\]\n]*\]|[^\]]+)\]\([^)\s]+\)|https?://[^\s<>\u3000，；。！？）\"]+)", s))
@@ -461,51 +474,59 @@ def parse(md, plain_text=False):
     return meta, blocks
 
 
-def img_size(path):
-    """读文件头取 (宽, 高)：PNG / JPEG / GIF / WebP。"""
+def image_info(data):
+    """从字节头一次性取 (MIME, (宽, 高))：PNG / JPEG / GIF / WebP。
+
+    尺寸、MIME 与哈希都从同一份字节得到：图片只读一次，也不去问平台 MIME 注册表
+    （Windows 上那次注册表读取比解码图片本身还慢）。
+    """
     try:
-        with open(path, "rb") as f:
-            head = f.read(32)
-            if head[:8] == b"\x89PNG\r\n\x1a\n":
-                return struct.unpack(">II", head[16:24])
-            if head[:6] in (b"GIF87a", b"GIF89a"):
-                return struct.unpack("<HH", head[6:10])
-            if head[:4] == b"RIFF" and head[8:12] == b"WEBP":
-                tag, chunk = head[12:16], head[20:32]
-                if tag == b"VP8X":
-                    w = 1 + int.from_bytes(chunk[4:7], "little")
-                    return w, 1 + int.from_bytes(chunk[7:10], "little")
-                if tag == b"VP8L":
-                    bits = int.from_bytes(chunk[1:5], "little")
-                    return (bits & 0x3FFF) + 1, ((bits >> 14) & 0x3FFF) + 1
-                if tag == b"VP8 ":
-                    return (int.from_bytes(chunk[6:8], "little") & 0x3FFF,
-                            int.from_bytes(chunk[8:10], "little") & 0x3FFF)
-            if head[:2] == b"\xff\xd8":
-                data = head + f.read()
-                i = 2
-                while i + 9 < len(data):
-                    if data[i] != 0xFF:
-                        i += 1
-                        continue
-                    mk = data[i + 1]
-                    if mk in (0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF):
-                        h, w = struct.unpack(">HH", data[i + 5:i + 9])
-                        return w, h
-                    if mk in (0xD8, 0x01) or 0xD0 <= mk <= 0xD7:
-                        i += 2
-                        continue
-                    i += 2 + struct.unpack(">H", data[i + 2:i + 4])[0]
-    except (OSError, struct.error, IndexError):
-        return None
-    return None
+        if data[:8] == b"\x89PNG\r\n\x1a\n":
+            return "image/png", struct.unpack(">II", data[16:24])
+        if data[:6] in (b"GIF87a", b"GIF89a"):
+            return "image/gif", struct.unpack("<HH", data[6:10])
+        if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+            tag, chunk = data[12:16], data[20:32]
+            if tag == b"VP8X":
+                return "image/webp", (1 + int.from_bytes(chunk[4:7], "little"),
+                                      1 + int.from_bytes(chunk[7:10], "little"))
+            if tag == b"VP8L":
+                bits = int.from_bytes(chunk[1:5], "little")
+                return "image/webp", ((bits & 0x3FFF) + 1, ((bits >> 14) & 0x3FFF) + 1)
+            if tag == b"VP8 ":
+                return "image/webp", (int.from_bytes(chunk[6:8], "little") & 0x3FFF,
+                                      int.from_bytes(chunk[8:10], "little") & 0x3FFF)
+        if data[:2] == b"\xff\xd8":
+            i = 2
+            while i + 9 < len(data):
+                if data[i] != 0xFF:
+                    i += 1
+                    continue
+                marker = data[i + 1]
+                if marker in (0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF):
+                    height, width = struct.unpack(">HH", data[i + 5:i + 9])
+                    return "image/jpeg", (width, height)
+                if marker in (0xD8, 0x01) or 0xD0 <= marker <= 0xD7:
+                    i += 2
+                    continue
+                i += 2 + struct.unpack(">H", data[i + 2:i + 4])[0]
+    except (struct.error, IndexError):
+        return None, None
+    return None, None
+
+
+def file_image_info(path):
+    try:
+        with open(path, "rb") as stream:
+            return image_info(stream.read())
+    except OSError:
+        return None, None
 
 
 NUMERIC = re.compile(
     r"(?:约|近|超过|超|不足|少于|多于|不到)?[+\-−]?[\d.,，]+(?:\s*[–—-]\s*[\d.,，]+)?\s*"
     r"(?:" + NUM_UNITS + r")?"
 )
-MOBILE_TABLE_PX = 288  # 320px 视口的缺省正文宽；主题另设页边时按 content_px() 重算
 DATA_VALUE_SLACK = 8
 TABLE_SLACK = 2
 
@@ -544,18 +565,6 @@ def _greedy_wrap(text, size, width, tracking=0.0):
 
 # 设计基准宽度：排版在 375–430 上必须成立，320 由标题长度把关而不是靠机械断行。
 DESIGN_WIDTH = 375
-
-
-def fit_tracking(text, size, width, start, floor=0.02):
-    """字距让步：单行标签放不下时先收字距，而不是让它折成两行。
-
-    西文按 0.556em 估宽是大写加粗时的乐观值（实际接近 0.64em），这里乘 1.15 取保守侧：
-    标签宁可字距紧一点，也不能在最常见的 375px 上掉下一个字。
-    """
-    track = start
-    while track > floor and text_px(text, size) * 1.15 + len(text) * track * size > width:
-        track = round(track - 0.02, 3)
-    return max(track, floor)
 
 
 def balance_title(text, size, width, tracking=0.0, narrow=None):
@@ -623,7 +632,7 @@ def table_fits(rows, pad=12, margin=0):
     return sum(_column_floors(rows, pad)) <= avail
 
 
-def col_widths(rows, avail=MOBILE_TABLE_PX, pad=12):
+def col_widths(rows, avail, pad=12):
     """先兑现每列最小可读像素，若短词列整列可单行容纳则优先给足，再按体量分配长文本列。"""
     if not rows or not rows[0]:
         return []
@@ -826,27 +835,76 @@ class R:
         return (f'<section style="{gap}">' + number_row()
                 + self.title_rows(text, hs, style, "") + "</section>")
 
+    def masthead(self, meta):
+        """刊头：只有摘要行。六主题各有一套起印语法——这是正文之前唯一的版面单元。
+
+        刊头不放栏目行、期号或分类串：那些信息读者不需要，公众号也已有栏目体系，
+        印在正文顶部只是装饰。一块版面从“这篇文章说什么”开始，不从刊名装饰开始。
+        """
+        t, mode = self.t, self.t["header"]
+        deck = meta.get("deck", "")
+        if not deck:
+            return ""
+        size = self.type["deck_size"]
+        deck_style = f"font-family:{self.font};line-height:1.72;{self.tr('caption')}"
+
+        def deck_p(color, weight=500, extra=""):
+            return self.p(self.inline(deck), size, color,
+                          deck_style + f"font-weight:{weight};" + extra)
+
+        if mode == "lede":
+            # 信笺：摘要与导语同一收进量，右端参差即版心——起笔线上不加任何横线
+            return (f'<section style="margin-bottom:{self.g(22)}px;padding-right:8%;">'
+                    f'{deck_p(t["sub"])}</section>')
+        if mode == "seal":
+            # 酌墨：摘要之前一道朱砂短印，与章节印记同一笔
+            seal = (f'<section style="width:12px;height:2px;background:{t["accent"]};'
+                    f'margin-bottom:{self.g(10)}px;">{BR}</section>')
+            return f'<section style="margin-bottom:{self.g(24)}px;">{seal}{deck_p(t["sub"])}</section>'
+        if mode == "band":
+            # 北霜：电讯头——摘要收在一道 2px 通栏实线之下，字重压住信息密度
+            return (f'<section style="border-top:2px solid {t["text"]};padding-top:{self.g(9)}px;'
+                    f'margin-bottom:{self.g(20)}px;">{deck_p(t["sub"], 600)}</section>')
+        if mode == "plate":
+            # 素作：16px 发丝线起印，摘要左右各收 6%，像展签的说明栏
+            hair = (f'<section style="width:16px;height:1px;background:{t["line"]};'
+                    f'margin-bottom:{self.g(10)}px;">{BR}</section>')
+            return (f'<section style="margin-bottom:{self.g(26)}px;">{hair}'
+                    f'<section style="margin:0 6%;">{deck_p(t["sub"])}</section></section>')
+        if mode == "feature":
+            # 特稿：摘要紧贴标题压下来，接近导语的重量，先声夺人
+            return (f'<section style="margin-bottom:{self.g(22)}px;">'
+                    f'{deck_p(t["text"], 600, "line-height:1.52;")}</section>')
+        # 静纸：一道通栏发丝线起印，摘要右端收进 32%——留白是版面的第一件工具
+        rule = (f'<section style="height:1px;background:{t["line"]};'
+                f'margin-bottom:{self.g(12)}px;">{BR}</section>')
+        return (f'<section style="margin-bottom:{self.g(24)}px;">{rule}'
+                f'<section style="padding-right:32%;">{deck_p(t["sub"])}</section></section>')
+
     def h3(self, text):
-        t, mode = self.t, self.t["h3"]
-        # 三级标题不低于正文字号：层级靠字重、颜色与间距建立，不靠缩小字号
+        """三级标题：字重、字族、字距、上下间距与前置记号全部由 H3_AXIS 单一决定。
+
+        三级标题不低于正文字号——层级靠字重、字距与间距建立，不靠缩小字号。
+        """
+        t = self.t
+        weight, family, track, top, bottom, mark = H3_AXIS[t["h3"]]
         size = max(self.type["h3_size"], self.body)
-        weight, extra = 600, f"font-family:{self.font};{self.tr('heading')}"
-        top = self.g(30)
-        if mode == "label":
-            weight = 600
-        elif mode == "soft":
-            # 信笺的三级标题是小标：字号只比正文高一级，靠字重与字距把它和段落分开
-            weight = 600
-        elif mode == "serif":
-            weight = 600
-        elif mode == "report":
-            weight, top = 700, self.g(24)
-        elif mode == "atelier":
-            weight = 600
-        elif mode == "folio":
-            weight, top = 700, self.g(24)
-        return (f'<section style="margin:{top}px 0 {self.g(10)}px;">'
-                + self.p(self.inline(text), size, t["text"], f"font-weight:{weight};{extra}") + "</section>")
+        font = SERIF if family == "serif" else SANS
+        lead = ""
+        if mark == "seal":
+            # 与章节印记同族的小朱点：只在二级标题下面复用一次，读者立刻认出这是同一套编号语言
+            lead = (f'<span style="display:inline-block;width:5px;height:5px;background:{t["accent"]};'
+                    f'margin-right:0.45em;vertical-align:middle;">{BR}</span>')
+        elif mark == "hair":
+            # 发丝记号是块级对象，必须落在段落之外：微信只接受 p 内的行内内容，
+            # 把 section 塞进 p 会被 Gate 1 直接判非法结构。
+            lead = (f'<section style="width:16px;height:1px;background:{t["line"]};'
+                    f'margin-bottom:{self.g(6)}px;">{BR}</section>')
+        heading = self.p((lead if mark == "seal" else "") + self.inline(text), size, t["text"],
+                         f"font-weight:{weight};font-family:{font};{self.tr(track)}")
+        if mark == "hair":
+            heading = lead + heading
+        return f'<section style="margin:{self.g(top)}px 0 {self.g(bottom)}px;">{heading}</section>'
 
     def para(self, text, next_kind="", initial=False):
         indent = self.grid.get("indent", 0)
@@ -1570,7 +1628,7 @@ def _asset_gate(meta, blocks, base):
         if not os.path.isfile(p):
             must.append(f"图片不存在：{src}（本地化后再交付，或写成 todo）")
             continue
-        wh, kb = img_size(p), os.path.getsize(p) // 1024
+        wh, kb = file_image_info(p)[1], os.path.getsize(p) // 1024
         if not wh or not all(wh):
             must.append(f"图片不是可识别格式：{src}")
         elif wh[0] < 600:
@@ -1594,7 +1652,7 @@ def _asset_gate(meta, blocks, base):
         if not os.path.isfile(p):
             must.append(f"封面文件不存在：{cover}")
         else:
-            wh = img_size(p)
+            wh = file_image_info(p)[1]
             if not wh or not all(wh):
                 must.append("封面不是可识别图片")
             else:
@@ -1604,6 +1662,28 @@ def _asset_gate(meta, blocks, base):
                     should.append(f"封面 {w}×{h}：宽度低于建议基线 {COVER_MIN_W}px，复核缩略清晰度")
                 if not COVER_BAND[0] <= ratio <= COVER_BAND[1]:
                     should.append(f"封面 {w}×{h}（{ratio:.2f}:1）：超出微信 {COVER_RATIO}:1 常见区间，确认主体位于中央安全区")
+    # 同一张图出现两次，读者第二次什么也没多知道：路径重复与字节完全相同都算重复
+    paths = [b[1] for _, b in imgs if b[1] and not TODO.match(b[1])]
+    counts = {}
+    for src in paths:
+        counts[src] = counts.get(src, 0) + 1
+    for src, count in counts.items():
+        if count > 1:
+            must.append(f"图片 {src} 在正文出现 {count} 次：重复图不提供信息增量，删掉多余的一张")
+    digests = {}
+    for src in dict.fromkeys(paths):
+        if counts[src] > 1:
+            continue
+        path = local_path(src, base)
+        if not os.path.isfile(path):
+            continue
+        digest = sha256(path)
+        if digest in digests:
+            must.append(f"图片 {digests[digest]} 与 {src} 内容完全相同：两张一样的图占两份版面，不占两份信息")
+        else:
+            digests[digest] = src
+    if cover and not TODO.match(cover) and cover in counts:
+        should.append("封面同时被用作正文插图：读者已经见过这一张，正文首图应建立新的场景或证据")
     chars = doc_len(blocks)
     budget = 1 if chars <= 800 else 3 if chars <= 2000 else 4
     if len(imgs) > budget:
@@ -1700,9 +1780,9 @@ def _structure_gate(meta, blocks, key):
                     should.append(f"注释行偏长（{len(ln)} 字）：来源短写“主体（日期）”，口径一句话")
                     break
     title = meta.get("title", "")
-    kick = typo(meta.get("kicker", ""))
-    if kick and text_px(kick, 12) * 1.15 + len(kick) * 0.02 * 12 > content_px(th, DESIGN_WIDTH):
-        should.append(f"栏目行“{kick[:18]}”在 375px 收尽字距仍放不下一行：删掉一节分类，或把它改成正文首句的一部分")
+    if meta.get("kicker"):
+        should.append("kicker 不再输出：栏目行、期号与分类串是装饰性信息，读者版面已取消；"
+                      "请删除 frontmatter 里的这一行")
     if not api_title(title):
         must.append("缺少标题")
     for field, value, cap in (("title", api_title(title), 32), ("author", meta.get("author", ""), 16), ("digest", meta.get("digest", ""), 120)):
@@ -1756,17 +1836,18 @@ def preview_page(meta, theme_name, native, body, base=".", cover=None):
 
 
 def preview_image(src, base):
+    """预览内嵌图：读一次字节，同时得到 MIME 与是否可内嵌；不查平台 MIME 注册表。"""
     if re.match(r"^(?:[a-z][a-z0-9+.-]*:|//)", src, re.I):
         return ""
     path = local_path(src, base)
     if not os.path.isfile(path):
         return src
-    mime = mimetypes.guess_type(path)[0] or "application/octet-stream"
-    if mime not in ("image/jpeg", "image/png", "image/gif", "image/webp"):
+    with open(path, "rb") as stream:
+        data = stream.read()
+    mime, size = image_info(data)
+    if not mime or not size:
         return src
-    with open(path, "rb") as f:
-        encoded = base64.b64encode(f.read()).decode("ascii")
-    return f"data:{mime};base64," + encoded
+    return f"data:{mime};base64," + base64.b64encode(data).decode("ascii")
 
 
 def strip_editorial(blocks):
@@ -1797,19 +1878,7 @@ def render(md, theme=None, plain_text=False):
         raise ValueError(f"未知主题 {key}，可选：{', '.join(THEMES)}")
     r = R(THEMES[key], meta.get("density", "standard"))
     out, n = [], 0
-    if meta.get("kicker"):
-        kick = typo(meta["kicker"])
-        track = fit_tracking(kick, r.cap, content_px(r.t, DESIGN_WIDTH), r.tracking.get("label", 0))
-        out.append(f'<section style="margin-bottom:{r.g(10)}px;">'
-                   + r.p(r.leaf(kick), r.cap, r.t["accent"],
-                         f"font-weight:600;letter-spacing:{track:g}em;")
-                   + "</section>")
-    if meta.get("deck"):
-        out.append(f'<section style="margin-bottom:{r.g(18)}px;">'
-                   + r.p(r.inline(meta["deck"]), r.type["deck_size"], r.t["sub"],
-                         f"font-family:{r.font};font-weight:500;line-height:1.72;{r.tr('caption')}")
-                   + "</section>")
-
+    out.append(r.masthead(meta))
     heads = [b[1] for b in blocks if b[0] == "h2"]
     # 目录是刊头与正文之间的版面索引：插在第一个章节标题之前。
     # 早先按“第一段之后”插入，一旦正文没有引言段，目录就会落进第一章内部，
@@ -2038,103 +2107,106 @@ def build(md_path, theme=None, out=None, against=None, ledger=None, delivery=Fal
         s2.append(f"首屏含 {fs['weight']} 个重入口：建议只保留一个主入口")
     m1, m2, s2 = list(dict.fromkeys(m1)), list(dict.fromkeys(m2)), list(dict.fromkeys(s2))
 
-    with tempfile.TemporaryDirectory(prefix=".wechat-stage-", dir=out_base) as stage:
-        for src, data in originals.items():
-            atomic_write(local_path(src, stage), data)
-        atomic_write(os.path.join(stage, "正文.html"), body)
-        source_name = "源稿.md" if delivery else os.path.abspath(md_path)
-        cover_uri = preview_image(cover, stage) if cover and not TODO.match(cover) else ""
-        cover_panel = ({"src": cover_uri, "focal": meta.get("cover_focal") or "50% 50%",
-                        "note": meta.get("cover_note", "")} if cover_uri.startswith("data:") else None)
-        preview = preview_page(meta, THEMES[key]["name"], native_header(meta), body, cover=cover_panel)
-        preview = re.sub(r'(<img\b[^>]*src=")([^"]+)(")',
-                         lambda m: m[1] + H.escape(preview_image(H.unescape(m[2]), stage)) + m[3] + ' data-local="' + m[2] + '"', preview)
-        atomic_write(os.path.join(stage, "预览.html"), preview)
-        asset_records = []
-        img_meta = {b[1]: (b[0], b[2]) for k, b in blocks if k == "img"}
-        for src, data in sorted(originals.items()):
-            wh = img_size(local_path(src, stage))
-            alt, role = img_meta.get(src, ("", "cover"))
-            asset_records.append({"path": src, "sha256": hashlib.sha256(data).hexdigest(),
-                                  "source_path": src, "source_sha256": hashlib.sha256(data).hexdigest(),
-                                  "dimensions": list(wh) if wh else None,
-                                  "role": role or ("cover" if src == cover else ""),
-                                  "caption": alt, "provenance": meta.get("cover_note", "") if src == cover else "",
-                                  "focal": meta.get("cover_focal", "50% 50%") if src == cover else "",
-                                  "subject_visibility": "UNVERIFIED", "safe_zone": "UNVERIFIED"})
-        side = {
-            "title": meta.get("title", ""), "api_title": api_title(meta.get("title", "")),
-            "author": meta.get("author", ""), "digest": meta.get("digest") or auto_digest(meta, blocks),
-            "cover": cover if cover and not TODO.match(cover) else "", "source_url": meta.get("source", ""),
-            "theme": key, "skill_version": SKILL_VERSION, "theme_config_sha256": THEME_CONFIG_SHA256,
-            "renderer_sha256": renderer_fingerprint(),
-            "typography": {"policy": "装饰性分隔归一为“·”；引语、URL、代码、单位比与数字比不改写；编辑说明整段移除",
-                           "removed_editorial": removed_editorial,
-                           "preview_viewports": list(VIEWPORTS),
-                           "preview_fonts": ["ios", "android"]},
-            "theme_profile": {axis: THEMES[key][axis] for axis in THEME_AXES},
-            "grid": dict(THEMES[key]["grid"]), "contrast_checks": contrasts,
-            "decision": review["decision"], "article_type": review["type"]["key"],
-            "composition_evidence": {"first_screen_layers": fs["layers"], "first_screen_weight": fs["weight"],
-                                     "h2_count": sum(k == "h2" for k, _ in blocks), "body_characters": doc_len(blocks),
-                                     "scope": "源稿结构统计，不是首屏像素测量"},
-            "editorial_review": review, "integrity_version": 3,
-            "source": {"path": source_name, "sha256": source_digest}, "assets": asset_records,
-            "body_sha256": hashlib.sha256(body.encode()).hexdigest(),
-            "preview_sha256": hashlib.sha256(preview.encode()).hexdigest(),
-            "render_status": "FAIL" if m1 or m2 else "PASS", "render_errors": m1 + m2,
-            "pending_assets": any(not b[1] or TODO.match(b[1]) for k, b in blocks if k == "img"),
-            "verification_gates": {"local_static": "FAIL" if m1 or m2 else "PASS",
-                                   "browser_multi_width": "UNVERIFIED", "semantic_editorial": "UNVERIFIED",
-                                   "wechat_api_readback": "UNVERIFIED", "wechat_real_device": "UNVERIFIED"},
-        }
-        if facts_diff is not None:
-            side.update(fact_diff=facts_diff, voice_diff=voice_diff)
-        if ledger:
-            side["ledger"] = {"rows": ledger_rows, "problems": ledger_problems}
-        atomic_write(os.path.join(stage, "正文.meta.json"), json.dumps(side, ensure_ascii=False, indent=2) + "\n")
-        if delivery:
-            report = render_report(review, facts_diff, ledger_problems, voice_diff)
-            report += "\n## 类型策略\n\n" + "\n".join(f"- {x}" for x in strategy_notes(meta, blocks)) + "\n"
-            report += "\n## 修改边界\n\n仅记录已输入的原稿比对与修改台账；未提供原稿时，不声称已完成改前/改后编辑审计。\n"
-            if ledger_rows:
-                report += "\n## 修改台账\n\n| 位置 | 问题 | 动作 | 收益 | 保留检查 |\n|---|---|---|---|---|\n"
-                report += "\n".join("| " + " | ".join(row[c].replace("|", "｜").replace("\n", " ") for c in LEDGER_HEAD) + " |" for row in ledger_rows) + "\n"
-            acceptance = ["# 验收结果", "", f"- Skill：{SKILL_VERSION}；主题：{key}",
-                          f"- 本地静态 Gate：{'FAIL' if m1 or m2 else 'PASS'}"]
-            acceptance += [f"- FAIL：{x}" for x in m1 + m2]
-            acceptance += [f"- 复核建议：{x}" for x in s2]
-            acceptance += ["", "| 验证项 | 状态 | 证据边界 |", "|---|---|---|",
-                           "| 五宽度浏览器 | UNVERIFIED | 本命令不启动浏览器；须另附 320/360/375/390/430px 实测 |",
-                           "| 语义编辑与外部核真 | UNVERIFIED | 机器线索不是事实核真或审美评分 |",
-                           "| 微信 API 回读 | UNVERIFIED | 须真实账号创建草稿并回读 |",
-                           "| 微信 iOS/Android 真机 | UNVERIFIED | 浏览器与 API 均不能代替 |",
-                           "| 图片主体与安全区 | UNVERIFIED | 须实际核看原图与客户端裁切 |"]
-            atomic_write(os.path.join(stage, "源稿.md"), source_bytes)
-            atomic_write(os.path.join(stage, "修改记录.md"), report)
-            atomic_write(os.path.join(stage, "验收.md"), "\n".join(acceptance) + "\n")
-        files = {}
-        for root, _, names in os.walk(stage):
-            for name in sorted(names):
-                path = os.path.join(root, name)
-                relative = os.path.relpath(path, stage).replace(os.sep, "/")
-                target_name = {"预览.html": os.path.basename(prev)}.get(relative, relative)
-                if not delivery and target_name in {"正文.html", "正文.meta.json"}:
-                    target_name = os.path.basename(out) if target_name == "正文.html" else os.path.basename(meta_path)
-                files[target_name] = path
-        collisions = [os.path.join(out_base, name) for name in files if os.path.realpath(os.path.join(out_base, name)) in protected]
-        if collisions:
-            raise ValueError(f"交付将覆盖受保护输入：{collisions}")
-        for name in files:
-            output_path(os.path.join(out_base, name))
-        for name, path in files.items():
-            atomic_write(os.path.join(out_base, name), safety_read(path))
-        if delivery:
-            manifest = {"schema": 1, "skill_version": SKILL_VERSION, "source_sha256": source_digest,
-                        "body_sha256": side["body_sha256"], "render_status": side["render_status"],
-                        "files": {name: hashlib.sha256(safety_read(path)).hexdigest() for name, path in sorted(files.items())}}
-            atomic_write(os.path.join(deliver, "交付清单.json"), json.dumps(manifest, ensure_ascii=False, indent=2) + "\n")
-    return {"key": key, "meta": meta, "blocks": blocks, "body": body, "side": side,
+    source_name = "源稿.md" if delivery else os.path.abspath(md_path)
+    cover_uri = preview_image(cover, base) if cover and not TODO.match(cover) else ""
+    cover_panel = ({"src": cover_uri, "focal": meta.get("cover_focal") or "50% 50%",
+                    "note": meta.get("cover_note", "")} if cover_uri.startswith("data:") else None)
+    preview = preview_page(meta, THEMES[key]["name"], native_header(meta), body, cover=cover_panel)
+    preview = re.sub(r'(<img\b[^>]*src=")([^"]+)(")',
+                     lambda m: m[1] + H.escape(preview_image(H.unescape(m[2]), base)) + m[3]
+                     + ' data-local="' + m[2] + '"', preview)
+    asset_records = []
+    img_meta = {b[1]: (b[0], b[2]) for k, b in blocks if k == "img"}
+    for src, data in sorted(originals.items()):
+        # 字节已经在手：尺寸与哈希都从这份字节算，不再二次读盘、不重复算同一份 sha256
+        digest = hashlib.sha256(data).hexdigest()
+        _mime, wh = image_info(data)
+        alt, role = img_meta.get(src, ("", "cover"))
+        asset_records.append({"path": src, "sha256": digest,
+                              "dimensions": list(wh) if wh else None,
+                              "role": role or ("cover" if src == cover else ""),
+                              "caption": alt, "provenance": meta.get("cover_note", "") if src == cover else "",
+                              "focal": meta.get("cover_focal", "50% 50%") if src == cover else "",
+                              "subject_visibility": "UNVERIFIED", "safe_zone": "UNVERIFIED"})
+    side = {
+        "title": meta.get("title", ""), "api_title": api_title(meta.get("title", "")),
+        "author": meta.get("author", ""), "digest": meta.get("digest") or auto_digest(meta, blocks),
+        "cover": cover if cover and not TODO.match(cover) else "", "source_url": meta.get("source", ""),
+        "theme": key, "skill_version": SKILL_VERSION, "theme_config_sha256": THEME_CONFIG_SHA256,
+        "renderer_sha256": renderer_fingerprint(),
+        "typography": {"policy": "装饰性分隔归一为“·”；引语、URL、代码、单位比与数字比不改写；编辑说明整段移除",
+                       "removed_editorial": removed_editorial,
+                       "preview_viewports": list(VIEWPORTS),
+                       "preview_fonts": ["ios", "android"]},
+        "theme_profile": {axis: THEMES[key][axis] for axis in THEME_AXES},
+        "grid": dict(THEMES[key]["grid"]), "contrast_checks": contrasts,
+        "decision": review["decision"], "article_type": review["type"]["key"],
+        "composition_evidence": {"first_screen_layers": fs["layers"], "first_screen_weight": fs["weight"],
+                                 "h2_count": sum(k == "h2" for k, _ in blocks), "body_characters": doc_len(blocks),
+                                 "scope": "源稿结构统计，不是首屏像素测量"},
+        "integrity_version": 4,
+        "source": {"path": source_name, "sha256": source_digest}, "assets": asset_records,
+        "body_sha256": hashlib.sha256(body.encode()).hexdigest(),
+        "preview_sha256": hashlib.sha256(preview.encode()).hexdigest(),
+        "render_status": "FAIL" if m1 or m2 else "PASS", "render_errors": m1 + m2,
+        "pending_assets": any(not b[1] or TODO.match(b[1]) for k, b in blocks if k == "img"),
+        "verification_gates": {"local_static": "FAIL" if m1 or m2 else "PASS",
+                               "browser_multi_width": "UNVERIFIED", "semantic_editorial": "UNVERIFIED",
+                               "wechat_api_readback": "UNVERIFIED", "wechat_real_device": "UNVERIFIED"},
+    }
+    if facts_diff is not None:
+        side.update(fact_diff=facts_diff, voice_diff=voice_diff)
+    if ledger:
+        side["ledger"] = {"rows": ledger_rows, "problems": ledger_problems}
+
+    # 交付字节全部在内存里组装：每个文件只写一次、只算一次哈希，不经过中转目录。
+    payloads = {"正文.html": body.encode(), "预览.html": preview.encode(),
+                "正文.meta.json": (json.dumps(side, ensure_ascii=False, indent=2) + "\n").encode()}
+    payloads.update(originals)
+    if delivery:
+        report = render_report(review, facts_diff, ledger_problems, voice_diff)
+        report += "\n## 类型策略\n\n" + "\n".join(f"- {x}" for x in strategy_notes(meta, blocks)) + "\n"
+        report += "\n## 修改边界\n\n仅记录已输入的原稿比对与修改台账；未提供原稿时，不声称已完成改前/改后编辑审计。\n"
+        if ledger_rows:
+            report += "\n## 修改台账\n\n| 位置 | 问题 | 动作 | 收益 | 保留检查 |\n|---|---|---|---|---|\n"
+            report += "\n".join("| " + " | ".join(row[c].replace("|", "｜").replace("\n", " ") for c in LEDGER_HEAD) + " |" for row in ledger_rows) + "\n"
+        acceptance = ["# 验收结果", "", f"- Skill：{SKILL_VERSION}；主题：{key}",
+                      f"- 本地静态 Gate：{'FAIL' if m1 or m2 else 'PASS'}"]
+        acceptance += [f"- FAIL：{x}" for x in m1 + m2]
+        acceptance += [f"- 复核建议：{x}" for x in s2]
+        acceptance += ["", "| 验证项 | 状态 | 证据边界 |", "|---|---|---|",
+                       "| 五宽度浏览器 | UNVERIFIED | 本命令不启动浏览器；须另附 320/360/375/390/430px 实测 |",
+                       "| 语义编辑与外部核真 | UNVERIFIED | 机器线索不是事实核真或审美评分 |",
+                       "| 微信 API 回读 | UNVERIFIED | 须真实账号创建草稿并回读 |",
+                       "| 微信 iOS/Android 真机 | UNVERIFIED | 浏览器与 API 均不能代替 |",
+                       "| 图片主体与安全区 | UNVERIFIED | 须实际核看原图与客户端裁切 |"]
+        payloads["源稿.md"] = source_bytes
+        payloads["修改记录.md"] = report.encode()
+        payloads["验收.md"] = ("\n".join(acceptance) + "\n").encode()
+    targets = {}
+    for relative in payloads:
+        name = os.path.basename(prev) if relative == "预览.html" else relative
+        if not delivery and relative in ("正文.html", "正文.meta.json"):
+            name = os.path.basename(out if relative == "正文.html" else meta_path)
+        targets[relative] = os.path.join(out_base, name)
+    # 先整体校验目标路径与冲突，再落盘：任一条不合格时一个字都不写
+    collisions = [path for path in targets.values() if os.path.realpath(path) in protected]
+    if collisions:
+        raise ValueError(f"交付将覆盖受保护输入：{collisions}")
+    for path in targets.values():
+        output_path(path)
+    for relative, path in targets.items():
+        atomic_write(path, payloads[relative])
+    if delivery:
+        # 清单键必须是交付目录内的相对路径：只写文件名会让 images/ 下的素材一起撞名，
+        # 也会让下次交付时的“清单内文件全等”校验永远找不到文件。
+        manifest = {"schema": 1, "skill_version": SKILL_VERSION, "source_sha256": source_digest,
+                    "body_sha256": side["body_sha256"], "render_status": side["render_status"],
+                    "files": {os.path.relpath(path, out_base).replace(os.sep, "/"):
+                              hashlib.sha256(payloads[relative]).hexdigest()
+                              for relative, path in sorted(targets.items())}}
+        atomic_write(os.path.join(deliver, "交付清单.json"), json.dumps(manifest, ensure_ascii=False, indent=2) + "\n")
+    return {"key": key, "meta": meta, "blocks": blocks, "body": body, "side": side, "review": review,
             "out": out, "preview": prev, "meta_path": meta_path, "facts_diff": facts_diff,
             "voice_diff": voice_diff, "ledger_rows": ledger_rows, "ledger_problems": ledger_problems,
             "gates": (("Gate 1 Platform", m1, s1), ("Gate 2 Composition", m2, s2))}
@@ -2163,7 +2235,7 @@ def main():
         ap.error("--out 与 --deliver 二选一")
     out = os.path.join(os.path.abspath(args.deliver), "正文.html") if args.deliver else args.out
     result = build(args.md, args.theme, out, args.against, args.ledger, bool(args.deliver))
-    review = result["side"]["editorial_review"]
+    review = result["review"]
     for issue in review["issues"]:
         print(f"编辑提示 · {issue['severity']} · {issue['location']} · {issue['code']}：{issue['problem']} → {issue['action']}")
     print(f"{THEMES[result['key']]['name']} → {result['out']}\n预览 → {result['preview']}\n侧车 → {result['meta_path']}")

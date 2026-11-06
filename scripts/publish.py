@@ -26,7 +26,7 @@ import urllib.request
 import urllib.error
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from render import api_title, img_size, SKILL_VERSION, THEME_CONFIG_SHA256, renderer_fingerprint  # noqa: E402
+from render import api_title, file_image_info, SKILL_VERSION, THEME_CONFIG_SHA256, renderer_fingerprint  # noqa: E402
 from check import check, image_sources, safe_http_url  # noqa: E402
 from safety import atomic_write, local_path, sha256
 
@@ -518,7 +518,7 @@ def prepare_submission(html_path, settings, meta_path=None):
     html, side = raw_html.decode("utf-8"), json.loads(raw_meta.decode("utf-8"))
     if not isinstance(side, dict):
         raise ValueError("meta 必须是 JSON 对象")
-    if side.get("integrity_version") != 3 or side.get("skill_version") != SKILL_VERSION:
+    if side.get("integrity_version") != 4 or side.get("skill_version") != SKILL_VERSION:
         raise ValueError("旧版渲染记录不能上行；请用当前版本重渲染")
     if side.get("theme_config_sha256") != THEME_CONFIG_SHA256 or side.get("renderer_sha256") != RENDERER_SHA256:
         raise ValueError("主题或渲染代码已变化；请重渲染，不能沿用旧验收")
@@ -561,12 +561,12 @@ def prepare_submission(html_path, settings, meta_path=None):
     frozen = {}
     for path, record in mapping.items():
         resolved = local_path(path, base)
-        if not os.path.isfile(resolved) or not img_size(resolved):
+        if not os.path.isfile(resolved) or not file_image_info(resolved)[1]:
             raise ValueError(f"素材缺失或格式不识别：{path}")
         with open(resolved, "rb") as stream:
             data = stream.read()
         digest = hashlib.sha256(data).hexdigest()
-        if digest != record["sha256"] or digest != record.get("source_sha256"):
+        if digest != record["sha256"]:
             raise ValueError(f"素材已变化：{path}")
         frozen[path] = data
     return {"html": html, "html_path": html_path, "meta_path": meta_path, "side": side,

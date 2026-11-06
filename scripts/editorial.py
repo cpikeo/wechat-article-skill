@@ -44,7 +44,6 @@ TYPES = {
         "opening": "已确认事实 + 时间与归属来源，先于背景与评论",
         "structure": ["已确认事实", "归属与时间线", "影响范围", "尚未确认/未知项"],
         "evidence": "关键事实须定位到明确机构、当事人、日期或原始通报",
-        "title_promise": "事件主体 + 变化量；标题不得把推断或单方说法写成既成事实",
         "risks": ["把单方转述写成已确认事实", "在硬新闻末尾夹带情绪化反问或隐喻", "缺未知边界导致因果错觉"],
         "editorial_work": {
             "protect": "消息来源、引述动词、时间精度、已确认与未知边界",
@@ -59,7 +58,6 @@ TYPES = {
         "opening": "核心判断 + 所依赖的证据类型与时效口径",
         "structure": ["核心主张", "同口径证据", "作用机制", "反例与边界", "现实含义"],
         "evidence": "数字须带口径、期间与比较基准；相关、机制与因果分层表述",
-        "title_promise": "趋势判断 + 必要限定；不把单一变量写成唯一原因",
         "risks": ["跨口径直接比较", "相关性偷换为单因果定律", "结论段只复述主张无边界收束"],
         "editorial_work": {
             "protect": "指标口径、统计期间、比较基准、相关性限定与反例",
@@ -74,7 +72,6 @@ TYPES = {
         "opening": "可验证的完成结果 + 环境/版本前提",
         "structure": ["目标结果", "版本与前提", "最小可执行步骤", "输出校验", "异常边界与回退"],
         "evidence": "命令、参数、版本号与预期输出可逐项复现",
-        "title_promise": "具体任务 + 关键规则或完成标准；步骤数与正文一致",
         "risks": ["省略环境前提", "步骤耦合无校验输出", "只写成功路径不写异常与边界"],
         "editorial_work": {
             "protect": "版本、前提、命令、参数、执行顺序、预期输出与风险提示",
@@ -89,7 +86,6 @@ TYPES = {
         "opening": "可核实的具体场景、时间节点或动作，而非抽象褒贬",
         "structure": ["具体切口/时间点", "处境与选择", "细节与有出处的原话", "有据可依的意义"],
         "evidence": "引语、履历节点与场景细节须有可追溯出处；不补写心理独白",
-        "title_promise": "人物主体 + 可兑现的具体路径或选择",
         "risks": ["开篇空泛颂扬代替动作", "无出处补写人物内心活动", "用奖项堆砌代替叙事主线"],
         "editorial_work": {
             "protect": "人物原话、时间线、具体动作、公开履历与作者评价之间的边界",
@@ -104,7 +100,6 @@ TYPES = {
         "opening": "明确主张及其代价或前提，先于抒情铺垫",
         "structure": ["核心主张", "分点理由", "最强反驳", "正面回应", "结论限定"],
         "evidence": "事实前提与价值判断分开；引述对方观点保留原意不造稻草人",
-        "title_promise": "核心立场清晰可定位；设问型标题须给出明确回答",
         "risks": ["情绪姿态代替推理论证", "虚构弱反方打稻草人", "无限定词的全称绝对化断言"],
         "editorial_work": {
             "protect": "作者立场、语气节奏、论证对象、价值前提与时代用字",
@@ -119,7 +114,6 @@ TYPES = {
         "opening": "承载全文张力的具体切口或关键悬念",
         "structure": ["具体切口", "分层展开", "关键转折", "主线回收"],
         "evidence": "中段每节须有新场景、新证据或真转折；结尾回收主线不塞新论据",
-        "title_promise": "聚焦单一核心张力或主线关系",
         "risks": ["中段原地复述导致失速", "把连续叙事压碎成清单卡片", "结尾突然抛入未展开的新证据"],
         "editorial_work": {
             "protect": "叙事主线、伏笔回收、时间跨度、节奏留白与作者声音",
@@ -335,7 +329,7 @@ def doc_len(blocks):
 def first_screen(meta, blocks):
     """记录首个正文段落前的入口层；weight 数的是“抢注意力的独立单元”。
 
-    刊头（栏目行 + 摘要行 + 导语）是一件事的三个部分，读者读作一个入口，
+    刊头（摘要行 + 导语）是一件事的两个部分，读者读作一个入口，
     不能算成三个重入口；只有正文图与重点句是真正与之并列的独立单元。
     """
     kinds = [b[0] for b in blocks]
@@ -343,9 +337,7 @@ def first_screen(meta, blocks):
     layers = [k for k in kinds[:stop] if k in {"lead", "img", "note", "data", "bars", "table", "quote", "peak"}]
     if meta.get("deck"):
         layers.insert(0, "deck")
-    if meta.get("kicker"):
-        layers.insert(0, "kicker")
-    header = any(k in layers for k in ("kicker", "deck", "lead"))
+    header = any(k in layers for k in ("deck", "lead"))
     weight = (1 if header else 0) + sum(1 for k in layers if k in ("img", "peak"))
     return {"layers": layers, "weight": weight}
 
@@ -815,6 +807,34 @@ def _jaccard(a, b):
     return (len(a & b) / len(a | b)) if (a and b) else 0.0
 
 
+def _char_multiset(text):
+    counts = {}
+    for ch in text:
+        counts[ch] = counts.get(ch, 0) + 1
+    return counts
+
+
+def _multiset_bound(a, b, la, lb):
+    """字频交集给出的相似度上界，等价于 difflib.quick_ratio() 但便宜一个数量级。
+
+    difflib 每次调用都要为第二个序列建索引字典；一篇长文的句对加段对常有几千组，
+    这是整个渲染里最贵的一步。先按上界排除不可能命中的组合，精确结果与直接调用相同。
+    """
+    if not la or not lb:
+        return 0.0
+    shared = sum(min(count, b.get(ch, 0)) for ch, count in a.items())
+    return 2.0 * shared / (la + lb)
+
+
+def _similar(a, b, threshold, ca=None, cb=None):
+    """两段文本的相似度是否达到阈值；先用字频上界筛选，再做精确比对。"""
+    ca = _char_multiset(a) if ca is None else ca
+    cb = _char_multiset(b) if cb is None else cb
+    if _multiset_bound(ca, cb, len(a), len(b)) < threshold:
+        return False
+    return difflib.SequenceMatcher(None, a, b, autojunk=False).ratio() >= threshold
+
+
 def _section_stats(blocks):
     sections, current = [], None
     for index, (kind, value) in enumerate(blocks, 1):
@@ -1016,15 +1036,23 @@ def decision_chain(meta, blocks, key=None, type_key=""):
 
 
 def _scan_blocks(meta, blocks, sections, type_key):
-    """单次扫描生成全部形态线索（mechanical）与段落级判断入口（judgment）。"""
+    """单次扫描生成形态线索。
+
+    句式类线索（模板句、同头排比、句长均质、重述标记、元话语……）不再各占一行报告：
+    它们指向的是同一个判断——“这篇稿子的机器味在哪、哪些是有意修辞”。逐条列出只会
+    把真正需要编辑决策的疑点埋掉，所以收拢成一条可定位的清单。
+    """
     issues, paragraphs, seen = [], [], {}
     first_prose_idx = next((idx for idx, (k, v) in enumerate(blocks) if k == "p" and plain(v).strip()), -1)
     last_prose_idx = max((idx for idx, (k, v) in enumerate(blocks) if k == "p" and plain(v).strip()), default=-1)
     template_hits = {name: [] for name in TEMPLATES}
-    meta_hits, restate_blocks = [], []
+    meta_hits, restate_blocks, habits = [], [], []
     speaker_label = re.compile(r"\*\*[A-Z][A-Z0-9]{0,3}[:：]\*\*")
     emphasis_spans = re.compile(r"\*\*[^*]+?\*\*|==[^=]+?==|<u>[^<]+?</u>")
     emphasis_marks = 0
+
+    def habit(label, block_no, detail):
+        habits.append({"label": label, "block": block_no, "detail": detail})
 
     for idx, (kind, value) in enumerate(blocks):
         block_no = idx + 1
@@ -1131,14 +1159,14 @@ def _scan_blocks(meta, blocks, sections, type_key):
                 template_hits[name].append(block_no)
         restate_blocks.extend((block_no, m.group()) for m in RESTATE.finditer(unquoted))
 
-        for a in range(len(sentences)):
-            for b in range(a + 1, len(sentences)):
-                s1, s2 = sentences[a], sentences[b]
-                if len(s1) >= 14 and len(s2) >= 14 and difflib.SequenceMatcher(None, s1, s2, autojunk=False).ratio() >= 0.72:
-                    _add(issues, "CIRCULAR", "mechanical", "note", loc,
-                         "同段两句字面高度相似；可能是同义反复，也可能是有意对照或定义",
-                         "比较后句是否提供新信息；无推进则合并",
-                         "消除原地踏步的句内复述", f"“{s1[:18]}…”与“{s2[:18]}…”相似度 ≥0.72", needs="editor")
+        # 同段近义反复：只在两句都够长时才有意义，先算一次字频供上界筛选用
+        long_sentences = [(s, _char_multiset(s)) for s in sentences if len(s) >= 14]
+        for a in range(len(long_sentences)):
+            for b in range(a + 1, len(long_sentences)):
+                s1, c1 = long_sentences[a]
+                s2, c2 = long_sentences[b]
+                if _similar(s1, s2, 0.72, c1, c2):
+                    habit("同段近义反复", block_no, f"“{s1[:16]}…”与“{s2[:16]}…”字面相似度 ≥0.72")
                     break
 
         if len(sentences) >= 3:
@@ -1152,17 +1180,12 @@ def _scan_blocks(meta, blocks, sections, type_key):
                 else:
                     run = 1
             if best >= 3:
-                _add(issues, "REPEAT-SUBJECT", "mechanical", "note", loc,
-                     "同段连续多句以同一词开头；可能是排比、步骤或时间线",
-                     "逐句核对信息增量；仅在句式重复拖慢阅读时合并主语",
-                     "兼顾行文连贯与有意排比", f"连续 {best} 句以“{best_token}…”开头", needs="editor")
+                habit("同段连续同头句", block_no, f"连续 {best} 句以“{best_token}…”开头")
 
         lens = [len(s) for s in sentences if s]
         if len(lens) >= 5 and statistics.pstdev(lens) < 3.5:
-            _add(issues, "MONOTONE", "mechanical", "note", loc,
-                 "连续五句以上句长几乎一致，缺少长短句节奏变化",
-                 "把核心结论凝练为短句，铺垫从句适当归并",
-                 "用句长疏密帮读者分辨重点", f"{len(lens)} 句长度 {min(lens)}–{max(lens)} 字，标准差 {statistics.pstdev(lens):.1f}", needs="editor")
+            habit("句长均质", block_no,
+                  f"{len(lens)} 句长度 {min(lens)}–{max(lens)} 字，标准差 {statistics.pstdev(lens):.1f}")
 
         abstract_hits = ABSTRACT.findall(unquoted)
         abstract = sorted(set(abstract_hits))
@@ -1178,18 +1201,12 @@ def _scan_blocks(meta, blocks, sections, type_key):
             if len(sentence) >= 45 and "的" in sentence:
                 head = sentence[:sentence.rfind("的")]
                 if head.count("的") >= 4 and not re.search(r"[，；。、：！？]", head):
-                    _add(issues, "LONG-ATTRIB", "mechanical", "note", loc,
-                         "长定语连续套叠无停顿，主语被推迟到句末",
-                         "拆成短分句，先立主语和核心动作",
-                         "降低手机端长句回读成本", f"“{sentence[:22]}…”连续 {head.count('的')} 个“的”无停顿", needs="editor")
+                    habit("长定语套叠", block_no, f"“{sentence[:20]}…”连续 {head.count('的')} 个“的”无停顿")
                     break
 
         ordinals = PROSE_ORDINAL.findall(clean)
         if len(ordinals) >= 3 and len(clean) > 60:
-            _add(issues, "PROSE-ORDINAL", "mechanical", "note", loc,
-                 f"单段内用“{'/'.join(ordinals[:4])}”连续罗列",
-                 "判断各项是否为平级并列：适合扫读时转列表，属时间线则保留段落",
-                 "让并列结构清晰且不误拆叙事流", f"单段含 {len(ordinals)} 个顺序标记", needs="editor")
+            habit("段内顺序词罗列", block_no, f"单段含 {len(ordinals)} 个顺序标记（{'/'.join(ordinals[:4])}）")
 
         clauses = [c.strip() for c in re.split(r"[，,；;。！？!?、]", clean) if c.strip()]
         c_heads = [_head_token(c) for c in clauses]
@@ -1202,10 +1219,7 @@ def _scan_blocks(meta, blocks, sections, type_key):
             else:
                 run = 1
         if best >= 3 and best_token not in _HEAD_STOP and not _is_number_token(best_token):
-            _add(issues, "PARALLEL-HEAD", "mechanical", "note", loc,
-                 f"连续 {best} 个分句以“{best_token}”领起",
-                 "比较分句信息差异；保留有意排比，删改空洞凑句",
-                 "避免机械排比稀释核心意思", f"“{best_token}…”连续 {best} 次", needs="editor")
+            habit("分句同头排比", block_no, f"连续 {best} 个分句以“{best_token}”领起")
 
         hollow = HOLLOW_CALL.findall(unquoted)
         if idx == last_prose_idx and len(hollow) >= 2 and not re.search(r"\d", raw_text) and not local_source and not quoted_spans(raw_text):
@@ -1214,11 +1228,13 @@ def _scan_blocks(meta, blocks, sections, type_key):
                  "直接删去口号段，或换成具体下一步/主线余韵",
                  "让文章停在最有力的信息或余味上", f"命中号召词 {'、'.join(sorted(set(hollow))[:4])}", needs="editor")
 
-    for pos, (i, norm, _) in enumerate(paragraphs):
-        if len(norm) < 36:
-            continue
-        for j, other, _ in paragraphs[:pos]:
-            if len(other) >= 36 and norm != other and difflib.SequenceMatcher(None, norm, other, autojunk=False).ratio() >= 0.9:
+    long_paras = [(pos, norm, other, _char_multiset(norm))
+                  for pos, (_i, norm, other) in enumerate(paragraphs) if len(norm) >= 36]
+    for a in range(len(long_paras)):
+        i, norm, _, ca = long_paras[a]
+        for b in range(a):
+            j, other, _, cb = long_paras[b]
+            if norm != other and _similar(norm, other, 0.9, ca, cb):
                 _add(issues, "DUP-NEAR", "mechanical", "should", f"块 {i}",
                      "两段文字高度近似，可能在重复同一层意思",
                      "核对两段分工；无新增信息则合并或删除后段",
@@ -1226,27 +1242,29 @@ def _scan_blocks(meta, blocks, sections, type_key):
                 break
 
     if emphasis_marks > max(6, len(paragraphs)):
-        _add(issues, "EMPHASIS-OVERUSE", "mechanical", "note", "全文",
-             "正文加粗/高亮过密（已排除采访说话人标签），削弱真正重点",
-             "删去修饰性加粗，每屏只保留真正改变读者理解的关键句词",
-             "恢复强调层级的稀缺性与扫读锚点", f"强调标记 {emphasis_marks} 处 / 正文 {len(paragraphs)} 段")
+        habit("强调过密", "全文", f"强调标记 {emphasis_marks} 处 / 正文 {len(paragraphs)} 段")
 
     for name, where in template_hits.items():
         if len(where) >= 2:
-            _add(issues, "TEMPLATE-REPEAT", "mechanical", "note", f"块 {'、'.join(map(str, where[:5]))}",
-                 f"句式模板“{name}”在全文出现 {len(where)} 次",
-                 "逐处核对语义功能；仅改写无信息增量的惯性套句",
-                 "避免AI式排比惯性掩盖真实逻辑关系", f"模板“{name}”命中 {len(where)} 处", needs="editor")
+            habit("句式模板复用", where[0], f"“{name}”全文 {len(where)} 次，首见块 {where[0]}")
     if meta_hits:
-        _add(issues, "META-DISCOURSE", "mechanical", "note", f"块 {'、'.join(str(i) for i, _ in meta_hits[:4])}",
-             "正文出现交代写作过程的元话语（“本文将…”等）",
-             "删去过程预告，直接给内容本身",
-             "首屏与转场直入主题", "命中：" + "、".join(sorted({m for _, m in meta_hits})[:4]), needs="editor")
+        habit("写作过程元话语", meta_hits[0][0],
+              "命中：" + "、".join(sorted({m for _, m in meta_hits})[:4]))
     if len(restate_blocks) >= 2:
-        _add(issues, "RESTATE-MARKER", "mechanical", "note", f"块 {'、'.join(str(i) for i, _ in restate_blocks[:4])}",
-             f"“换句话说/也就是说”类重述标记出现 {len(restate_blocks)} 次",
-             "若前句本可写清，直接写清前句并删去二次解释",
-             "减少原地解释造成的拖沓", "命中：" + "、".join(sorted({w for _, w in restate_blocks})[:4]), needs="editor")
+        habit("重述标记", restate_blocks[0][0],
+              f"“{'/'.join(sorted({w for _, w in restate_blocks})[:3])}”共 {len(restate_blocks)} 次")
+
+    if habits:
+        kinds = sorted({h["label"] for h in habits})
+        blocks_hit = "、".join(str(x) for x in sorted({h["block"] for h in habits if isinstance(h["block"], int)})[:6])
+        _add(issues, "STYLE-HABIT", "mechanical", "note",
+             f"块 {blocks_hit}" if blocks_hit else "全文",
+             f"全文有 {len(kinds)} 类句式惯性：{'、'.join(kinds)}",
+             "逐类判断意图：排比、短句停顿、刻意的同头句是有意修辞，保留；"
+             "模板句、元话语与重述标记若没有信息增量则删",
+             "同一遍改动可同时消掉多类机器味，不必按条往返",
+             "；".join(f"{h['label']}（块 {h['block']}）{h['detail']}" for h in habits[:8]),
+             needs="editor")
 
     total = sum(s["chars"] for s in sections)
     if len(sections) >= 2 and total:
@@ -1537,41 +1555,6 @@ def _judgment_issues(meta, blocks, type_key, sections, gains):
     return issues
 
 
-def _promise_issues(promises):
-    issues = []
-    for p in promises:
-        if p["kind"] == "number" and p["status"] == "absent":
-            _add(issues, "PROMISE-NUMBER", "mechanical", "should", "标题与全文",
-                 f"标题承诺的具体数值“{p['promise']}”在正文中未见同值出现",
-                 "在正文补齐该数值及其口径，或修改标题数值",
-                 "确保标题数字承诺可逐字核对", f"标题含 {p['promise']}，正文未匹配")
-        elif p["kind"] == "count" and p["status"] != "fulfilled":
-            # 数量相等但找不到分项锚点时，脚本没有资格判“未兑现”——只提示人工核对位置。
-            graded = p["status"] in ("absent", "mismatch")
-            _add(issues, "PROMISE-COUNT", "judgment", "should" if graded else "note", "标题与全文",
-                 "标题的数量承诺未在编号标题或有序列表中直接对齐",
-                 "通读正文确认分项是否已在段落内兑现；若缺项则补齐或收窄标题",
-                 "防止标题夸大条数或读者难以定位分项",
-                 f"标题承诺 {p['expected']} 项；结构可见 {p['observed']} 项"
-                 + ("，但没有标题或列表能在字面上对应这些分项" if not graded else ""), needs="editor")
-        elif p["kind"] == "object" and p["status"] == "absent":
-            _add(issues, "PROMISE-OBJECT", "judgment", "should", "标题与全文",
-                 "标题点名的专名对象未以原名在正文出现",
-                 "确认正文是否改用简称，或补齐对该对象的实质展开",
-                 "确保标题核心对象在正文真正兑现", f"未见原名“{p['promise']}”", needs="editor")
-        elif p["kind"] == "question" and p["status"] == "unclear":
-            _add(issues, "PROMISE-QUESTION", "judgment", "note", "标题与全文",
-                 "设问/如何型标题未在章节标题或 thesis 中定位到显式答复标记",
-                 "通读确认正文是否已清晰回答标题之问；必要时让关键章节标题直指答案",
-                 "让带着问题点进来的读者快速定位答案", "未声明 thesis 且 H2 无明显答复词", needs="editor")
-        elif p["kind"] == "superlative":
-            _add(issues, "PROMISE-SUPERLATIVE", "judgment", "note", "标题",
-                 "标题含最高级或首次断言，需明确限定范围与证据来源",
-                 "在导语或首段写明比较范围、时间窗口与信源依据",
-                 "防止无边界最高级损害可信度", "标题含最高级/首次语素", needs="fact-check")
-    return issues
-
-
 def _title_issues(title, blocks):
     """标题的移动端可读性：列表页只露出前十几个字，标题必须自己先立住。"""
     issues = []
@@ -1613,7 +1596,6 @@ def audit(meta, blocks):
                 issue["severity"] = "note"
                 issue["evidence"] += "（类型未声明，策略按推断生效，只作提示）"
     promises = promise_ledger(title, blocks, meta.get("thesis", ""))
-    issues.extend(_promise_issues(promises))
     issues.extend(_title_issues(title, blocks))
 
     brief_keys = ("audience", "reading_context", "purpose", "thesis")
@@ -1645,29 +1627,27 @@ def audit(meta, blocks):
         argument_map.append({
             "section": section["heading"], "block": start,
             "claim_candidates": [
-                {"block": i, "text": plain(v)[:180]} for i, (k, v) in members
+                {"block": i, "text": plain(v)[:96]} for i, (k, v) in members
                 if k == "p" and re.search(r"应该|必须|意味着|说明|证明|表明|因此|所以|关键|本质", block_text(k, v))
             ],
+            # 证据只报位置与类型：报告里也只用这两项，正文照抄进工作单只是重复上下文
             "evidence_candidates": [
-                {"block": i, "kind": k, "text": block_text(k, v)[:180]}
-                for i, (k, v) in members if k in EVIDENCE_KINDS
+                {"block": i, "kind": k} for i, (k, v) in members if k in EVIDENCE_KINDS
             ],
             "boundary_candidates": [
-                {"block": i, "text": block_text(k, v)[:180]} for i, (k, v) in members
+                {"block": i, "text": block_text(k, v)[:96]} for i, (k, v) in members
                 if k in ("p", "note", "quote", "unknown")
                 and re.search(r"但|不过|限制|边界|例外|不能|仅|可能|尚未|未知", block_text(k, v))
             ],
-            "inference_relation": "UNVERIFIED",
-            "title_contribution": "UNVERIFIED",
-            "counterexample_response": "UNVERIFIED",
-            "information_gain": "UNVERIFIED",
         })
 
     return {
         "brief": {k: meta.get(k, "") for k in brief_keys},
         "missing_brief": missing,
+        # 类型策略全文只进「修改记录.md」的类型策略一节；侧车只留可机读的三项，
+        # 否则同一份策略会在侧车与报告里各存一遍，读者要读两处才对得上。
         "type": {"key": type_key, "label": strategy["label"] if strategy else "",
-                 "source": type_source, "strategy": strategy},
+                 "source": type_source},
         "decision": {k: meta.get(k, "") for k in
                      ("composition", "visual_concept", "information_shape",
                       "asset_strategy", "mobile_risk", "design_rationale")},
@@ -1749,9 +1729,17 @@ def render_report(result, facts_diff=None, ledger_problems=None, voice_diff=None
         located = " · ".join(f"{r['ring']}→{r['located'] or '未定位'}" for r in result["structure_rings"])
         lines.append(f"- 结构环节（字面定位，不判质量）：{located}")
     if result["promise"]:
-        lines += ["", "## 标题承诺", "", "| 类型 | 承诺 | 期望 | 可见 | 状态 |", "|---|---|---:|---:|---|"]
+        lines += ["", "## 标题承诺", "",
+                  "> `fulfilled` 只代表字面或结构能对上；`needs-judgment`/`unclear` 须通读判定，"
+                  "数量相等本身不算兑现。", "",
+                  "| 类型 | 承诺 | 期望 | 可见 | 状态 | 定位 |", "|---|---|---:|---:|---|---|"]
         for p in result["promise"]:
-            lines.append(f"| {p['kind']} | {p['promise']} | {p['expected']} | {p['observed']} | {p['status']} |")
+            where = "；".join(p.get("locations") or []) or "—"
+            lines.append(f"| {p['kind']} | {p['promise']} | {p['expected']} | {p['observed']} | "
+                         f"{p['status']} | {where.replace('|', '｜')} |")
+        pending = [p for p in result["promise"] if p["status"] != "fulfilled"]
+        if pending:
+            lines += ["", "须人工核对：" + "；".join(f"{p['kind']}“{p['promise']}”（{p['status']}）" for p in pending)]
     if result["issues"]:
         lines += ["", "## 机器线索（mechanical）", "",
                   "> 仅代表字面/形态命中，须结合原文语义二次判断。", "",

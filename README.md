@@ -1,4 +1,4 @@
-# WeChat Article Skill · V17
+# WeChat Article Skill · V18
 
 把 Markdown、Word `.docx` 或纯文本编辑成可信、克制、适合手机阅读的微信公众号正文 HTML、独立移动预览与可核验交付包。零第三方运行时依赖，只用 Python 3 标准库。
 
@@ -38,6 +38,16 @@ python3 scripts/publish.py --html 交付目录/正文.html --meta 交付目录/�
 - 主题载入即校验字号层级与全部文字色 × 背景色对比度；320px 自动执行数据自适应与表格记录卡降级。
 - 禁止路径越界、外链图片直引、危险 CSS/脚本与持久发布授权；草稿回读与删除永久素材均有独立强校验。
 - 浏览器 PASS、API 回读 PASS、微信真机 PASS 严格分离；未执行项如实记为 `UNVERIFIED` 或 `BLOCKED`。
+
+## V18 迁移说明
+
+V18 的破坏性变更都在产物契约里，CLI 与输入格式不变：
+
+- 侧车 `integrity_version` 升到 `4`，删除 `type.strategy`（类型策略全文只进「修改记录.md」，侧车留 `key/label/source`）、`editorial_review`（整份审计不再内嵌侧车，改由「修改记录.md」承载）与 `assets[].source_path/source_sha256`（与 `path/sha256` 完全重复）。旧侧车会被发布预检拒绝，须重渲染。
+- 交付清单 `files` 的键从文件名改成目录内相对路径；旧清单无法通过"清单内文件全等"校验，须换新目录。
+- **`kicker`（栏目行 / 期号 / 分类串）不再输出**：读者版面取消装饰性刊头文字，刊头只剩摘要行。frontmatter 仍接受该字段，只是给一次提示——请直接删掉那一行。
+- **`kicker`（栏目行 / 期号 / 分类串）不再输出**：读者版面取消装饰性刊头文字，刊头只剩摘要行。frontmatter 仍接受该字段，只是给一次提示——请直接删掉那一行。
+- 主题新增第十四条轴 `header`（刊头），`themes.json` 缺这条轴会被载入拒绝；自定义主题请补 `rule/lede/seal/band/plate/feature` 之一。
 
 ## 许可
 
