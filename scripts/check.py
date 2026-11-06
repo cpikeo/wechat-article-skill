@@ -131,7 +131,6 @@ CSS_RULES = {
     "border-bottom": _border,
     "border-collapse": lambda v: v == "collapse",
     "border-left": _border,
-    "border-radius": lambda v: _length(v, ("px", "%"), max_px=100, max_pct=100),
     "border-top": _border,
     "box-sizing": lambda v: v == "border-box",
     "color": lambda v: bool(re.fullmatch(HEX, v)) or v == "inherit",
