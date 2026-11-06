@@ -47,7 +47,7 @@ PARENTS = {
 }
 
 HEX = r"#[0-9a-fA-F]{6}"
-# 字体栈按「平台原生优先」排列：iOS 命中 PingFang，鸿蒙/小米命中自家系统字体，
+# 字体栈按“平台原生优先”排列：iOS 命中 PingFang，鸿蒙/小米命中自家系统字体，
 # 其余 Android 落到 Noto/Source Han。衬线族补足 Android 侧的中文衬线候选，
 # 否则 letter/ink/bone 的标题会在没有 Songti 的机器上静默退化成无衬线。
 SANS = ("-apple-system,BlinkMacSystemFont,'PingFang SC','HarmonyOS Sans SC','MiSans','Hiragino Sans GB',"

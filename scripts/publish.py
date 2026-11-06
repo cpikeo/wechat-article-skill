@@ -194,8 +194,9 @@ IMG_SRC_RE = re.compile(r"(<img\b[^>]*?\bsrc\s*=\s*)(?:\"([^\"]*)\"|'([^']*)'|([
 def rewrite_local_images(html, access_token, base_dir=".", image_bytes=None):
     """扫描 HTML 里的 <img src="本地路径">，逐个上传替换成微信图片 URL。
     已经是 http(s) 链接的图片不动（是否会被微信过滤由官方接口决定，这里不重复判断）。
+    同一份图片字节只上传一次：正文里重复引用同一张图（复用不是错误）不会把素材传两遍。
     """
-    uploaded = {}
+    uploaded = {}                      # 内容 sha256 → 微信 URL
     def _replace(match):
         prefix, double, single, bare = match.groups()
         src = H.unescape(next(v for v in (double, single, bare) if v is not None))
@@ -204,17 +205,22 @@ def rewrite_local_images(html, access_token, base_dir=".", image_bytes=None):
         local_file = local_path(src, base_dir)
         if not os.path.isfile(local_file):
             raise ValueError(f"正文图片不存在：{src}")
-        if local_file not in uploaded:
-            data = image_bytes.get(os.path.relpath(local_file, os.path.realpath(base_dir)).replace(os.sep, "/")) if image_bytes is not None else None
-            if image_bytes is not None and data is None:
+        data = None
+        if image_bytes is not None:
+            data = image_bytes.get(os.path.relpath(local_file, os.path.realpath(base_dir)).replace(os.sep, "/"))
+            if data is None:
                 raise ValueError("正文图片不在已核验快照中")
+        else:
+            with open(local_file, "rb") as stream:
+                data = stream.read()
+        digest = hashlib.sha256(data).hexdigest()
+        if digest not in uploaded:
             url = upload_content_image(access_token, local_file, data=data)
             if not safe_http_url(url):
                 raise ValueError("正文图片上传接口未返回有效 HTTP(S) URL")
-            uploaded[local_file] = url
-        wechat_url = uploaded[local_file]
-        print(f"  已上传正文图片 {src} -> {wechat_url}")
-        return f'{prefix}"{H.escape(wechat_url)}"'
+            uploaded[digest] = url
+            print(f"  已上传正文图片 {src} -> {url}")
+        return f'{prefix}"{H.escape(uploaded[digest])}"'
 
     return IMG_SRC_RE.sub(_replace, html)
 
@@ -348,7 +354,7 @@ def read_draft(access_token, media_id):
 
 # 微信写入草稿时会重写正文：把 ' 转成 &#39;、给图片补 data-src 并把 src 换成 mmbiz 域名、
 # 重排 alt、在没有外链权限的账号上整体剥掉 <a>、再插一段 display:none 的 mp-style-type。
-# 因此 content 不可能逐字节相等——逐字节比对的唯一结果是「草稿建好了但永远判 FAIL」。
+# 因此 content 不可能逐字节相等——逐字节比对的唯一结果是“草稿建好了但永远判 FAIL”。
 # 正确的核验口径是：文字逐字相同、图片数量相同、结构块数量相同；被重写的那几项单独记账。
 _HIDDEN_MP = re.compile(r"<p[^>]*display\s*:\s*none[^>]*>.*?</p>", re.S | re.I)
 _TAG = re.compile(r"<(/?)([a-zA-Z][a-zA-Z0-9]*)([^>]*)>")
@@ -357,7 +363,7 @@ ADVISORY_TAGS = ("a", "span", "strong")
 
 
 def _wechat_normalize(markup):
-    """抹平微信的写入期重写，只留下「文章本身」：文字、块结构、图片数量。"""
+    """抹平微信的写入期重写，只留下“文章本身”：文字、块结构、图片数量。"""
     text = H.unescape(markup or "")
     text = _HIDDEN_MP.sub("", text)
     return re.sub(r"<img\b[^>]*?/?>", "<img>", text, flags=re.I)
@@ -394,13 +400,23 @@ def verify_draft(data, title, content, thumb_media_id, author=None, digest=None,
     if not items or not isinstance(items[0], dict):
         raise ValueError("草稿回读缺少 news_item")
     item = items[0]
-    failed = [name for name, expected in (
+    failed = []
+    for name, expected in (
         ("title", api_title(title)), ("thumb_media_id", thumb_media_id),
         ("author", author), ("digest", digest), ("content_source_url", source_url),
-    ) if expected is not None and expected != "" and item.get(name) != expected]
+    ):
+        if expected is None or expected == "" or item.get(name) == expected:
+            continue
+        # 新草稿接口回读 thumb_media_id 常返回空串，而封面其实已经绑上（thumb_url 有值）。
+        # 空串不是“不一致”：按 media_id 或 thumb_url 之一判封面，避免建好稿反被判 FAIL。
+        if name == "thumb_media_id" and not item.get(name) and str(item.get("thumb_url") or "").startswith("http"):
+            continue
+        failed.append(name)
     ok, detail = compare_content(content, item.get("content") or "")
     if not ok:
         failed.insert(0, "content")
+    detail["cover_binding"] = ("media_id" if item.get("thumb_media_id") == thumb_media_id
+                               else "thumb_url" if item.get("thumb_url") else "missing")
     return failed, detail
 
 
@@ -476,7 +492,7 @@ def poll_publish_status(access_token, publish_id, interval=10, timeout=600):
 
 
 def resolve_cover(cover, html_path):
-    """封面相对路径按「文章目录」解析，不按当前工作目录。
+    """封面相对路径按“文章目录”解析，不按当前工作目录。
 
     meta.json 里的 cover 是 frontmatter 原值（相对 md），而发布命令常从仓库根执行——
     不解析就会 FileNotFoundError 崩在上传那一步。
@@ -747,7 +763,7 @@ def main():
     ap.add_argument("--digest", default=None, help="摘要（转发卡片/会话摘要），超过120字拒绝上行（官方上限120）")
     ap.add_argument("--meta", default=None,
                     help="render.py 产出的 *.meta.json：title/author/digest/cover/原文链接；优先级 命令行 > meta > config.json")
-    ap.add_argument("--source-url", default=None, help="原文链接（草稿底部「阅读原文」跳转的 URL）")
+    ap.add_argument("--source-url", default=None, help="原文链接（草稿底部“阅读原文”跳转的 URL）")
     ap.add_argument("--no-open-comment", action="store_true",
                     help="关闭留言。本工具默认开启，不代表所有账号编辑器默认")
     ap.add_argument("--fans-only-comment", action="store_true", help="仅粉丝可评论（默认所有人）")
@@ -760,7 +776,7 @@ def main():
     ap.add_argument("--check-publish-id", default=None, help="只查询某个 publish_id 的发布状态，不做其它任何操作")
     ap.add_argument("--preflight", action="store_true",
                     help="不调接口：跑 Gate 1 并打印将上行的标题/作者/摘要（含上限）、封面与待传正文图，验收通过再真发")
-    ap.add_argument("--check-draft-switch", action="store_true", help="只查询「草稿箱和发布功能」开关状态，不做其它任何操作")
+    ap.add_argument("--check-draft-switch", action="store_true", help="只查询“草稿箱和发布功能”开关状态，不做其它任何操作")
     ap.add_argument(
         "--enable-draft-switch",
         action="store_true",

@@ -4,7 +4,7 @@
     "appid": "公众号 AppID：公众平台 → 设置与开发 → 开发接口管理。联网命令必填；--preflight 不需要凭证。",
     "secret": "公众号 AppSecret：同上页面获取。必填；只写进 config.json，不要提交到仓库或写进文章目录。",
     "author": "作者兜底：文章 frontmatter/meta.json 里有 author 时用文章的，没有才用这里。≤16 字，超出拒绝上行。",
-    "source_url": "「阅读原文」链接兜底（官方字段 content_source_url）：文章末尾跳转入口；单篇可用 frontmatter 或 --source-url 覆盖。留空则无此入口。",
+    "source_url": "“阅读原文”链接兜底（官方字段 content_source_url）：文章末尾跳转入口；单篇可用 frontmatter 或 --source-url 覆盖。留空则无此入口。",
     "need_open_comment": "留言开关，本工具默认 true；未认证所有账号编辑器默认行为；false 关闭留言。单次关闭也可用 --no-open-comment。",
     "only_fans_can_comment": "仅粉丝可评论，默认 false（所有人可评）。",
     "_发布授权": "正式发布不接受持久配置：这里写 submit:true 会被直接拒绝。发布只能在本次运行显式加 --submit --confirm-title \"标题\"（单次授权，不跨运行生效）。默认止于草稿；发布不等于群发。"

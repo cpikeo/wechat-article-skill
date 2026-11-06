@@ -720,7 +720,7 @@ def paragraph_lines(paragraph, heading_of, media_of, links, image_start, list_in
             marker = "-"
         if list_info["marker"]:
             marker += f" ⟦{list_info['marker']}⟧"
-            notices.append(f"自定义编号「{list_info['marker']}」已保留为显式标签；Markdown 仍保留列表层级")
+            notices.append(f"自定义编号“{list_info['marker']}”已保留为显式标签；Markdown 仍保留列表层级")
         lines.append(f"{indent}{marker} {text}")
         category = "list"
     elif level:
@@ -902,7 +902,7 @@ def extract(docx_path, out_md):
           + (f" · 表格 {tables}（已转 Markdown 表格）" if tables else ""))
     if image_number:
         print(f"  ⚠ 抽出的 {image_number} 张图没有职责：进 render 前先补成 ![说明](路径 \"职责\")，"
-              "否则 Gate 2 会判「必须改」", file=sys.stderr)
+              "否则 Gate 2 会判“必须改”", file=sys.stderr)
     print(f"  转换记录 → {report_path}（REVIEW 不等于编辑/发布验收）")
     return 0
 
